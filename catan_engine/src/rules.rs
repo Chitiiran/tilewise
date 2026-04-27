@@ -14,7 +14,7 @@ pub fn legal_actions(state: &GameState) -> Vec<Action> {
         crate::state::GamePhase::Setup1Place => legal_actions_setup_place(state),
         crate::state::GamePhase::Setup2Place => legal_actions_setup_place(state),
         crate::state::GamePhase::Roll => vec![Action::EndTurn],
-        crate::state::GamePhase::Main => vec![],          // filled in Task 16
+        crate::state::GamePhase::Main => legal_actions_main(state),
         crate::state::GamePhase::Discard { .. } => vec![], // filled in Task 18
         crate::state::GamePhase::MoveRobber => vec![],     // filled in Task 19
         crate::state::GamePhase::Steal { .. } => vec![],   // filled in Task 19
@@ -148,6 +148,18 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
                 state.phase = GamePhase::Main;
             }
         }
+        (GamePhase::Main, Action::BuildSettlement(v)) => {
+            let p = state.current_player;
+            let mut bank = state.bank;
+            let mut hand = state.hands[p as usize];
+            pay(&mut hand, &mut bank, &SETTLEMENT_COST);
+            state.hands[p as usize] = hand;
+            state.bank = bank;
+            state.settlements[v as usize] = Some(p);
+            state.vp[p as usize] += 1;
+            events.push(GameEvent::BuildSettlement { player: p, vertex: v });
+            check_win(state, &mut events);
+        }
         _ => {
             // Other transitions implemented in Tasks 13–20.
             let _ = rng;
@@ -187,6 +199,89 @@ fn produce_resources(state: &mut GameState, roll: u8, events: &mut Vec<GameEvent
                     });
                 }
             }
+        }
+    }
+}
+
+const SETTLEMENT_COST: [u8; 5] = [1, 1, 1, 1, 0]; // wood,brick,sheep,wheat,ore
+const CITY_COST: [u8; 5] =       [0, 0, 0, 2, 3];
+const ROAD_COST: [u8; 5] =       [1, 1, 0, 0, 0];
+
+fn can_afford(hand: &[u8; 5], cost: &[u8; 5]) -> bool {
+    hand.iter().zip(cost).all(|(h, c)| h >= c)
+}
+
+fn pay(hand: &mut [u8; 5], bank: &mut [u8; 5], cost: &[u8; 5]) {
+    for i in 0..5 {
+        hand[i] -= cost[i];
+        bank[i] += cost[i];
+    }
+}
+
+fn legal_actions_main(state: &GameState) -> Vec<Action> {
+    let mut out = vec![Action::EndTurn];
+    let p = state.current_player;
+    let hand = &state.hands[p as usize];
+    if can_afford(hand, &SETTLEMENT_COST) {
+        for v in 0u8..54 {
+            if is_legal_settlement_for_player(state, v, p) {
+                out.push(Action::BuildSettlement(v));
+            }
+        }
+    }
+    if can_afford(hand, &CITY_COST) {
+        for v in 0u8..54 {
+            if state.settlements[v as usize] == Some(p) {
+                out.push(Action::BuildCity(v));
+            }
+        }
+    }
+    if can_afford(hand, &ROAD_COST) {
+        for e in 0u8..72 {
+            if is_legal_road_for_player(state, e, p) {
+                out.push(Action::BuildRoad(e));
+            }
+        }
+    }
+    out
+}
+
+fn is_legal_settlement_for_player(state: &GameState, v: u8, p: u8) -> bool {
+    if !is_legal_settlement_location(state, v) { return false; }
+    // Main-phase rule: must be adjacent to one of the player's roads.
+    state.board.vertex_to_edges[v as usize].iter()
+        .any(|&e| state.roads[e as usize] == Some(p))
+}
+
+fn is_legal_road_for_player(state: &GameState, e: u8, p: u8) -> bool {
+    if state.roads[e as usize].is_some() { return false; }
+    // Connects to one of the player's roads or settlements/cities.
+    let [a, b] = state.board.edge_to_vertices[e as usize];
+    for v in [a, b] {
+        if state.settlements[v as usize] == Some(p) || state.cities[v as usize] == Some(p) {
+            return true;
+        }
+        // Or one of the OTHER edges adjacent to this vertex is the player's road,
+        // unless that vertex is occupied by another player (blocking).
+        let blocked = matches!(state.settlements[v as usize], Some(o) if o != p)
+                   || matches!(state.cities[v as usize], Some(o) if o != p);
+        if !blocked {
+            for &e2 in &state.board.vertex_to_edges[v as usize] {
+                if e2 != e && state.roads[e2 as usize] == Some(p) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn check_win(state: &mut GameState, events: &mut Vec<GameEvent>) {
+    for p in 0..4u8 {
+        if state.vp[p as usize] >= crate::state::WIN_VP {
+            state.phase = GamePhase::Done { winner: p };
+            events.push(GameEvent::GameOver { winner: p });
+            return;
         }
     }
 }

@@ -21,6 +21,12 @@ fn ready_to_roll() -> GameState {
         let e = state.board.vertex_to_edges[v as usize][0];
         apply(&mut state, Action::BuildRoad(e), &mut rng);
     }
+    // Extend player 0's first road (edge 0: v0->v3) by one more edge to vertex 7
+    // (edge 6: v3->v7). Vertex 7 is empty and not adjacent to any existing settlement,
+    // so it becomes a legal Main-phase settlement spot once player 0 can afford it.
+    // Required because the bare setup-phase road endpoints for player 0 (v3 and v22)
+    // are both blocked by the distance rule from existing settlements.
+    state.roads[6] = Some(0);
     assert!(matches!(state.phase, GamePhase::Roll));
     state
 }
@@ -47,4 +53,43 @@ fn rolling_a_non_seven_produces_resources_and_enters_main() {
         let bank_before_total: u32 = bank_before.iter().map(|&x| x as u32).sum();
         assert!(bank_after_total <= bank_before_total);
     }
+}
+
+#[test]
+fn cannot_build_settlement_without_resources() {
+    let mut state = ready_to_roll();
+    state.phase = GamePhase::Main;
+    state.hands[0] = [0; 5]; // empty hand
+    let legal = legal_actions(&state);
+    assert!(!legal.iter().any(|a| matches!(a, Action::BuildSettlement(_))));
+}
+
+#[test]
+fn can_build_settlement_with_required_resources_on_road_endpoint() {
+    let mut state = ready_to_roll();
+    state.phase = GamePhase::Main;
+    // Give player 0 settlement cost: 1 wood, 1 brick, 1 sheep, 1 wheat.
+    state.hands[0] = [1, 1, 1, 1, 0];
+    let legal = legal_actions(&state);
+    let settlement_actions: Vec<u8> = legal.iter()
+        .filter_map(|a| if let Action::BuildSettlement(v) = a { Some(*v) } else { None })
+        .collect();
+    // At least one settlement should be legal (the road endpoints from setup).
+    assert!(!settlement_actions.is_empty());
+}
+
+#[test]
+fn building_settlement_deducts_resources_and_grants_vp() {
+    let mut state = ready_to_roll();
+    state.phase = GamePhase::Main;
+    state.hands[0] = [2, 2, 2, 2, 0];
+    let mut rng = Rng::from_seed(0);
+    let v_to_build = legal_actions(&state).iter()
+        .find_map(|a| if let Action::BuildSettlement(v) = a { Some(*v) } else { None })
+        .expect("at least one legal settlement");
+    let vp_before = state.vp[0];
+    apply(&mut state, Action::BuildSettlement(v_to_build), &mut rng);
+    assert_eq!(state.hands[0], [1, 1, 1, 1, 0]);
+    assert_eq!(state.vp[0], vp_before + 1);
+    assert_eq!(state.settlements[v_to_build as usize], Some(0));
 }
