@@ -13,7 +13,7 @@ pub fn legal_actions(state: &GameState) -> Vec<Action> {
     match &state.phase {
         crate::state::GamePhase::Setup1Place => legal_actions_setup_place(state),
         crate::state::GamePhase::Setup2Place => legal_actions_setup_place(state),
-        crate::state::GamePhase::Roll => vec![],          // filled in Task 15
+        crate::state::GamePhase::Roll => vec![Action::EndTurn],
         crate::state::GamePhase::Main => vec![],          // filled in Task 16
         crate::state::GamePhase::Discard { .. } => vec![], // filled in Task 18
         crate::state::GamePhase::MoveRobber => vec![],     // filled in Task 19
@@ -121,6 +121,33 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
                 // current_player stays at 0 — main game starts with player 0.
             }
         }
+        (GamePhase::Roll, Action::EndTurn) => {
+            // "EndTurn" in Roll phase = "roll the dice" (Task 15 design choice:
+            // single action means no separate RollDice ID needed).
+            use rand::Rng as _;
+            let d1 = rng.inner().gen_range(1u8..=6);
+            let d2 = rng.inner().gen_range(1u8..=6);
+            let roll = d1 + d2;
+            events.push(GameEvent::DiceRolled { roll });
+            if roll == 7 {
+                // Discard + robber sub-flow handled in Tasks 18-19.
+                let mut remaining = [0u8; 4];
+                for p in 0..4usize {
+                    let total: u8 = state.hands[p].iter().sum();
+                    if total > 7 {
+                        remaining[p] = total / 2;
+                    }
+                }
+                state.phase = if remaining.iter().any(|&n| n > 0) {
+                    GamePhase::Discard { remaining }
+                } else {
+                    GamePhase::MoveRobber
+                };
+            } else {
+                produce_resources(state, roll, &mut events);
+                state.phase = GamePhase::Main;
+            }
+        }
         _ => {
             // Other transitions implemented in Tasks 13–20.
             let _ = rng;
@@ -131,4 +158,35 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
 
 pub fn is_terminal(state: &GameState) -> bool {
     state.is_terminal()
+}
+
+fn produce_resources(state: &mut GameState, roll: u8, events: &mut Vec<GameEvent>) {
+    let board = state.board.clone();
+    let hexes_for_roll = &board.dice_to_hexes[roll as usize];
+    for &h in hexes_for_roll {
+        if h == state.robber_hex { continue; }
+        let res = match board.hexes[h as usize].resource {
+            Some(r) => r,
+            None => continue,
+        };
+        let ri = res as usize;
+        for &v in &board.hex_to_vertices[h as usize] {
+            // Settlement = 1 card; city = 2.
+            let owner_qty = match (state.settlements[v as usize], state.cities[v as usize]) {
+                (_, Some(p)) => Some((p, 2u8)),
+                (Some(p), None) => Some((p, 1u8)),
+                _ => None,
+            };
+            if let Some((p, qty)) = owner_qty {
+                let take = qty.min(state.bank[ri]);
+                if take > 0 {
+                    state.bank[ri] -= take;
+                    state.hands[p as usize][ri] += take;
+                    events.push(GameEvent::ResourcesProduced {
+                        player: p, hex: h, resource: res, amount: take,
+                    });
+                }
+            }
+        }
+    }
 }
