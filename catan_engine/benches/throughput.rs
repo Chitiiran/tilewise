@@ -1,2 +1,3 @@
-// Placeholder bench file. Real benchmark added in a later task.
+// Placeholder required by [[bench]] entry in Cargo.toml (Task 1).
+// Real benchmark lands in Task 30.
 fn main() {}
