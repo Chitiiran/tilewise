@@ -4,6 +4,7 @@ mod engine;
 pub mod board;
 pub mod actions;
 pub mod events;
+pub mod state;
 pub use engine::Engine;
 pub use board::{Board, Hex, Resource};
 
