@@ -1,7 +1,8 @@
 use pyo3::prelude::*;
 
 mod engine;
-mod board;
+pub mod board;
+pub mod actions;
 pub use engine::Engine;
 pub use board::{Board, Hex, Resource};
 
