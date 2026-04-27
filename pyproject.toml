@@ -14,4 +14,5 @@ dev = ["pytest>=7", "maturin>=1.5"]
 [tool.maturin]
 module-name = "catan_bot._engine"
 python-source = "python"
+manifest-path = "catan_engine/Cargo.toml"
 features = ["pyo3/extension-module"]
