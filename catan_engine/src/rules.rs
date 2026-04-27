@@ -5,6 +5,7 @@ use crate::actions::Action;
 use crate::events::GameEvent;
 use crate::rng::Rng;
 use crate::state::GameState;
+use crate::state::GamePhase;
 
 pub fn legal_actions(state: &GameState) -> Vec<Action> {
     // Implemented incrementally across Phases 4–5, dispatching on state.phase.
@@ -21,15 +22,64 @@ pub fn legal_actions(state: &GameState) -> Vec<Action> {
     }
 }
 
-pub(crate) fn legal_actions_setup_place(_state: &GameState) -> Vec<Action> {
-    // Filled in Task 12.
-    vec![]
+pub(crate) fn legal_actions_setup_place(state: &GameState) -> Vec<Action> {
+    // Two sub-states:
+    //   setup_pending == None  → place a settlement
+    //   setup_pending == Some(v) → place a road adjacent to v
+    match state.setup_pending {
+        None => legal_setup_settlements(state),
+        Some(v) => legal_setup_roads(state, v),
+    }
+}
+
+fn legal_setup_settlements(state: &GameState) -> Vec<Action> {
+    let mut out = Vec::with_capacity(54);
+    for v in 0u8..54 {
+        if is_legal_settlement_location(state, v) {
+            out.push(Action::BuildSettlement(v));
+        }
+    }
+    out
+}
+
+fn legal_setup_roads(state: &GameState, just_placed_vertex: u8) -> Vec<Action> {
+    let mut out = Vec::new();
+    for &e in &state.board.vertex_to_edges[just_placed_vertex as usize] {
+        if state.roads[e as usize].is_none() {
+            out.push(Action::BuildRoad(e));
+        }
+    }
+    out
+}
+
+fn is_legal_settlement_location(state: &GameState, v: u8) -> bool {
+    if state.settlements[v as usize].is_some() || state.cities[v as usize].is_some() {
+        return false;
+    }
+    // Distance rule: no neighbor vertex may have a settlement or city.
+    for &n in &state.board.vertex_to_vertices[v as usize] {
+        if state.settlements[n as usize].is_some() || state.cities[n as usize].is_some() {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEvent> {
-    // Implemented incrementally. Stub for now.
-    let _ = (state, action, rng);
-    vec![]
+    let mut events = Vec::new();
+    match (&state.phase, action) {
+        (GamePhase::Setup1Place, Action::BuildSettlement(v)) => {
+            state.settlements[v as usize] = Some(state.current_player);
+            state.vp[state.current_player as usize] += 1;
+            state.setup_pending = Some(v);
+            events.push(GameEvent::BuildSettlement { player: state.current_player, vertex: v });
+        }
+        _ => {
+            // Other transitions implemented in Tasks 13–20.
+            let _ = rng;
+        }
+    }
+    events
 }
 
 pub fn is_terminal(state: &GameState) -> bool {
