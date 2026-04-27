@@ -160,6 +160,35 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             events.push(GameEvent::BuildSettlement { player: p, vertex: v });
             check_win(state, &mut events);
         }
+        (GamePhase::Main, Action::BuildCity(v)) => {
+            let p = state.current_player;
+            let mut bank = state.bank;
+            let mut hand = state.hands[p as usize];
+            pay(&mut hand, &mut bank, &CITY_COST);
+            state.hands[p as usize] = hand;
+            state.bank = bank;
+            state.settlements[v as usize] = None;
+            state.cities[v as usize] = Some(p);
+            state.vp[p as usize] += 1; // settlement was 1VP, city is 2VP, net +1
+            events.push(GameEvent::BuildCity { player: p, vertex: v });
+            check_win(state, &mut events);
+        }
+        (GamePhase::Main, Action::BuildRoad(e)) => {
+            let p = state.current_player;
+            let mut bank = state.bank;
+            let mut hand = state.hands[p as usize];
+            pay(&mut hand, &mut bank, &ROAD_COST);
+            state.hands[p as usize] = hand;
+            state.bank = bank;
+            state.roads[e as usize] = Some(p);
+            events.push(GameEvent::BuildRoad { player: p, edge: e });
+        }
+        (GamePhase::Main, Action::EndTurn) => {
+            events.push(GameEvent::TurnEnded { player: state.current_player });
+            state.current_player = (state.current_player + 1) % 4;
+            state.turn += 1;
+            state.phase = GamePhase::Roll;
+        }
         _ => {
             // Other transitions implemented in Tasks 13–20.
             let _ = rng;

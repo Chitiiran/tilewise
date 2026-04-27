@@ -93,3 +93,28 @@ fn building_settlement_deducts_resources_and_grants_vp() {
     assert_eq!(state.vp[0], vp_before + 1);
     assert_eq!(state.settlements[v_to_build as usize], Some(0));
 }
+
+#[test]
+fn upgrading_settlement_to_city_costs_2_wheat_3_ore_and_grants_extra_vp() {
+    let mut state = ready_to_roll();
+    state.phase = GamePhase::Main;
+    state.hands[0] = [0, 0, 0, 2, 3];
+    let mut rng = Rng::from_seed(0);
+    let owned = (0u8..54).find(|&v| state.settlements[v as usize] == Some(0)).unwrap();
+    let vp_before = state.vp[0];
+    apply(&mut state, Action::BuildCity(owned), &mut rng);
+    assert_eq!(state.cities[owned as usize], Some(0));
+    assert!(state.settlements[owned as usize].is_none());
+    assert_eq!(state.hands[0], [0, 0, 0, 0, 0]);
+    assert_eq!(state.vp[0], vp_before + 1); // +1 (city is 2VP, settlement was 1VP)
+}
+
+#[test]
+fn end_turn_advances_player_and_returns_to_roll() {
+    let mut state = ready_to_roll();
+    state.phase = GamePhase::Main;
+    let mut rng = Rng::from_seed(0);
+    apply(&mut state, Action::EndTurn, &mut rng);
+    assert_eq!(state.current_player, 1);
+    assert!(matches!(state.phase, GamePhase::Roll));
+}
