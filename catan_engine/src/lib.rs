@@ -1,7 +1,9 @@
 use pyo3::prelude::*;
 
 mod engine;
+mod board;
 pub use engine::Engine;
+pub use board::{Board, Hex, Resource};
 
 #[pyfunction]
 fn engine_version() -> &'static str {
