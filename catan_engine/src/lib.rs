@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 mod engine;
 pub mod board;
 pub mod actions;
+pub mod events;
 pub use engine::Engine;
 pub use board::{Board, Hex, Resource};
 
