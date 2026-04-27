@@ -1,13 +1,14 @@
 //! Immutable board topology for the standard 19-hex Catan board.
 //! Built once at engine startup; never mutated.
 
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resource {
-    Wood,
-    Brick,
-    Sheep,
-    Wheat,
-    Ore,
+    Wood = 0,
+    Brick = 1,
+    Sheep = 2,
+    Wheat = 3,
+    Ore = 4,
 }
 
 #[derive(Debug, Clone, Copy)]

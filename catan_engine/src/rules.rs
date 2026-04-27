@@ -86,6 +86,41 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
                 // current_player stays at 3 — Setup-2 starts with player 3.
             }
         }
+        (GamePhase::Setup2Place, Action::BuildSettlement(v)) => {
+            state.settlements[v as usize] = Some(state.current_player);
+            state.vp[state.current_player as usize] += 1;
+            state.setup_pending = Some(v);
+            events.push(GameEvent::BuildSettlement { player: state.current_player, vertex: v });
+            // Yield starting resources: 1 card per non-desert hex adjacent.
+            let board = state.board.clone();
+            for &h in &board.vertex_to_hexes[v as usize] {
+                if let Some(res) = board.hexes[h as usize].resource {
+                    let ri = res as usize;
+                    if state.bank[ri] > 0 {
+                        state.bank[ri] -= 1;
+                        state.hands[state.current_player as usize][ri] += 1;
+                        events.push(GameEvent::ResourcesProduced {
+                            player: state.current_player,
+                            hex: h,
+                            resource: res,
+                            amount: 1,
+                        });
+                    }
+                }
+            }
+        }
+        (GamePhase::Setup2Place, Action::BuildRoad(e)) => {
+            state.roads[e as usize] = Some(state.current_player);
+            state.setup_pending = None;
+            events.push(GameEvent::BuildRoad { player: state.current_player, edge: e });
+            // Reverse-order advance; when player 0 finishes, transition to Roll.
+            if state.current_player > 0 {
+                state.current_player -= 1;
+            } else {
+                state.phase = GamePhase::Roll;
+                // current_player stays at 0 — main game starts with player 0.
+            }
+        }
         _ => {
             // Other transitions implemented in Tasks 13–20.
             let _ = rng;
