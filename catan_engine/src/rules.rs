@@ -74,6 +74,18 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.setup_pending = Some(v);
             events.push(GameEvent::BuildSettlement { player: state.current_player, vertex: v });
         }
+        (GamePhase::Setup1Place, Action::BuildRoad(e)) => {
+            state.roads[e as usize] = Some(state.current_player);
+            state.setup_pending = None;
+            events.push(GameEvent::BuildRoad { player: state.current_player, edge: e });
+            // Advance player; if all 4 placed, enter Setup-2 (reverse order, player 3 first).
+            if state.current_player < 3 {
+                state.current_player += 1;
+            } else {
+                state.phase = GamePhase::Setup2Place;
+                // current_player stays at 3 — Setup-2 starts with player 3.
+            }
+        }
         _ => {
             // Other transitions implemented in Tasks 13–20.
             let _ = rng;
