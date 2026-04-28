@@ -20,3 +20,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "throughput"
 harness = false
+
+[[bench]]
+name = "full_game_length"
+harness = false
