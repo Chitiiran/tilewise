@@ -3,7 +3,7 @@ from catan_bot import CatanEnv, ACTION_SPACE_SIZE
 
 
 def test_action_space_size_constant():
-    assert ACTION_SPACE_SIZE == 205
+    assert ACTION_SPACE_SIZE == 206  # Phase-0 added Action::RollDice (id 205)
 
 
 def test_random_self_play_completes():
@@ -31,7 +31,7 @@ def test_observation_shapes():
     assert obs["hex_features"].shape == (19, 8)
     assert obs["vertex_features"].shape == (54, 7)
     assert obs["edge_features"].shape == (72, 6)
-    assert obs["legal_mask"].shape == (205,)
+    assert obs["legal_mask"].shape == (ACTION_SPACE_SIZE,)
 
 
 def test_replay_roundtrip(tmp_path):
