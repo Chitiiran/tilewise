@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
+import pyspiel
 from catan_bot import _engine
 
 from . import ACTION_SPACE_SIZE
@@ -42,13 +43,24 @@ class CatanState:
 
     def current_player(self) -> int:
         if self.is_terminal():
-            return -1  # OpenSpiel's TERMINAL marker convention
+            return pyspiel.PlayerId.TERMINAL
         if self._engine.is_chance_pending():
-            return -2  # OpenSpiel's CHANCE_PLAYER_ID is -1; we'll align in Task 3.
+            return pyspiel.PlayerId.CHANCE
         return int(self._engine.current_player())
+
+    def is_chance_node(self) -> bool:
+        return self._engine.is_chance_pending()
+
+    def chance_outcomes(self) -> list[tuple[int, float]]:
+        # PyO3 returns list[(u32, f64)]; ensure Python ints/floats.
+        return [(int(v), float(p)) for v, p in self._engine.chance_outcomes()]
 
     def legal_actions(self) -> list[int]:
         return [int(a) for a in self._engine.legal_actions()]
 
     def apply_action(self, action: int) -> None:
-        self._engine.step(int(action))
+        action = int(action)
+        if self._engine.is_chance_pending():
+            self._engine.apply_chance_outcome(action)
+        else:
+            self._engine.step(action)
