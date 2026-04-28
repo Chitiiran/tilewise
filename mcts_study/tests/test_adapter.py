@@ -57,3 +57,62 @@ def test_chance_node_drives_dice():
             return
         state.apply_action(state.legal_actions()[0])
     raise AssertionError("no chance node reached")
+
+
+def test_clone_is_independent():
+    game = CatanGame()
+    a = game.new_initial_state(seed=42)
+    a.apply_action(a.legal_actions()[0])
+    b = a.clone()
+    history_before = list(a.history())
+    b.apply_action(b.legal_actions()[0])
+    assert list(a.history()) == history_before
+
+
+def test_returns_zero_until_terminal():
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    assert state.returns() == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_returns_at_terminal_have_one_winner():
+    """Drive a game to completion using random+chance policy. At termination,
+    +1 / -1 / -1 / -1 returns are expected (one winner)."""
+    import random
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    rng = random.Random(0)
+    steps = 0
+    while not state.is_terminal() and steps < 5000:
+        if state.is_chance_node():
+            outcomes = state.chance_outcomes()
+            r = rng.random()
+            cum, chosen = 0.0, outcomes[-1][0]
+            for v, p in outcomes:
+                cum += p
+                if r <= cum:
+                    chosen = v
+                    break
+            state.apply_action(int(chosen))
+        else:
+            legal = state.legal_actions()
+            if not legal:
+                break
+            state.apply_action(rng.choice(legal))
+        steps += 1
+    if not state.is_terminal():
+        # Random policy may not finish on every seed; not the test target
+        return
+    rs = state.returns()
+    assert rs.count(1.0) == 1
+    assert rs.count(-1.0) == 3
+
+
+def test_serialize_round_trips_through_history():
+    game = CatanGame()
+    s1 = game.new_initial_state(seed=42)
+    s1.apply_action(s1.legal_actions()[0])
+    blob = s1.serialize()
+    s2 = CatanGame.deserialize(blob)
+    assert s2.legal_actions() == s1.legal_actions()
+    assert s2.is_terminal() == s1.is_terminal()

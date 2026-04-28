@@ -1,6 +1,7 @@
 """OpenSpiel adapter wrapping catan_bot._engine.Engine."""
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
 import pyspiel
@@ -31,12 +32,27 @@ class CatanGame:
 
     def new_initial_state(self, seed: int | None = None) -> "CatanState":
         s = self._default_seed if seed is None else seed
-        return CatanState(_engine.Engine(s))
+        return CatanState(_engine.Engine(s), initial_seed=s)
+
+    @staticmethod
+    def deserialize(blob: str) -> "CatanState":
+        data = json.loads(blob)
+        seed = int(data["seed"])
+        history = [int(x) for x in data["history"]]
+        engine = _engine.Engine(seed)
+        CHANCE_FLAG = 0x80000000
+        for action_id in history:
+            if action_id & CHANCE_FLAG:
+                engine.apply_chance_outcome(action_id & ~CHANCE_FLAG)
+            else:
+                engine.step(action_id)
+        return CatanState(engine, initial_seed=seed)
 
 
 class CatanState:
-    def __init__(self, engine) -> None:  # engine: catan_bot._engine.Engine
+    def __init__(self, engine, initial_seed: int = 0) -> None:  # engine: catan_bot._engine.Engine
         self._engine = engine
+        self._initial_seed = initial_seed
 
     def is_terminal(self) -> bool:
         return self._engine.is_terminal()
@@ -64,3 +80,24 @@ class CatanState:
             self._engine.apply_chance_outcome(action)
         else:
             self._engine.step(action)
+
+    def clone(self) -> "CatanState":
+        return CatanState(self._engine.clone(), initial_seed=self._initial_seed)
+
+    def history(self) -> list[int]:
+        return [int(x) for x in self._engine.action_history()]
+
+    def returns(self) -> list[float]:
+        if not self.is_terminal():
+            return [0.0] * NUM_PLAYERS
+        stats = self._engine.stats()
+        winner = int(stats["winner_player_id"])
+        if winner < 0:
+            return [0.0] * NUM_PLAYERS
+        out = [-1.0] * NUM_PLAYERS
+        out[winner] = 1.0
+        return out
+
+    def serialize(self) -> str:
+        # Stable, unique, deterministic: (seed, action_history) reconstructs everything.
+        return json.dumps({"seed": self._initial_seed, "history": self.history()})
