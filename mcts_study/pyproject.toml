@@ -31,3 +31,7 @@ packages = ["catan_mcts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: marks tests that take more than ~5 minutes; opt in with `pytest -m slow`",
+]
