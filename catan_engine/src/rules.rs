@@ -36,10 +36,9 @@ pub fn legal_actions(state: &GameState) -> Vec<Action> {
                 .map(Action::MoveRobber)
                 .collect()
         }
-        crate::state::GamePhase::Steal { from_options } => {
-            // Steal phase auto-resolves in apply; never exposed to caller.
-            // Tier 2+ may add an Action::ChooseStealTarget variant for true per-target choice.
-            let _ = from_options;
+        crate::state::GamePhase::Steal { .. } => {
+            // Chance node — environment supplies the outcome via apply_chance_outcome().
+            // Players have no legal actions here.
             vec![]
         }
         crate::state::GamePhase::Done { .. } => vec![],
@@ -251,11 +250,8 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             if targets.is_empty() {
                 state.phase = GamePhase::Main;
             } else {
-                // Auto-steal from first target (Tier 1 simplification — see plan).
-                let victim = targets[0];
-                let stolen = steal_random(state, victim, rng);
-                events.push(GameEvent::Robbed { from: victim, to: me, resource: stolen });
-                state.phase = GamePhase::Main;
+                // Hand control to chance: which victim is picked + which card is taken.
+                state.phase = GamePhase::Steal { from_options: targets };
             }
         }
         _ => {
@@ -385,6 +381,7 @@ fn check_win(state: &mut GameState, events: &mut Vec<GameEvent>) {
     }
 }
 
+#[allow(dead_code)] // Repurposed by Task 7 for apply_chance_outcome.
 fn steal_random(state: &mut GameState, victim: u8, rng: &mut Rng) -> Option<Resource> {
     use rand::Rng as _;
     let total: u32 = state.hands[victim as usize].iter().map(|&x| x as u32).sum();
