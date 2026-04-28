@@ -2,6 +2,7 @@
 //! Every rule is unit-testable by constructing a state and calling the function.
 
 use crate::actions::Action;
+use crate::board::Resource;
 use crate::events::GameEvent;
 use crate::rng::Rng;
 use crate::state::GameState;
@@ -15,7 +16,20 @@ pub fn legal_actions(state: &GameState) -> Vec<Action> {
         crate::state::GamePhase::Setup2Place => legal_actions_setup_place(state),
         crate::state::GamePhase::Roll => vec![Action::EndTurn],
         crate::state::GamePhase::Main => legal_actions_main(state),
-        crate::state::GamePhase::Discard { .. } => vec![], // filled in Task 18
+        crate::state::GamePhase::Discard { remaining } => {
+            // The "current discarder" is the lowest-indexed player still owing cards.
+            let p = remaining.iter().position(|&n| n > 0).unwrap_or(0);
+            let mut out = Vec::new();
+            for r in 0..5u8 {
+                if state.hands[p][r as usize] > 0 {
+                    out.push(Action::Discard(match r {
+                        0 => Resource::Wood, 1 => Resource::Brick, 2 => Resource::Sheep,
+                        3 => Resource::Wheat, 4 => Resource::Ore, _ => unreachable!()
+                    }));
+                }
+            }
+            out
+        }
         crate::state::GamePhase::MoveRobber => vec![],     // filled in Task 19
         crate::state::GamePhase::Steal { .. } => vec![],   // filled in Task 19
         crate::state::GamePhase::Done { .. } => vec![],
@@ -188,6 +202,21 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.current_player = (state.current_player + 1) % 4;
             state.turn += 1;
             state.phase = GamePhase::Roll;
+        }
+        (GamePhase::Discard { remaining }, Action::Discard(r)) => {
+            let mut rem = *remaining;
+            let p = rem.iter().position(|&n| n > 0).unwrap();
+            let ri = r as usize;
+            assert!(state.hands[p][ri] > 0, "discarding resource player doesn't have");
+            state.hands[p][ri] -= 1;
+            state.bank[ri] += 1;
+            rem[p] -= 1;
+            events.push(GameEvent::Discarded { player: p as u8, resource: r });
+            state.phase = if rem.iter().all(|&n| n == 0) {
+                GamePhase::MoveRobber
+            } else {
+                GamePhase::Discard { remaining: rem }
+            };
         }
         _ => {
             // Other transitions implemented in Tasks 13–20.
