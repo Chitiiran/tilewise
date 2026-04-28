@@ -70,7 +70,7 @@ def main(
 
 def cli_main():
     p = argparse.ArgumentParser()
-    p.add_argument("--out-root", type=Path, default=Path("mcts_study/runs"))
+    p.add_argument("--out-root", type=Path, default=Path("runs"))
     p.add_argument("--num-games", type=int, default=50)
     p.add_argument("--c-grid", type=float, nargs="+", default=[0.5, 1.0, 1.4, 2.0, 4.0])
     p.add_argument("--sims", type=int, default=25)

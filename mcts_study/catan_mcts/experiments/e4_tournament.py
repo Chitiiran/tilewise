@@ -88,7 +88,7 @@ def main(
 
 def cli_main():
     p = argparse.ArgumentParser()
-    p.add_argument("--out-root", type=Path, default=Path("mcts_study/runs"))
+    p.add_argument("--out-root", type=Path, default=Path("runs"))
     p.add_argument("--num-games-per-seating", type=int, default=25)
     p.add_argument("--mcts-sims", type=int, default=100)
     p.add_argument("--seed-base", type=int, default=4_000_000)

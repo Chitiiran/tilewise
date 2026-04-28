@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     runp = sub.add_parser("run", help="run an experiment (e1, e2, e3, e4, or all)")
     runp.add_argument("name", choices=list(_EXPERIMENTS) + ["all"])
-    runp.add_argument("--out-root", type=Path, default=Path("mcts_study/runs"))
+    runp.add_argument("--out-root", type=Path, default=Path("runs"))
     args, rest = p.parse_known_args(argv)
 
     if args.cmd != "run":
