@@ -22,7 +22,8 @@ fn id_layout_matches_spec() {
     //          BuildRoad(0..71)=108..179,
     //          MoveRobber(0..18)=180..198,
     //          Discard(Wood..Ore)=199..203,
-    //          EndTurn=204
+    //          EndTurn=204,
+    //          RollDice=205
     assert_eq!(encode(Action::BuildSettlement(0)), 0);
     assert_eq!(encode(Action::BuildSettlement(53)), 53);
     assert_eq!(encode(Action::BuildCity(0)), 54);
@@ -34,6 +35,7 @@ fn id_layout_matches_spec() {
     assert_eq!(encode(Action::Discard(Resource::Wood)), 199);
     assert_eq!(encode(Action::Discard(Resource::Ore)), 203);
     assert_eq!(encode(Action::EndTurn), 204);
+    assert_eq!(encode(Action::RollDice), 205);
 }
 
 #[test]
