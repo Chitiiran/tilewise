@@ -393,6 +393,10 @@ pub(crate) fn apply_dice_roll(state: &mut GameState, roll: u8) -> Vec<GameEvent>
 
 /// Apply a specific steal: take `card_index`-th card from `victim`'s hand and give to current player.
 pub(crate) fn apply_steal(state: &mut GameState, victim: u8, card_index: u8) -> Vec<GameEvent> {
+    debug_assert!(
+        state.hands[victim as usize].iter().sum::<u8>() > 0,
+        "Steal phase entered with empty victim hand — invariant violated upstream",
+    );
     let mut events = Vec::new();
     let me = state.current_player;
     let mut acc = 0u8;

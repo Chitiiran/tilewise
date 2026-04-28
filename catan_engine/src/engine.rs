@@ -37,18 +37,23 @@ impl Engine {
     pub fn step(&mut self, action_id: u32) {
         let action = decode(action_id).expect("invalid action ID");
         let evs = apply(&mut self.state, action, &mut self.rng);
-        for e in &evs {
+        self.record_events(&evs);
+    }
+
+    /// Single sink for stats + event-log updates after a state mutation.
+    /// Both `step` and `apply_chance_outcome` route through here so the bookkeeping
+    /// (cards_in_hand_max, vp_final lock-in on terminal) cannot drift between paths.
+    fn record_events(&mut self, evs: &[GameEvent]) {
+        for e in evs {
             self.stats.fold_event(e);
             self.events.push(*e);
         }
-        // Update cards_in_hand_max
         for p in 0..4 {
             let total: u32 = self.state.hands[p].iter().map(|&x| x as u32).sum();
             if total > self.stats.players[p].cards_in_hand_max {
                 self.stats.players[p].cards_in_hand_max = total;
             }
         }
-        // Lock vp_final into stats once the game ends
         if self.state.is_terminal() {
             for p in 0..4 {
                 self.stats.players[p].vp_final = self.state.vp[p];
@@ -135,22 +140,7 @@ impl Engine {
             }
             _ => panic!("apply_chance_outcome() called outside a chance node"),
         };
-        for e in &evs {
-            self.stats.fold_event(e);
-            self.events.push(*e);
-        }
-        // Update cards_in_hand_max, mirroring step()'s post-event bookkeeping.
-        for p in 0..4 {
-            let total: u32 = self.state.hands[p].iter().map(|&x| x as u32).sum();
-            if total > self.stats.players[p].cards_in_hand_max {
-                self.stats.players[p].cards_in_hand_max = total;
-            }
-        }
-        if self.state.is_terminal() {
-            for p in 0..4 {
-                self.stats.players[p].vp_final = self.state.vp[p];
-            }
-        }
+        self.record_events(&evs);
     }
 
     pub fn event_log(&self) -> &[GameEvent] {
