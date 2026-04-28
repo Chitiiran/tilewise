@@ -73,3 +73,33 @@ def test_record_move_rejects_action_not_in_legal_mask(tmp_path: Path):
         except AssertionError:
             return
     raise AssertionError("expected record_move to reject action with mask=False")
+
+
+def test_extract_visit_counts_from_mcts_root():
+    """OpenSpiel's MCTSBot exposes the search tree root via `bot.mcts_search(state)`.
+    The recorder needs a helper that converts that to a fixed-width visit-count array."""
+    import numpy as np
+    from open_spiel.python.algorithms import mcts as os_mcts
+    from catan_mcts.adapter import CatanGame
+    from catan_mcts.recorder import visit_counts_from_root
+
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    while state.is_chance_node():
+        state.apply_action(int(state.chance_outcomes()[0][0]))
+
+    rng = np.random.default_rng(seed=42)
+    evaluator = os_mcts.RandomRolloutEvaluator(n_rollouts=1, random_state=rng)
+    bot = os_mcts.MCTSBot(
+        game=game, uct_c=1.4, max_simulations=5, evaluator=evaluator,
+        solve=False, random_state=rng,
+    )
+    root = bot.mcts_search(state)
+    visits = visit_counts_from_root(root)
+    assert visits.shape == (ACTION_SPACE_SIZE,)
+    assert visits.sum() > 0
+    # All non-zero entries correspond to legal actions
+    legal = set(state.legal_actions())
+    for a, v in enumerate(visits):
+        if v > 0:
+            assert a in legal

@@ -113,3 +113,16 @@ class SelfPlayRecorder:
         games_table = pa.Table.from_pylist([row.__dict__ for row in self._game_rows])
         pq.write_table(moves_table, self._out_dir / "moves.parquet")
         pq.write_table(games_table, self._out_dir / "games.parquet")
+
+
+def visit_counts_from_root(root) -> np.ndarray:
+    """Extract a length-ACTION_SPACE_SIZE int32 array of root-child visit counts from
+    OpenSpiel's MCTS search-tree root node.
+
+    OpenSpiel's `SearchNode` exposes `.children` as a list of `SearchNode`, each with
+    `.action` (int) and `.explore_count` (int).
+    """
+    out = np.zeros(ACTION_SPACE_SIZE, dtype=np.int32)
+    for child in root.children:
+        out[int(child.action)] = int(child.explore_count)
+    return out
