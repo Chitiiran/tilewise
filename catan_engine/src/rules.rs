@@ -14,7 +14,7 @@ pub fn legal_actions(state: &GameState) -> Vec<Action> {
     match &state.phase {
         crate::state::GamePhase::Setup1Place => legal_actions_setup_place(state),
         crate::state::GamePhase::Setup2Place => legal_actions_setup_place(state),
-        crate::state::GamePhase::Roll => vec![Action::EndTurn],
+        crate::state::GamePhase::Roll => vec![Action::RollDice],
         crate::state::GamePhase::Main => legal_actions_main(state),
         crate::state::GamePhase::Discard { remaining } => {
             // The "current discarder" is the lowest-indexed player still owing cards.
@@ -145,9 +145,9 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
                 // current_player stays at 0 — main game starts with player 0.
             }
         }
-        (GamePhase::Roll, Action::EndTurn) => {
-            // "EndTurn" in Roll phase = "roll the dice" (Task 15 design choice:
-            // single action means no separate RollDice ID needed).
+        (GamePhase::Roll, Action::RollDice) => {
+            // Dedicated RollDice action — splits dice-roll out of EndTurn so
+            // chance handling (Phase 1+) can target this transition explicitly.
             use rand::Rng as _;
             let d1 = rng.inner().gen_range(1u8..=6);
             let d2 = rng.inner().gen_range(1u8..=6);
