@@ -50,6 +50,10 @@ impl PyEngine {
         self.inner.apply_chance_outcome(value);
     }
 
+    fn random_rollout_to_terminal(&mut self, rollout_seed: u64) -> [f32; 4] {
+        self.inner.random_rollout_to_terminal(rollout_seed)
+    }
+
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
     }

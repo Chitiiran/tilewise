@@ -149,6 +149,60 @@ impl Engine {
         self.record_events(&evs);
     }
 
+    /// Run a full random self-play rollout from the current state until terminal.
+    /// Returns AlphaZero-style terminal rewards: +1 for the winner, -1 for losers,
+    /// or [0;4] if the rollout hit the safety cap before terminating.
+    ///
+    /// Uses a fresh SmallRng seeded by `rollout_seed` for chance-node sampling and
+    /// uniform legal-action selection. Does NOT consume self.rng — so the same
+    /// engine state can be used as the root of multiple independent rollouts via
+    /// `engine.clone().random_rollout_to_terminal(seed_i)`.
+    ///
+    /// The engine ends in a terminal (or step-capped) state. Caller should clone
+    /// first if they need to preserve the pre-rollout state.
+    pub fn random_rollout_to_terminal(&mut self, rollout_seed: u64) -> [f32; 4] {
+        use rand::{Rng as _, SeedableRng};
+        use rand::rngs::SmallRng;
+        let mut rng = SmallRng::seed_from_u64(rollout_seed);
+        let mut steps = 0u32;
+        let cap: u32 = 100_000;
+
+        while !self.is_terminal() && steps < cap {
+            if self.is_chance_pending() {
+                // Sample a chance outcome by probability.
+                let outcomes = self.chance_outcomes();
+                let r: f64 = rng.gen();
+                let mut cum = 0.0f64;
+                let mut chosen = outcomes.last().unwrap().0;
+                for (v, p) in &outcomes {
+                    cum += p;
+                    if r <= cum {
+                        chosen = *v;
+                        break;
+                    }
+                }
+                self.apply_chance_outcome(chosen);
+            } else {
+                let legal = self.legal_actions();
+                if legal.is_empty() {
+                    break;
+                }
+                let idx = rng.gen_range(0..legal.len());
+                self.step(legal[idx]);
+            }
+            steps += 1;
+        }
+
+        if let crate::state::GamePhase::Done { winner } = self.state.phase {
+            let mut returns = [-1.0f32; 4];
+            returns[winner as usize] = 1.0;
+            returns
+        } else {
+            // Capped or stuck — no winner.
+            [0.0f32; 4]
+        }
+    }
+
     pub fn event_log(&self) -> &[GameEvent] {
         self.events.as_slice()
     }
