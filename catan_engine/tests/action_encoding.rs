@@ -2,8 +2,8 @@ use catan_engine::actions::{Action, ACTION_SPACE_SIZE, decode, encode};
 use catan_engine::board::Resource;
 
 #[test]
-fn action_space_size_is_205() {
-    assert_eq!(ACTION_SPACE_SIZE, 205);
+fn action_space_size_is_206() {
+    assert_eq!(ACTION_SPACE_SIZE, 206);
 }
 
 #[test]
@@ -22,7 +22,8 @@ fn id_layout_matches_spec() {
     //          BuildRoad(0..71)=108..179,
     //          MoveRobber(0..18)=180..198,
     //          Discard(Wood..Ore)=199..203,
-    //          EndTurn=204
+    //          EndTurn=204,
+    //          RollDice=205
     assert_eq!(encode(Action::BuildSettlement(0)), 0);
     assert_eq!(encode(Action::BuildSettlement(53)), 53);
     assert_eq!(encode(Action::BuildCity(0)), 54);
@@ -34,10 +35,24 @@ fn id_layout_matches_spec() {
     assert_eq!(encode(Action::Discard(Resource::Wood)), 199);
     assert_eq!(encode(Action::Discard(Resource::Ore)), 203);
     assert_eq!(encode(Action::EndTurn), 204);
+    assert_eq!(encode(Action::RollDice), 205);
 }
 
 #[test]
 fn out_of_range_ids_return_none() {
-    assert!(decode(205).is_none());
+    assert!(decode(206).is_none());
     assert!(decode(u32::MAX).is_none());
+}
+
+#[test]
+fn roll_dice_action_round_trips() {
+    use catan_engine::actions::{Action, encode, decode};
+    let id = encode(Action::RollDice);
+    assert_eq!(id, 205);
+    assert_eq!(decode(205), Some(Action::RollDice));
+}
+
+#[test]
+fn action_space_size_is_206_after_roll_dice() {
+    assert_eq!(catan_engine::actions::ACTION_SPACE_SIZE, 206);
 }

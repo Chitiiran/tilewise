@@ -8,7 +8,7 @@ fn observation_shapes_match_spec() {
     assert_eq!(obs.hex_features.len(), 19 * catan_engine::observation::F_HEX);
     assert_eq!(obs.vertex_features.len(), 54 * catan_engine::observation::F_VERT);
     assert_eq!(obs.edge_features.len(), 72 * catan_engine::observation::F_EDGE);
-    assert_eq!(obs.legal_mask.len(), 205);
+    assert_eq!(obs.legal_mask.len(), catan_engine::actions::ACTION_SPACE_SIZE);
 }
 
 #[test]

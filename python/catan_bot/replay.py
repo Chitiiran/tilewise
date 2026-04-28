@@ -30,6 +30,13 @@ class Replay:
     def reconstruct(self) -> CatanEnv:
         env = CatanEnv(seed=self.seed)
         env.reset(seed=self.seed)
+        # Engine.action_history() encodes chance-node outcomes with the high
+        # bit set (0x8000_0000 | value); player actions have the high bit
+        # clear. Dispatch on the flag so replays of chance-driven games work.
         for a in self.actions:
-            env.step(a)
+            a = int(a)
+            if a & 0x8000_0000:
+                env.apply_chance_outcome(a & 0x7FFF_FFFF)
+            else:
+                env.step(a)
         return env

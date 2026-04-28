@@ -32,12 +32,11 @@ fn ready_to_roll() -> GameState {
 }
 
 #[test]
-fn legal_actions_in_roll_phase_is_just_endturn_proxy_for_roll() {
-    // Spec choice: in Roll phase, the only legal action is EndTurn,
-    // and apply() interprets it as "roll the dice + transition phase".
+fn legal_actions_in_roll_phase_is_just_roll_dice() {
+    // Spec choice (Phase 1 split): in Roll phase, the only legal action is RollDice.
     let state = ready_to_roll();
     let legal = legal_actions(&state);
-    assert!(legal.contains(&Action::EndTurn) || !legal.is_empty());
+    assert_eq!(legal, vec![Action::RollDice]);
 }
 
 #[test]
@@ -45,7 +44,7 @@ fn rolling_a_non_seven_produces_resources_and_enters_main() {
     let mut state = ready_to_roll();
     let mut rng = Rng::from_seed(7); // seed chosen so first roll != 7 (verify via assertion)
     let bank_before = state.bank;
-    apply(&mut state, Action::EndTurn, &mut rng);
+    apply(&mut state, Action::RollDice, &mut rng);
     // Either we're in Main now, or we entered Discard/MoveRobber on a 7. Check Main case.
     if matches!(state.phase, GamePhase::Main) {
         // Bank can only decrease (resources flow bank -> player hands).
@@ -127,10 +126,17 @@ fn stats_track_basic_game_progress() {
     let mut policy_rng = SmallRng::seed_from_u64(0xC47A1B07_u64);
     let mut steps = 0;
     while !engine.is_terminal() {
-        let legal = engine.legal_actions();
-        if legal.is_empty() { break; }
-        let idx = policy_rng.gen_range(0..legal.len());
-        engine.step(legal[idx]);
+        if engine.is_chance_pending() {
+            // Roll / Steal phases — drive via chance API rather than legal_actions.
+            let outcomes = engine.chance_outcomes();
+            let idx = policy_rng.gen_range(0..outcomes.len());
+            engine.apply_chance_outcome(outcomes[idx].0);
+        } else {
+            let legal = engine.legal_actions();
+            if legal.is_empty() { break; }
+            let idx = policy_rng.gen_range(0..legal.len());
+            engine.step(legal[idx]);
+        }
         steps += 1;
         if steps > 5000 { break; }
     }
@@ -147,4 +153,17 @@ fn stats_track_basic_game_progress() {
         total_dice, s.turns_played
     );
     assert!(s.winner_player_id >= 0, "no winner recorded after {} steps", steps);
+}
+
+#[test]
+fn roll_phase_legal_action_is_roll_dice_only() {
+    use catan_engine::Engine;
+    let mut e = Engine::new(42);
+    while !matches!(e.state.phase, catan_engine::state::GamePhase::Roll) {
+        let legal = e.legal_actions();
+        assert!(!legal.is_empty(), "got stuck before reaching Roll");
+        e.step(legal[0]);
+    }
+    let legal = e.legal_actions();
+    assert_eq!(legal, vec![205], "Roll phase should expose only RollDice (id 205)");
 }

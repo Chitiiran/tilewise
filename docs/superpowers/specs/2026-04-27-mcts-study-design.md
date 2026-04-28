@@ -39,11 +39,13 @@ This is the bridge to the next project. Designing it now costs little; retrofitt
 | `seed` | int64 | Engine seed for this game |
 | `move_index` | int32 | 0-based index of this MCTS-decided move within the game |
 | `current_player` | int8 | The MCTS player making this move |
-| `legal_action_mask` | list<bool>[205] | Matches engine's action space |
-| `mcts_visit_counts` | list<int32>[205] | Raw root visit counts — the policy target |
+| `legal_action_mask` | list<bool>[206] | Matches engine's action space |
+| `mcts_visit_counts` | list<int32>[206] | Raw root visit counts — the policy target |
 | `action_taken` | int32 | The action MCTS played |
 | `mcts_root_value` | float32 | MCTS's value estimate at the root |
 | `schema_version` | int32 | Hardcoded constant, bumped on schema change |
+
+> **Note:** Schema width is **206** (Phase 0 added `Action::RollDice` at id 205, growing the action space from 205 → 206). Earlier drafts of this spec referenced 205; that value is wrong post-Phase-0. Plan 2 and downstream code use the constant `ACTION_SPACE_SIZE` rather than the literal so future bumps don't require chasing tables.
 
 ### Per-game row schema (`games.parquet`)
 
@@ -133,7 +135,7 @@ OpenSpiel algorithms (`MCTSBot`, `RandomBot`, future `AlphaZero`) consume `Catan
 - **`clone()`.** MCTS clones states heavily during simulation. Our `GameState` is `#[derive(Clone)]` and uses `Arc<Board>` so topology isn't copied. Need a PyO3 method `Engine.clone()` that returns a deep-copy `Engine`. Phase 0.
 - **`serialize()`.** OpenSpiel uses serialized state strings as transposition-table keys. Doesn't have to be human-readable — just stable and unique. Implementation: hex-encoded `(seed, action_history)`. Action history is tracked Python-side in the adapter; no engine change needed.
 - **`returns()`.** OpenSpiel expects `[r0, r1, r2, r3]`. Engine produces +1/-1 winner/losers; non-terminal returns `[0,0,0,0]`.
-- **Action space.** OpenSpiel wants a fixed `num_distinct_actions()`. We have 205. Engine's `legal_actions()` already returns IDs in this space.
+- **Action space.** OpenSpiel wants a fixed `num_distinct_actions()`. We have **206** (post-Phase-0; `RollDice` is id 205). Engine's `legal_actions()` already returns IDs in this space.
 
 **Risk:** OpenSpiel may have additional contract surface (`information_state_string`, `observation_tensor`, etc.) that some algorithms require. MCTSBot itself is forgiving — needs legal actions, apply, clone, returns, terminal, chance. We implement that subset and add to it only when a future algorithm demands it.
 

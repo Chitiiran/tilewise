@@ -38,6 +38,30 @@ impl PyEngine {
 
     fn current_player(&self) -> u8 { self.inner.state.current_player }
 
+    fn is_chance_pending(&self) -> bool {
+        self.inner.is_chance_pending()
+    }
+
+    fn chance_outcomes(&self) -> Vec<(u32, f64)> {
+        self.inner.chance_outcomes()
+    }
+
+    fn apply_chance_outcome(&mut self, value: u32) {
+        self.inner.apply_chance_outcome(value);
+    }
+
+    fn random_rollout_to_terminal(&mut self, rollout_seed: u64) -> [f32; 4] {
+        self.inner.random_rollout_to_terminal(rollout_seed)
+    }
+
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+
+    fn action_history(&self) -> Vec<u32> {
+        self.inner.action_history().to_vec()
+    }
+
     fn observation<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let viewer = self.inner.state.current_player;
         let obs = observation::build_observation(&self.inner.state, viewer);

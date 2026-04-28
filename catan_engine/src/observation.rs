@@ -13,7 +13,7 @@ pub struct Observation {
     pub vertex_features: Vec<f32>, // shape [54, F_VERT]
     pub edge_features: Vec<f32>,   // shape [72, F_EDGE]
     pub scalars: Vec<f32>,         // shape [N_SCALARS]
-    pub legal_mask: Vec<bool>,     // shape [205]
+    pub legal_mask: Vec<bool>,     // shape [ACTION_SPACE_SIZE]
 }
 
 pub fn build_observation(state: &GameState, viewer: u8) -> Observation {
@@ -84,7 +84,7 @@ pub fn build_observation(state: &GameState, viewer: u8) -> Observation {
     scalars[idx + phase_idx] = 1.0;
 
     let legal = crate::rules::legal_actions(state);
-    let mut legal_mask = vec![false; 205];
+    let mut legal_mask = vec![false; crate::actions::ACTION_SPACE_SIZE];
     for a in legal {
         legal_mask[crate::actions::encode(a) as usize] = true;
     }

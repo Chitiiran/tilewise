@@ -48,6 +48,19 @@ class CatanEnv:
     def is_terminal(self) -> bool:
         return self._engine.is_terminal()
 
+    # --- Chance-node API (pass-through to the Rust engine) -------------------
+    def is_chance_pending(self) -> bool:
+        return self._engine.is_chance_pending()
+
+    def chance_outcomes(self):
+        return self._engine.chance_outcomes()
+
+    def apply_chance_outcome(self, value: int) -> None:
+        self._engine.apply_chance_outcome(int(value))
+
+    def action_history(self):
+        return self._engine.action_history()
+
     def _observation(self):
         obs = self._engine.observation()
         return obs

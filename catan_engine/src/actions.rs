@@ -10,9 +10,10 @@ pub enum Action {
     MoveRobber(u8),      // hex 0..19
     Discard(Resource),
     EndTurn,
+    RollDice,
 }
 
-pub const ACTION_SPACE_SIZE: usize = 205;
+pub const ACTION_SPACE_SIZE: usize = 206;
 
 pub fn encode(action: Action) -> u32 {
     match action {
@@ -22,6 +23,7 @@ pub fn encode(action: Action) -> u32 {
         Action::MoveRobber(h) => 180 + h as u32,
         Action::Discard(r) => 199 + resource_index(r) as u32,
         Action::EndTurn => 204,
+        Action::RollDice => 205,
     }
 }
 
@@ -33,6 +35,7 @@ pub fn decode(id: u32) -> Option<Action> {
         180..=198 => Some(Action::MoveRobber((id - 180) as u8)),
         199..=203 => Some(Action::Discard(resource_from_index((id - 199) as u8))),
         204 => Some(Action::EndTurn),
+        205 => Some(Action::RollDice),
         _ => None,
     }
 }

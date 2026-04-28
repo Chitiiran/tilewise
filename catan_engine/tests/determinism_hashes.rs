@@ -27,10 +27,10 @@ fn regression_hashes_are_stable() {
     // the actual hash is printed so it can be copied into this array.
     // After that, any change that flips a hash is a flagged behavioral change.
     let expected = [
-        (0u64, 2500233521662213303u64),
-        (1u64, 6008536303551217146u64),
-        (42u64, 7621750633499351312u64),
-        (12345u64, 1621305810945553651u64),
+        (0u64, 12027201999712111377u64),
+        (1u64, 10837069565314412728u64),
+        (42u64, 1395959290750987514u64),
+        (12345u64, 1395959290750987514u64),
     ];
     for (seed, expected_hash) in expected {
         let actual = game_hash(seed);

@@ -4,6 +4,7 @@
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
+#[derive(Clone)]
 pub struct Rng {
     inner: SmallRng,
 }
