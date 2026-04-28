@@ -8,6 +8,7 @@ pub mod state;
 pub mod rules;
 pub mod rng;
 pub mod stats;
+pub mod observation;
 pub use engine::Engine;
 pub use board::{Board, Hex, Resource};
 
