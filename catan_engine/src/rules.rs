@@ -30,8 +30,18 @@ pub fn legal_actions(state: &GameState) -> Vec<Action> {
             }
             out
         }
-        crate::state::GamePhase::MoveRobber => vec![],     // filled in Task 19
-        crate::state::GamePhase::Steal { .. } => vec![],   // filled in Task 19
+        crate::state::GamePhase::MoveRobber => {
+            (0u8..19)
+                .filter(|&h| h != state.robber_hex)
+                .map(Action::MoveRobber)
+                .collect()
+        }
+        crate::state::GamePhase::Steal { from_options } => {
+            // Steal phase auto-resolves in apply; never exposed to caller.
+            // Tier 2+ may add an Action::ChooseStealTarget variant for true per-target choice.
+            let _ = from_options;
+            vec![]
+        }
         crate::state::GamePhase::Done { .. } => vec![],
     }
 }
@@ -218,6 +228,36 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
                 GamePhase::Discard { remaining: rem }
             };
         }
+        (GamePhase::MoveRobber, Action::MoveRobber(h)) => {
+            let from = state.robber_hex;
+            state.robber_hex = h;
+            events.push(GameEvent::RobberMoved {
+                player: state.current_player, from_hex: from, to_hex: h,
+            });
+            // Identify steal targets: opponents with buildings on this hex AND non-empty hand.
+            let board = state.board.clone();
+            let me = state.current_player;
+            let mut targets: Vec<u8> = Vec::new();
+            for &v in &board.hex_to_vertices[h as usize] {
+                let owner = state.settlements[v as usize].or(state.cities[v as usize]);
+                if let Some(p) = owner {
+                    if p != me && state.hands[p as usize].iter().sum::<u8>() > 0
+                        && !targets.contains(&p)
+                    {
+                        targets.push(p);
+                    }
+                }
+            }
+            if targets.is_empty() {
+                state.phase = GamePhase::Main;
+            } else {
+                // Auto-steal from first target (Tier 1 simplification — see plan).
+                let victim = targets[0];
+                let stolen = steal_random(state, victim, rng);
+                events.push(GameEvent::Robbed { from: victim, to: me, resource: stolen });
+                state.phase = GamePhase::Main;
+            }
+        }
         _ => {
             // Other transitions implemented in Tasks 13–20.
             let _ = rng;
@@ -342,4 +382,24 @@ fn check_win(state: &mut GameState, events: &mut Vec<GameEvent>) {
             return;
         }
     }
+}
+
+fn steal_random(state: &mut GameState, victim: u8, rng: &mut Rng) -> Option<Resource> {
+    use rand::Rng as _;
+    let total: u32 = state.hands[victim as usize].iter().map(|&x| x as u32).sum();
+    if total == 0 { return None; }
+    let pick = rng.inner().gen_range(0..total);
+    let mut acc = 0u32;
+    for ri in 0..5usize {
+        acc += state.hands[victim as usize][ri] as u32;
+        if pick < acc {
+            state.hands[victim as usize][ri] -= 1;
+            state.hands[state.current_player as usize][ri] += 1;
+            return Some(match ri {
+                0 => Resource::Wood, 1 => Resource::Brick, 2 => Resource::Sheep,
+                3 => Resource::Wheat, 4 => Resource::Ore, _ => unreachable!(),
+            });
+        }
+    }
+    None
 }
