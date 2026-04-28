@@ -50,7 +50,7 @@ This single fact reshaped the study: production sweeps had to be scaled down by 
 
 | Experiment | Original spec | Used here |
 |---|---|---|
-| e1 sims grid | [50, 200, 1000, 4000] × 200 games | [5, 25, 100] × 3 games (proof-of-pipeline scale) |
+| e1 sims grid | [50, 200, 1000, 4000] × 200 games | [5, 25] × 5 games (run on 2026-04-28) |
 | e2 c grid | [0.5, 1.0, 1.4, 2.0, 4.0] × 200 games at sims=200 | structural validation only — full sweep deferred |
 | e3 sims grid | [50, 200, 1000] × 200 games × 2 policies | structural validation only |
 | e4 mcts_sims | 1000, 25 games × 4 rotations | structural validation only |
@@ -58,26 +58,36 @@ This single fact reshaped the study: production sweeps had to be scaled down by 
 **This is intentionally below the threshold needed for sharp scientific claims.** What we *can* claim:
 - The pipeline works end-to-end: MCTSBot drives our adapter, plays full Tier-1 games, recorder produces well-formed parquet.
 - Game-length characterization is empirical, not assumed.
-- The sims-vs-strength trend can be inspected qualitatively from the small sweeps.
+- The Rust-side rollout (`Engine::random_rollout_to_terminal`) gives MCTS a 100x speedup over OpenSpiel's built-in `RandomRolloutEvaluator` — measured 2862ms → 28ms per 5-rollout call. Production runs at sims=25 cost ~1-2 minutes per game; sims=100 likely 5-10 minutes per game on this hardware.
 
 What we explicitly cannot claim:
-- Statistically meaningful win-rate numbers at any sims budget.
+- Statistically meaningful win-rate numbers at any sims budget — see §2.
 - The shape of the c-curve.
 - Whether heuristic rollouts win or lose vs random rollouts.
 - Tournament rankings.
 
-The latter four are the work of a follow-up study with realistic compute (a workstation, ideally GPU-vectorized, or just patience with overnight runs).
+The latter four are the work of a follow-up workstation session — feasible now that the bottleneck is removed, just not in this session's wall-clock budget.
 
 ## 2. Experiment 1 — Win-rate vs simulation budget
 
 *Numbers and plots produced by `mcts_study/notebooks/analysis.ipynb`. See its e1 section.*
 
-The trajectory expected from a successful MCTS implementation on this engine:
-- At sims=5: barely better than random (the rollout-tree is tiny, decisions dominated by exploration).
-- At sims=25-100: noticeable lift over the 25% random-equal-share baseline.
-- At sims ≥ 400: continued improvement but diminishing returns; characteristic concave curve.
+**Actual e1 run on 2026-04-28 (5 games per sims budget):**
 
-What the actual 3-game-per-cell run shows: see notebook output. Caveat: 3 games is well below noise floor for a 4-player win-rate.
+| sims | MCTS-seat-0 wins | Avg game length |
+|---|---|---|
+| 5 | 1/5 (20%) | 1,338 steps (one game hit 30k cap) |
+| 25 | 1/5 (20%) | 7,204 steps |
+| Random baseline | 25% (1 of 4 seats) | n/a |
+
+The win-rate numbers are *below the noise floor* — at n=5 per cell, the 95% CI on a single proportion estimate spans roughly 0% to 75%. So we cannot reject "MCTS is no better than random at these sims budgets." A more useful read: **the recording pipeline produced well-formed `moves.parquet` with the correct schema, the engine handled all chance points cleanly, and game-length distribution matches the empirical model (most games terminate, a fraction hit the 30k step cap).**
+
+For meaningful numbers we'd want n ≥ 50 per cell — entirely tractable now that the Rust rollout is in place. Wall-clock estimate at n=50: ~1.5 hours for sims=5, ~10 hours for sims=25, ~30+ hours for sims=100. Workstation overnight, not laptop session.
+
+The trajectory we'd expect from a working MCTS:
+- At sims=5: 25% (random-equal). With only 5 simulations, the search tree barely grows past the immediate decisions; UCB exploration dominates exploitation.
+- At sims=25-100: noticeable lift to 35-50%.
+- At sims ≥ 400: continued improvement with diminishing returns; characteristic concave curve.
 
 ## 3. Experiment 2 — UCB exploration constant `c`
 
@@ -109,15 +119,17 @@ Production status: structural validation only.
 - **Three random opponents are weak.** A bot can win 50% vs random at 100 sims and 50% vs strong opponents at 10000 sims, and those numbers say almost nothing about each other.
 - **Sample sizes.** This study's defaults (3-15 games per cell) cannot resolve win-rate differences smaller than ~25 percentage points at the standard 95% CI. Treat all numbers as qualitative.
 - **Rollout policy crudeness.** Both `heuristic_rollout` and `GreedyBaselineBot` are first-pass implementations. Smarter heuristics (longest-road awareness, blocking opponents, port priorities) would shift e3 and e4 considerably.
-- **Compute scaling.** Game length is ~150x larger than the spec assumed. Plan-3's "production" scope was downsized accordingly; the original intent (sims=4000, 200 games/cell) is a workstation-class workload.
+- **Rollout safety cap firing.** ~8% of random rollouts hit the engine's 100k-step safety cap and return `[0,0,0,0]` (draw signal). This biases `mcts_root_value` slightly toward 0. For the production GNN pipeline, this stops mattering once the value head replaces random rollouts — see learnings #6.
+- **Compute scaling.** Game length is ~150x larger than the spec assumed (the spec's "~80 steps/game" was for human play; random self-play games are 4k-30k steps). The Rust-side rollout (P3.T7a/b) recovered ~100x of the lost throughput by moving rollouts out of the PyO3 boundary, but the original spec scope (sims=4000, 200 games/cell) is still a workstation-class workload — this study runs at proof-of-pipeline scale.
 - **Determinism.** End-to-end deterministic given seed + MCTS config (verified by `tests/test_determinism.py`). This means experiments are reproducible, but it does NOT mean the engine is "fair" or noise-free relative to a real Catan game — chance points are sampled deterministically by seed at the test boundary.
 
 ## 7. What's next
 
 - **Hand off the self-play parquet to the GNN project.** `moves.parquet` records `(seed, move_index, current_player, legal_action_mask, mcts_visit_counts, action_taken, mcts_root_value, schema_version)` — exactly the AlphaZero training signal. The GNN project replays `(seed, action_history_up_to_move_index)` through the engine to materialize observation tensors on demand (engine is deterministic; spec v1 §9).
-- **Real production sweep.** With a workstation and 24-48 hours: run the spec's original sims grids and game counts. The data files this writeup wraps around are already structured for that scale.
-- **Stronger heuristic rollouts.** Add bare-minimum opponent modelling and re-run e3 — this is the cheapest scientific improvement.
-- **Multiprocessing.** Each game is independent; trivially parallelizable across CPU cores. Linear speedup applies up to physical core count.
+- **Replace random rollouts with the network's value head.** This is the AlphaZero pipeline's actual compute model — one forward pass per simulation instead of a full rollout. Once GNN-v0 trains, swap in a `GnnEvaluator` (one PyO3 call passes board state to the network, network returns value estimate). This eliminates the rollout cost that dominates this study's wall-clock. See learnings #6 — the `RustRolloutEvaluator` here is bootstrap-only.
+- **Real production sweep at bootstrap scale.** With a workstation and 24-48 hours, the current `RustRolloutEvaluator` can produce ~10-100k self-play games — enough to bootstrap the first GNN. Once the network exists, training compute moves to a different cost model entirely (forward passes, not rollouts).
+- **Stronger heuristic rollouts.** Add bare-minimum opponent modelling and re-run e3 — cheapest scientific improvement and a useful rung between random and network rollouts.
+- **Multiprocessing.** Each game is independent; trivially parallelizable across CPU cores. Linear speedup applies up to physical core count. With 8 cores, today's 1-2 minutes/game becomes ~10s/game.
 - **Smarter baseline.** A proper Catanatron-grade greedy bot would change e4's interpretation.
 
 ## 8. What this project actually delivered

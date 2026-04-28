@@ -44,6 +44,20 @@ WSL with a Linux home-fs venv (~/catan_mcts_venvs/mcts-study/) was the pragmatic
 
 **Carry-over rule:** when picking a third-party algorithm library, check Windows wheel availability *before* committing to it. If there isn't one, decide upfront whether WSL or a different library wins. Don't discover this in the middle of plan execution.
 
+## 6. Random rollouts are a bootstrap, not the production evaluator
+
+The slowness of MCTS on Catan is dominated by **random rollouts**: each MCTS simulation rolls a uniformly-random policy to terminal. With realistic chance sampling (post-Phase-0), random self-play games take 4,000-30,000 steps on Tier-1 — sometimes hitting a 100k-step safety cap because nobody is steering toward 10 VP.
+
+This shapes a tempting (wrong) conclusion: "MCTS is too slow for AlphaZero-style training on this engine." That conclusion misreads what the *production* AlphaZero pipeline does:
+
+- AlphaZero replaces random rollouts with the **value head** of the trained network. One forward pass per simulation, not a full rollout. ~1 ms on GPU.
+- Per-game cost goes from "thousands of state operations × hundreds of sims" to "hundreds of forward passes × hundreds of sims."
+- Game length under MCTS-with-network-evaluator drops dramatically because both sides play purposefully toward 10 VP. Empirical Catan numbers from human play are 50-150 turns; that's roughly the v1 spec's "~80 steps" estimate, which was wrong about *random* play but right about *real* play.
+
+So this study's `RustRolloutEvaluator` is **bootstrap-quality**: it generates the first batch of training data so the GNN has something to learn from. After GNN-v0 trains, a `GnnEvaluator` swaps in. The rollout-cost bottleneck stops mattering.
+
+**Carry-over rule:** when measuring an MCTS pipeline's compute cost, ask which phase the cost lives in. If it's the rollout phase, that cost is paid once during bootstrap and stops mattering after the first network. If it's the search phase, that's the AlphaZero per-step cost and it stays. Don't conflate the two.
+
 ---
 
 ## Three things I'd do differently next time
