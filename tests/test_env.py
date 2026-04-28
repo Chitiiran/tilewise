@@ -32,3 +32,25 @@ def test_observation_shapes():
     assert obs["vertex_features"].shape == (54, 7)
     assert obs["edge_features"].shape == (72, 6)
     assert obs["legal_mask"].shape == (205,)
+
+
+def test_replay_roundtrip(tmp_path):
+    import numpy as np
+    from catan_bot import Replay
+    rng = np.random.default_rng(7)
+    env = CatanEnv(seed=7)
+    actions = []
+    while not env.is_terminal():
+        mask = env.legal_mask()
+        legal_ids = np.flatnonzero(mask)
+        a = int(rng.choice(legal_ids))
+        env.step(a)
+        actions.append(a)
+    rep = Replay(schema_version=1, seed=7, actions=actions,
+                 engine_version="0.1.0", rules_tier=1)
+    p = tmp_path / "rep.json"
+    rep.save(p)
+    rep2 = Replay.load(p)
+    env2 = rep2.reconstruct()
+    assert env2.is_terminal()
+    assert env2.stats()["winner_player_id"] == env.stats()["winner_player_id"]
