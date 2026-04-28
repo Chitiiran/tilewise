@@ -1,4 +1,4 @@
-use catan_engine::Board;
+use catan_engine::board::Board;
 
 #[test]
 fn board_has_19_hexes() {
