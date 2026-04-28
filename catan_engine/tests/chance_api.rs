@@ -87,3 +87,48 @@ fn chance_outcomes_for_steal_are_uniform_over_victim_hand() {
     }
     panic!("no Steal phase reached in 200 seeds");
 }
+
+#[test]
+fn apply_chance_outcome_roll_advances_phase() {
+    use catan_engine::Engine;
+    use catan_engine::state::GamePhase;
+
+    let mut e = Engine::new(42);
+    while !matches!(e.state.phase, GamePhase::Roll) {
+        let legal = e.legal_actions();
+        e.step(legal[0]);
+    }
+    assert!(e.is_chance_pending());
+    e.apply_chance_outcome(8); // not a 7 → goes to Main
+    assert!(matches!(e.state.phase, GamePhase::Main));
+}
+
+#[test]
+fn apply_chance_outcome_steal_transfers_card_and_returns_to_main() {
+    use catan_engine::Engine;
+    use catan_engine::state::GamePhase;
+
+    for seed in 0..200u64 {
+        let mut e = Engine::new(seed);
+        for _ in 0..400 {
+            if e.is_terminal() { break; }
+            if let GamePhase::Steal { from_options } = &e.state.phase {
+                let victim = from_options[0] as usize;
+                let me = e.state.current_player as usize;
+                let victim_total_before: u8 = e.state.hands[victim].iter().sum();
+                let me_total_before: u8 = e.state.hands[me].iter().sum();
+                let outcomes = e.chance_outcomes();
+                let (chosen, _) = outcomes[0];
+                e.apply_chance_outcome(chosen);
+                assert!(matches!(e.state.phase, GamePhase::Main));
+                assert_eq!(e.state.hands[victim].iter().sum::<u8>(), victim_total_before - 1);
+                assert_eq!(e.state.hands[me].iter().sum::<u8>(), me_total_before + 1);
+                return;
+            }
+            let legal = e.legal_actions();
+            if legal.is_empty() { break; }
+            e.step(legal[0]);
+        }
+    }
+    panic!("no Steal phase reached in 200 seeds");
+}

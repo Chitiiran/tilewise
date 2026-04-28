@@ -147,29 +147,14 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
         (GamePhase::Roll, Action::RollDice) => {
             // Dedicated RollDice action — splits dice-roll out of EndTurn so
             // chance handling (Phase 1+) can target this transition explicitly.
+            // Both this rng-driven arm and the env-driven apply_chance_outcome path
+            // delegate to apply_dice_roll so post-roll behavior is single-sourced.
             use rand::Rng as _;
             let d1 = rng.inner().gen_range(1u8..=6);
             let d2 = rng.inner().gen_range(1u8..=6);
             let roll = d1 + d2;
-            events.push(GameEvent::DiceRolled { roll });
-            if roll == 7 {
-                // Discard + robber sub-flow handled in Tasks 18-19.
-                let mut remaining = [0u8; 4];
-                for p in 0..4usize {
-                    let total: u8 = state.hands[p].iter().sum();
-                    if total > 7 {
-                        remaining[p] = total / 2;
-                    }
-                }
-                state.phase = if remaining.iter().any(|&n| n > 0) {
-                    GamePhase::Discard { remaining }
-                } else {
-                    GamePhase::MoveRobber
-                };
-            } else {
-                produce_resources(state, roll, &mut events);
-                state.phase = GamePhase::Main;
-            }
+            let mut sub = apply_dice_roll(state, roll);
+            events.append(&mut sub);
         }
         (GamePhase::Main, Action::BuildSettlement(v)) => {
             let p = state.current_player;
@@ -381,23 +366,54 @@ fn check_win(state: &mut GameState, events: &mut Vec<GameEvent>) {
     }
 }
 
-#[allow(dead_code)] // Repurposed by Task 7 for apply_chance_outcome.
-fn steal_random(state: &mut GameState, victim: u8, rng: &mut Rng) -> Option<Resource> {
-    use rand::Rng as _;
-    let total: u32 = state.hands[victim as usize].iter().map(|&x| x as u32).sum();
-    if total == 0 { return None; }
-    let pick = rng.inner().gen_range(0..total);
-    let mut acc = 0u32;
-    for ri in 0..5usize {
-        acc += state.hands[victim as usize][ri] as u32;
-        if pick < acc {
-            state.hands[victim as usize][ri] -= 1;
-            state.hands[state.current_player as usize][ri] += 1;
-            return Some(match ri {
-                0 => Resource::Wood, 1 => Resource::Brick, 2 => Resource::Sheep,
-                3 => Resource::Wheat, 4 => Resource::Ore, _ => unreachable!(),
-            });
+/// Apply a specific dice roll value (used by both the rng-driven Action::RollDice path
+/// and the env-driven apply_chance_outcome path, so behavior is single-sourced).
+pub(crate) fn apply_dice_roll(state: &mut GameState, roll: u8) -> Vec<GameEvent> {
+    let mut events = Vec::new();
+    events.push(GameEvent::DiceRolled { roll });
+    if roll == 7 {
+        let mut remaining = [0u8; 4];
+        for p in 0..4usize {
+            let total: u8 = state.hands[p].iter().sum();
+            if total > 7 {
+                remaining[p] = total / 2;
+            }
         }
+        state.phase = if remaining.iter().any(|&n| n > 0) {
+            GamePhase::Discard { remaining }
+        } else {
+            GamePhase::MoveRobber
+        };
+    } else {
+        produce_resources(state, roll, &mut events);
+        state.phase = GamePhase::Main;
     }
-    None
+    events
+}
+
+/// Apply a specific steal: take `card_index`-th card from `victim`'s hand and give to current player.
+pub(crate) fn apply_steal(state: &mut GameState, victim: u8, card_index: u8) -> Vec<GameEvent> {
+    let mut events = Vec::new();
+    let me = state.current_player;
+    let mut acc = 0u8;
+    for ri in 0..5usize {
+        let count = state.hands[victim as usize][ri];
+        if card_index < acc + count {
+            state.hands[victim as usize][ri] -= 1;
+            state.hands[me as usize][ri] += 1;
+            let res = match ri {
+                0 => Resource::Wood,
+                1 => Resource::Brick,
+                2 => Resource::Sheep,
+                3 => Resource::Wheat,
+                4 => Resource::Ore,
+                _ => unreachable!(),
+            };
+            events.push(GameEvent::Robbed { from: victim, to: me, resource: Some(res) });
+            state.phase = GamePhase::Main;
+            return events;
+        }
+        acc += count;
+    }
+    panic!("card_index {card_index} out of range; victim hand sums to {acc}");
 }

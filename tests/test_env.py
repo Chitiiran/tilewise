@@ -7,7 +7,7 @@ def test_action_space_size_constant():
     assert ACTION_SPACE_SIZE == 206  # Phase-0 added Action::RollDice (id 205)
 
 
-@pytest.mark.skip(reason="re-enable after Task 7 adds apply_chance_outcome")
+@pytest.mark.skip(reason="re-enable after Task P1.T9 exposes chance API to Python")
 def test_random_self_play_completes():
     rng = np.random.default_rng(42)
     env = CatanEnv(seed=42)
@@ -36,7 +36,7 @@ def test_observation_shapes():
     assert obs["legal_mask"].shape == (ACTION_SPACE_SIZE,)
 
 
-@pytest.mark.skip(reason="re-enable after Task 7 adds apply_chance_outcome")
+@pytest.mark.skip(reason="re-enable after Task P1.T9 exposes chance API to Python")
 def test_replay_roundtrip(tmp_path):
     import numpy as np
     from catan_bot import Replay

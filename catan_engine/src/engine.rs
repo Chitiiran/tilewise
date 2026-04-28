@@ -112,6 +112,47 @@ impl Engine {
         }
     }
 
+    /// Drive a chance node by supplying the outcome value (one of those returned by `chance_outcomes()`).
+    /// Records the resulting events in the event log just like `step()` does.
+    /// Panics if not at a chance node, or if `value` is not a valid outcome for the current phase.
+    pub fn apply_chance_outcome(&mut self, value: u32) {
+        use crate::state::GamePhase;
+        let evs = match self.state.phase.clone() {
+            GamePhase::Roll => {
+                let roll = u8::try_from(value).expect("dice roll out of u8 range");
+                assert!((2..=12).contains(&roll), "invalid dice sum {roll}");
+                crate::rules::apply_dice_roll(&mut self.state, roll)
+            }
+            GamePhase::Steal { from_options } => {
+                let victim = (value / 256) as u8;
+                let card_index = (value % 256) as u8;
+                assert_eq!(
+                    victim, from_options[0],
+                    "value's victim {} != from_options[0] {} — Tier 1 steals only from first option",
+                    victim, from_options[0],
+                );
+                crate::rules::apply_steal(&mut self.state, victim, card_index)
+            }
+            _ => panic!("apply_chance_outcome() called outside a chance node"),
+        };
+        for e in &evs {
+            self.stats.fold_event(e);
+            self.events.push(*e);
+        }
+        // Update cards_in_hand_max, mirroring step()'s post-event bookkeeping.
+        for p in 0..4 {
+            let total: u32 = self.state.hands[p].iter().map(|&x| x as u32).sum();
+            if total > self.stats.players[p].cards_in_hand_max {
+                self.stats.players[p].cards_in_hand_max = total;
+            }
+        }
+        if self.state.is_terminal() {
+            for p in 0..4 {
+                self.stats.players[p].vp_final = self.state.vp[p];
+            }
+        }
+    }
+
     pub fn event_log(&self) -> &[GameEvent] {
         self.events.as_slice()
     }
