@@ -118,3 +118,26 @@ fn end_turn_advances_player_and_returns_to_roll() {
     assert_eq!(state.current_player, 1);
     assert!(matches!(state.phase, GamePhase::Roll));
 }
+
+#[test]
+fn stats_track_basic_game_progress() {
+    use rand::rngs::SmallRng;
+    use rand::{Rng as _, SeedableRng};
+    let mut engine = catan_engine::Engine::new(42);
+    let mut policy_rng = SmallRng::seed_from_u64(0xC47A1B07_u64);
+    let mut steps = 0;
+    while !engine.is_terminal() {
+        let legal = engine.legal_actions();
+        if legal.is_empty() { break; }
+        let idx = policy_rng.gen_range(0..legal.len());
+        engine.step(legal[idx]);
+        steps += 1;
+        if steps > 5000 { break; }
+    }
+    let s = engine.stats();
+    assert_eq!(s.schema_version, catan_engine::stats::STATS_SCHEMA_VERSION);
+    assert!(s.turns_played > 0, "no turns recorded");
+    let total_dice: u32 = s.dice_histogram.iter().sum::<u32>() + s.seven_count;
+    assert_eq!(total_dice as u32, s.turns_played, "dice histogram + sevens != turns");
+    assert!(s.winner_player_id >= 0, "no winner recorded after {} steps", steps);
+}

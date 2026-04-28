@@ -6,12 +6,14 @@ use crate::events::{EventLog, GameEvent};
 use crate::rng::Rng;
 use crate::rules::{apply, legal_actions};
 use crate::state::GameState;
+use crate::stats::GameStats;
 use std::sync::Arc;
 
 pub struct Engine {
     pub state: GameState,
     pub rng: Rng,
     pub events: EventLog,
+    pub stats: GameStats,
 }
 
 impl Engine {
@@ -21,6 +23,7 @@ impl Engine {
             state: GameState::new(board),
             rng: Rng::from_seed(seed),
             events: EventLog::new(),
+            stats: GameStats::new(),
         }
     }
 
@@ -34,8 +37,22 @@ impl Engine {
     pub fn step(&mut self, action_id: u32) {
         let action = decode(action_id).expect("invalid action ID");
         let evs = apply(&mut self.state, action, &mut self.rng);
-        for e in evs {
-            self.events.push(e);
+        for e in &evs {
+            self.stats.fold_event(e);
+            self.events.push(*e);
+        }
+        // Update cards_in_hand_max
+        for p in 0..4 {
+            let total: u32 = self.state.hands[p].iter().map(|&x| x as u32).sum();
+            if total > self.stats.players[p].cards_in_hand_max {
+                self.stats.players[p].cards_in_hand_max = total;
+            }
+        }
+        // Lock vp_final into stats once the game ends
+        if self.state.is_terminal() {
+            for p in 0..4 {
+                self.stats.players[p].vp_final = self.state.vp[p];
+            }
         }
     }
 
@@ -45,5 +62,9 @@ impl Engine {
 
     pub fn event_log(&self) -> &[GameEvent] {
         self.events.as_slice()
+    }
+
+    pub fn stats(&self) -> &GameStats {
+        &self.stats
     }
 }
