@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from ..adapter import CatanGame
 from ..bots import heuristic_rollout
+from ..evaluator import RustRolloutEvaluator
 from ..recorder import SelfPlayRecorder
 from .common import make_run_dir, play_one_game
 
@@ -90,8 +91,12 @@ def main(
                 chance_rng = random.Random(seed)
                 rng = np.random.default_rng(seed)
                 if policy_name == "random":
-                    evaluator = os_mcts.RandomRolloutEvaluator(n_rollouts=1, random_state=rng)
+                    # Rust-side rollout — see RustRolloutEvaluator docstring.
+                    evaluator = RustRolloutEvaluator(n_rollouts=1, base_seed=seed)
                 else:
+                    # Heuristic policy is intentionally Python-side: it's the
+                    # comparison baseline against random rollouts. Speed parity
+                    # would mask the very thing we're measuring.
                     evaluator = _HeuristicEvaluator(n_rollouts=1, rng=random.Random(seed))
                 mcts_bot = _bot(game, sims=sims, evaluator=evaluator, seed=seed)
                 bots = {0: mcts_bot, 1: _RandomBot(seed+1), 2: _RandomBot(seed+2), 3: _RandomBot(seed+3)}

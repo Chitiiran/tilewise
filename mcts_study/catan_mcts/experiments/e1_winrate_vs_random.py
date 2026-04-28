@@ -10,13 +10,16 @@ from open_spiel.python.algorithms import mcts as os_mcts
 from tqdm import tqdm
 
 from ..adapter import CatanGame
+from ..evaluator import RustRolloutEvaluator
 from ..recorder import SelfPlayRecorder
 from .common import make_run_dir, play_one_game
 
 
 def _build_mcts_bot(game, sims: int, seed: int):
     rng = np.random.default_rng(seed)
-    evaluator = os_mcts.RandomRolloutEvaluator(n_rollouts=1, random_state=rng)
+    # RustRolloutEvaluator pushes the per-simulation rollout into Rust
+    # (~100x faster than os_mcts.RandomRolloutEvaluator on Tier-1 games).
+    evaluator = RustRolloutEvaluator(n_rollouts=1, base_seed=seed)
     return os_mcts.MCTSBot(
         game=game, uct_c=1.4, max_simulations=sims,
         evaluator=evaluator, solve=False, random_state=rng,

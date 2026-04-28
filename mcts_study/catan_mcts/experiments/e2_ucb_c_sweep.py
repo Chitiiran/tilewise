@@ -10,6 +10,7 @@ from open_spiel.python.algorithms import mcts as os_mcts
 from tqdm import tqdm
 
 from ..adapter import CatanGame
+from ..evaluator import RustRolloutEvaluator
 from ..recorder import SelfPlayRecorder
 from .common import make_run_dir, play_one_game
 
@@ -24,7 +25,7 @@ class _RandomBot:
 
 def _build_mcts_bot(game, c: float, sims: int, seed: int):
     rng = np.random.default_rng(seed)
-    evaluator = os_mcts.RandomRolloutEvaluator(n_rollouts=1, random_state=rng)
+    evaluator = RustRolloutEvaluator(n_rollouts=1, base_seed=seed)
     return os_mcts.MCTSBot(
         game=game, uct_c=c, max_simulations=sims,
         evaluator=evaluator, solve=False, random_state=rng,
