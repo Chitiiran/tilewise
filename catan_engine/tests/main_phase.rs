@@ -137,7 +137,14 @@ fn stats_track_basic_game_progress() {
     let s = engine.stats();
     assert_eq!(s.schema_version, catan_engine::stats::STATS_SCHEMA_VERSION);
     assert!(s.turns_played > 0, "no turns recorded");
+    // A game ending mid-turn (winning build before EndTurn) leaves one extra
+    // DiceRolled with no matching TurnEnded — so total_dice can be turns_played
+    // or turns_played + 1.
     let total_dice: u32 = s.dice_histogram.iter().sum::<u32>() + s.seven_count;
-    assert_eq!(total_dice as u32, s.turns_played, "dice histogram + sevens != turns");
+    assert!(
+        total_dice == s.turns_played || total_dice == s.turns_played + 1,
+        "dice histogram + sevens ({}) should equal turns ({}) or turns+1",
+        total_dice, s.turns_played
+    );
     assert!(s.winner_player_id >= 0, "no winner recorded after {} steps", steps);
 }
