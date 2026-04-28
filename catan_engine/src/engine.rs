@@ -9,11 +9,13 @@ use crate::state::GameState;
 use crate::stats::GameStats;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Engine {
     pub state: GameState,
     pub rng: Rng,
     pub events: EventLog,
     pub stats: GameStats,
+    pub history: Vec<u32>,
 }
 
 impl Engine {
@@ -24,6 +26,7 @@ impl Engine {
             rng: Rng::from_seed(seed),
             events: EventLog::new(),
             stats: GameStats::new(),
+            history: Vec::new(),
         }
     }
 
@@ -36,6 +39,7 @@ impl Engine {
 
     pub fn step(&mut self, action_id: u32) {
         let action = decode(action_id).expect("invalid action ID");
+        self.history.push(action_id);
         let evs = apply(&mut self.state, action, &mut self.rng);
         self.record_events(&evs);
     }
@@ -126,6 +130,7 @@ impl Engine {
             GamePhase::Roll => {
                 let roll = u8::try_from(value).expect("dice roll out of u8 range");
                 assert!((2..=12).contains(&roll), "invalid dice sum {roll}");
+                self.history.push(0x8000_0000 | value);
                 crate::rules::apply_dice_roll(&mut self.state, roll)
             }
             GamePhase::Steal { from_options } => {
@@ -136,6 +141,7 @@ impl Engine {
                     "value's victim {} != from_options[0] {} — Tier 1 steals only from first option",
                     victim, from_options[0],
                 );
+                self.history.push(0x8000_0000 | value);
                 crate::rules::apply_steal(&mut self.state, victim, card_index)
             }
             _ => panic!("apply_chance_outcome() called outside a chance node"),
@@ -149,5 +155,9 @@ impl Engine {
 
     pub fn stats(&self) -> &GameStats {
         &self.stats
+    }
+
+    pub fn action_history(&self) -> &[u32] {
+        &self.history
     }
 }

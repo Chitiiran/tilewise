@@ -16,6 +16,7 @@ pub enum GameEvent {
     GameOver          { winner: u8 },
 }
 
+#[derive(Clone)]
 pub struct EventLog {
     events: Vec<GameEvent>,
 }

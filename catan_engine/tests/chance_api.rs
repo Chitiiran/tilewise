@@ -89,6 +89,29 @@ fn chance_outcomes_for_steal_are_uniform_over_victim_hand() {
 }
 
 #[test]
+fn clone_is_independent() {
+    use catan_engine::Engine;
+    let mut a = Engine::new(42);
+    a.step(a.legal_actions()[0]);
+    let mut b = a.clone();
+    let phase_before = format!("{:?}", a.state.phase);
+    b.step(b.legal_actions()[0]);
+    let phase_after_a = format!("{:?}", a.state.phase);
+    assert_eq!(phase_before, phase_after_a, "stepping the clone must not affect the original");
+}
+
+#[test]
+fn action_history_records_steps() {
+    use catan_engine::Engine;
+    let mut e = Engine::new(42);
+    let a0 = e.legal_actions()[0];
+    e.step(a0);
+    let a1 = e.legal_actions()[0];
+    e.step(a1);
+    assert_eq!(e.action_history(), &[a0, a1]);
+}
+
+#[test]
 fn apply_chance_outcome_roll_advances_phase() {
     use catan_engine::Engine;
     use catan_engine::state::GamePhase;
