@@ -1,26 +1,49 @@
-//! Top-level orchestrator. Stub for now — fleshed out across Phases 2–5.
+//! Top-level orchestrator.
+
+use crate::actions::decode;
+use crate::board::Board;
+use crate::events::{EventLog, GameEvent};
+use crate::rng::Rng;
+use crate::rules::{apply, legal_actions};
+use crate::state::GameState;
+use std::sync::Arc;
 
 pub struct Engine {
-    _seed: u64,
+    pub state: GameState,
+    pub rng: Rng,
+    pub events: EventLog,
 }
 
 impl Engine {
     pub fn new(seed: u64) -> Self {
-        Self { _seed: seed }
-    }
-
-    pub fn is_terminal(&self) -> bool {
-        // Stub: always true so smoke test "completes" trivially.
-        // Will be replaced by real terminal check in Phase 5.
-        true
+        let board = Arc::new(Board::standard());
+        Self {
+            state: GameState::new(board),
+            rng: Rng::from_seed(seed),
+            events: EventLog::new(),
+        }
     }
 
     pub fn legal_actions(&self) -> Vec<u32> {
-        // Stub: empty. Smoke test will skip the inner loop because is_terminal=true.
-        vec![]
+        legal_actions(&self.state)
+            .into_iter()
+            .map(crate::actions::encode)
+            .collect()
     }
 
-    pub fn step(&mut self, _action: u32) {
-        // Stub.
+    pub fn step(&mut self, action_id: u32) {
+        let action = decode(action_id).expect("invalid action ID");
+        let evs = apply(&mut self.state, action, &mut self.rng);
+        for e in evs {
+            self.events.push(e);
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.state.is_terminal()
+    }
+
+    pub fn event_log(&self) -> &[GameEvent] {
+        self.events.as_slice()
     }
 }
