@@ -67,6 +67,51 @@ impl Engine {
             || matches!(self.state.phase, crate::state::GamePhase::Steal { .. })
     }
 
+    /// Discrete chance outcomes at the current state. Each entry is `(outcome_value, probability)`.
+    ///
+    /// Outcome semantics:
+    ///   - In `Roll` phase: outcome_value is the dice sum, 2..=12.
+    ///   - In `Steal` phase: outcome_value packs `(victim_index_in_from_options, card_index_in_victim_hand)`
+    ///     as `victim * 256 + card_index`. The card_index is a flat index 0..total_cards into the victim's
+    ///     hand: 0..hand[wood], hand[wood]..hand[wood]+hand[brick], etc. This matches the offset arithmetic
+    ///     in `apply_chance_outcome`.
+    ///
+    /// Panics if not at a chance node.
+    pub fn chance_outcomes(&self) -> Vec<(u32, f64)> {
+        use crate::state::GamePhase;
+        match &self.state.phase {
+            GamePhase::Roll => {
+                // 2d6 distribution: counts of (d1+d2) for d1,d2 in 1..=6.
+                let mut counts = [0u32; 13]; // index = sum
+                for d1 in 1..=6 {
+                    for d2 in 1..=6 {
+                        counts[d1 + d2] += 1;
+                    }
+                }
+                let mut out = Vec::with_capacity(11);
+                for s in 2..=12u32 {
+                    out.push((s, counts[s as usize] as f64 / 36.0));
+                }
+                out
+            }
+            GamePhase::Steal { from_options } => {
+                // For Tier 1 we steal from the FIRST victim in from_options (matches old behavior).
+                // Each card in the victim's hand is an equally likely outcome.
+                let victim = from_options[0];
+                let hand = &self.state.hands[victim as usize];
+                let total: u32 = hand.iter().map(|&x| x as u32).sum();
+                assert!(total > 0, "Steal phase entered with empty victim hand");
+                let mut out = Vec::with_capacity(total as usize);
+                let p = 1.0 / total as f64;
+                for card_index in 0..total {
+                    out.push(((victim as u32) * 256 + card_index, p));
+                }
+                out
+            }
+            _ => panic!("chance_outcomes() called outside a chance node"),
+        }
+    }
+
     pub fn event_log(&self) -> &[GameEvent] {
         self.events.as_slice()
     }
