@@ -60,6 +60,13 @@ impl Engine {
         self.state.is_terminal()
     }
 
+    /// Returns true when the next action must come from the environment (dice / steal),
+    /// not from a player. Used by OpenSpiel chance-node modeling.
+    pub fn is_chance_pending(&self) -> bool {
+        matches!(self.state.phase, crate::state::GamePhase::Roll)
+            || matches!(self.state.phase, crate::state::GamePhase::Steal { .. })
+    }
+
     pub fn event_log(&self) -> &[GameEvent] {
         self.events.as_slice()
     }
