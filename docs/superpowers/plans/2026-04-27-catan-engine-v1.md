@@ -3303,3 +3303,168 @@ After Task 30, validate the full success criteria from spec §15:
   git tag v0.1.0
   git push --tags
   ```
+
+---
+
+# Post-execution: defects, gotchas, and findings
+
+This section was added after the plan was executed. It captures every plan defect we patched, every "gotcha" the implementer subagents hit, and concrete findings from the run. Future re-executions of this plan (or a similar one for Tier 2) should incorporate these fixes upstream.
+
+## Plan defects (corrected during execution)
+
+### D1 — Setup-2 vertices `[30, 38, 46, 50]` violate the distance rule (Tasks 14, 15)
+
+**Defect:** The plan used `s2 = [30u8, 38, 46, 50]` as the second-round setup placements in test fixtures. Under our canonical numbering tables (Task 6), vertex 30 is adjacent to vertex 24 (in `s1`), and vertex 46 is adjacent to vertex 50 (within `s2` itself). Both violate Catan's distance rule, so the test setup itself was illegal.
+
+**Fix:** Swapped to `s2 = [9u8, 17, 25, 28]` — controller-verified pairwise non-adjacent, AND each vertex touches 3 resource hexes (rich production signal for the yield assertion).
+
+**Lesson:** When a plan hardcodes specific vertex IDs, validate them against the geometry numbering BEFORE committing to the plan. A small Python script reading the geometry-tables reference catches this in seconds.
+
+### D2 — Inline `apply(&mut state, ..., state.board.vertex_to_edges[...][0])` borrow conflict (Task 14, 15)
+
+**Defect:** Several plan-spec'd test snippets passed `state.board.vertex_to_edges[v as usize][0]` inline as an argument to `apply(&mut state, ...)`. This requires both `&state` (for the indexing) and `&mut state` simultaneously — Rust borrow checker rejects.
+
+**Fix:** Extract the edge to a local: `let e = state.board.vertex_to_edges[v as usize][0]; apply(&mut state, Action::BuildRoad(e), &mut rng);`
+
+**Lesson:** When writing Rust test code in a plan, mentally trace the borrow lifetimes. Inline subexpressions touching the same struct as `&mut self` won't compile.
+
+### D3 — Task 16 `ready_to_roll()` fixture has no Main-phase build options (Task 16)
+
+**Defect:** Task 16's tests assumed `ready_to_roll()` produces a state where player 0 has at least one Main-phase-legal settlement spot. Under our geometry, player 0's setup-phase road endpoints (vertex 3 from setup-1 vertex 0, vertex 22 from setup-2 vertex 28) are both blocked by the distance rule (adjacent to existing settlements). So *no* vertex was simultaneously road-adjacent for player 0 AND distance-rule-legal.
+
+**Fix:** Implementer extended `ready_to_roll()` to add an extra player-0 road on edge 6 (vertex 3 → vertex 7). Vertex 7 is empty and not adjacent to any existing settlement, becoming a legal Main-phase settlement target. Comment in code explains why.
+
+**Lesson:** When a fixture is shared across many tests, validate that it actually exercises the cases the tests need. The plan should have either picked different `s1`/`s2` vertices that left more main-phase options open, or explicitly added the extra road in the fixture from the start.
+
+### D4 — `EndTurn` first in `legal_actions_main` causes infinite loop in Task 20 (Tasks 16, 20)
+
+**Defect:** `legal_actions_main` was specified as `let mut out = vec![Action::EndTurn]; ...` — putting `EndTurn` at index 0. The Task 20 smoke test's deterministic-greedy `legal[0]` policy then *always* picked `EndTurn` in Main phase, never building anything. Result: infinite Roll/EndTurn loop, all 4 players stuck at 2 VP from setup, never reaching 10 VP. Game runs 5000 steps without terminating.
+
+**Fix (committed as `9eae485`):** Reorder to append `EndTurn` LAST, after all build options. Greedy `legal[0]` then becomes a build-greedy heuristic that does progress the game. Plus, switched the smoke test from `legal[0]` to seeded-random selection (`SmallRng::seed_from_u64(0xC47A1B07)`) for more representative play.
+
+**Lesson:** Action ordering inside `legal_actions` is a design choice that affects every greedy/random policy that consumes it. The plan should have specified ordering explicitly. When in doubt, "default action" (EndTurn) belongs LAST so that "pick first legal" is a reasonable baseline.
+
+### D5 — `total_dice == turns_played` strict assertion fails when game ends mid-turn (Task 21)
+
+**Defect:** Stats sanity test asserted `total_dice == turns_played`, expecting one DiceRolled per TurnEnded. But a winning build mid-turn (settlement or city completing 10 VP) emits `GameOver` and skips the trailing `TurnEnded`. So `total_dice` is `turns_played + 1` in the common case.
+
+**Fix (committed as `3059e92`):** Relax assertion to `total_dice == turns_played || total_dice == turns_played + 1`.
+
+**Lesson:** "End of turn" is not synonymous with "end of game" in Catan. Any invariant that ties events 1:1 needs to account for the game-ending case where the trailing event is suppressed.
+
+### D6 — `prop_assert_eq!` doesn't support implicit format capture (Task 29)
+
+**Defect:** Plan-spec'd code used `prop_assert_eq!(in_hands + bank, 19u32, "resource {r} bookkeeping broken")` with implicit `{r}` capture. Doesn't compile — `prop_assert_eq!`'s macro expansion (through inner `concat!`) blocks implicit capture across macro boundaries.
+
+**Fix:** Use positional `{}` and pass `r` explicitly: `prop_assert_eq!(..., "resource {} bookkeeping broken", r)`.
+
+**Lesson:** Implicit format capture (Rust 2021 edition feature) doesn't always survive macro expansion. When a format string lives inside another macro's argument, prefer positional `{}` + explicit args.
+
+### D7 — Task 25 removed `pub use board::{Board, Hex, Resource}` re-export, breaking `geometry.rs` (Task 25)
+
+**Defect:** The plan's Task 25 lib.rs replacement omitted the existing `pub use board::{Board, Hex, Resource};` re-export. Controller (in dispatch) claimed "tests already use `board::` paths" — partially wrong. `tests/geometry.rs` was using the short `catan_engine::Board` path, so it broke compilation.
+
+**Fix (bundled into `9012cf3`):** One-line import change in `geometry.rs` to `use catan_engine::board::Board;`.
+
+**Lesson:** When removing re-exports, grep ALL test files (not just source) for short-path usage. `grep -rn "catan_engine::\(Board\|Hex\|Resource\)" --include="*.rs"` would have caught this in advance.
+
+## Gotchas (one-time, recurring, environmental)
+
+### G1 — maturin needs `manifest-path` for workspace projects
+
+**Symptom:** Running `maturin develop` from repo root in a Cargo *workspace* (root has `[workspace]` only, no `[package]`) fails with "missing field 'package'".
+
+**Fix (committed as `b0f0dbd`, applied during Task 2):** Add `manifest-path = "catan_engine/Cargo.toml"` to `[tool.maturin]` in `pyproject.toml`. Then plain `maturin develop` from repo root works.
+
+### G2 — Cargo `[[bench]]` declaration requires the file to exist or build fails
+
+**Symptom:** Adding `[[bench]] name = "throughput"` to `Cargo.toml` (Task 1) without creating `benches/throughput.rs` makes `cargo build` refuse to parse the manifest.
+
+**Fix (applied during Task 2):** Drop a placeholder `fn main() {}` into `benches/throughput.rs` with a comment explaining why. Real benchmark lands in Task 30.
+
+### G3 — Windows extension-module artifacts (`.pyd`, `.pdb`) need `.gitignore`
+
+**Symptom:** `maturin develop` on Windows drops `_engine.cp312-win_amd64.pyd` and `catan_engine.pdb` into `python/catan_bot/` next to the source. Without `.gitignore` rules, `git add python/` would silently include them.
+
+**Fix (applied during Task 2):** Add `*.pyd` and `*.pdb` to `.gitignore`.
+
+### G4 — `Resource as usize` requires `#[repr(u8)]` on the enum
+
+**Symptom:** Casting `Resource::Wood as usize` is technically defined for any `enum`, but to guarantee `Wood=0, Brick=1, ..., Ore=4` matches our array indexing assumption, the enum needs `#[repr(u8)]` with explicit discriminants.
+
+**Fix (applied during Task 14):** Annotate `Resource` with `#[repr(u8)]` and explicit `= 0`, `= 1`, etc. Document that other code (`state.hands[player][resource as usize]`, `state.bank[resource as usize]`) depends on this layout.
+
+### G5 — Mixing `&mut state` and `&state.board` in same expression breaks borrow check
+
+**Symptom:** `produce_resources` and `Setup2`'s starting-resource yield need to walk `state.board.hex_to_vertices[h]` while mutating `state.bank` and `state.hands`. The borrow checker won't allow `&state` (for board) and `&mut state` (for bank/hands) at the same time.
+
+**Fix (used throughout `rules.rs`):** `let board = state.board.clone(); for &v in &board.vertex_to_hexes[...] { state.hands[...] += 1; }`. The `Arc::clone` is essentially free (just a refcount bump) and the locally-bound `board` decouples the borrows.
+
+### G6 — Greedy `legal[0]` policy can degenerate but doesn't loop infinitely after D4 fix
+
+**Finding:** With `EndTurn` appended LAST in `legal_actions_main`, greedy `legal[0]` always picks the lowest-vertex build option. This is "build greedily" — the player keeps building roads to nowhere or settlements at the lowest vertex they can afford. It DOES terminate (verified across seeds 0, 1, 2, 42, 12345 in Task 22, taking 800-1400 steps). Random policy terminates faster (seeded-random takes ~1300 steps with Rust RNG, ~2800 with numpy RNG seed 42).
+
+### G7 — Bench placeholder file documenting purpose
+
+**Symptom:** A future maintainer might delete `benches/throughput.rs` thinking it's an empty file.
+
+**Fix (applied during Task 2 review):** Add a comment block explaining "Placeholder required by [[bench]] entry in Cargo.toml (Task 1). Real benchmarks land in Task 30."
+
+## Findings from execution
+
+### F1 — Engine throughput is ~500 games/sec, not 10,000
+
+**Measured (Task 30):** ~500 games/sec single-threaded on AMD Ryzen 5 5600H, ~2 ms/game. **20× under the spec's 10k target.**
+
+**Likely culprits (in priority order, untested):**
+1. `legal_actions()` allocates a fresh `Vec<Action>` (~205 entries possible) on every step — for ~1300 steps/game, that's ~1300 vec allocations per game.
+2. `Arc<Board>` clones inside `produce_resources` and `Setup2` arms of `apply` — cheap individually, but ~80 dice rolls/game × clone = noise.
+3. Possible: observation builder running on every step (Task 24) even though the bench doesn't call it. Worth verifying with profiling.
+
+**Recommended next step:** Profile with `samply record --` or `cargo flamegraph --bench throughput` BEFORE optimizing — measure first.
+
+### F2 — Property tests run extremely fast (1024 cases in ~80ms)
+
+Suggests the engine itself is fast per-step; the per-game overhead is what's killing throughput. This is consistent with Vec-allocation suspicion — many small games (proptest cases truncate at 1000 random choices, often terminating much earlier) amortize allocation differently than one ~1300-step game.
+
+### F3 — Determinism property holds across all measured seeds
+
+Same `(engine_seed, action_sequence) → identical event log + stats`. Verified in Tasks 22, 23 (4 fixed-seed regression hashes) and Task 28 (Python replay round-trip). The engine is fully deterministic and replays reconstruct exactly.
+
+### F4 — Game telemetry from random self-play
+
+| Policy | Engine seed | Policy seed | Steps | Turns | Winner | Notes |
+|---|---|---|---|---|---|---|
+| Rust seeded-random | 42 | 0xC47A1B07 | 1319 | 333 | Player 1 | Rust smoke test (Task 20) |
+| Python numpy random | 42 | 42 | 2812 | 704 | Player 0 | Python integration (Task 27) |
+| Greedy `legal[0]` | 42 | — | 1374 | 397 | (terminated) | Determinism test (Task 22) |
+| Greedy `legal[0]` | 1 | — | 1050 | 297 | (terminated) | |
+| Greedy `legal[0]` | 2 | — | 849 | 233 | (terminated) | |
+
+Seven-count from the 1319-step game: **59 sevens** out of 333 turns ≈ 17.7%, very close to the theoretical 16.7% probability of rolling 7 with 2d6. Engine RNG behaves correctly.
+
+### F5 — Unused `Steal { from_options }` GamePhase variant
+
+The plan reserved `GamePhase::Steal { from_options: Vec<u8> }` for future per-target steal choice (Tier 2+). In Tier 1 we auto-resolve steal during `MoveRobber`'s apply arm — the game never actually enters `Steal` phase. The variant is exhaustively matched in `legal_actions` (returns `vec![]` defensively), and the compiler doesn't complain. Keeping it makes the eventual Tier 2 extension a one-arm change.
+
+### F6 — Stats `winner_player_id` is `i8` (signed), not `u8`
+
+Allows `-1` to mean "no winner yet / game unfinished." Matters for replay-loading code (e.g. analyzing stats from in-progress games or interrupted training runs).
+
+### F7 — Spec deviation noted in plan: 2D grid observation view skipped
+
+Plan explicitly defers the 11×11 grid view (spec §5.2). Only graph view + scalars are implemented. Adding `build_grid_observation()` later in `observation.rs` is non-breaking — different function name, same module.
+
+### F8 — Tier 2 readiness: `GameStats` schema is versioned
+
+`schema_version: u32 = 1` field on `GameStats`. Tier 2 fields (dev cards, longest road, largest army) can be added without bumping the version IF we reserve their slots now. We did NOT pre-allocate those fields (would have been over-engineering for v1). When Tier 2 adds them, bump to `schema_version = 2` and update replay loaders.
+
+## Recommendations for future plans
+
+1. **Cross-validate hardcoded vertex/hex IDs** against the geometry tables before locking the plan. A 5-line Python script catches D1.
+2. **Spec action ordering explicitly** in `legal_actions_*`. Default-action-last (D4) is a reasonable convention.
+3. **When a fixture is shared across many tests, write the assertion that proves the fixture is usable** — would have caught D3.
+4. **Avoid implicit format capture in macro arguments** — D6.
+5. **Build a perf measurement task BEFORE the perf target** — landing at 500/sec when targeting 10k means there's a missing "characterize cost of legal_actions" step before "optimize."
+6. **For deterministic-greedy test policies, prefer seeded-random.** Greedy is brittle (D4); random with fixed seed gets you reproducibility AND realistic coverage in the same test.
+
