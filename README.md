@@ -40,6 +40,19 @@ cargo test               # Rust unit + property tests
 cargo bench              # throughput benchmark
 ```
 
+## Performance (v1)
+
+Single-threaded random-vs-random self-play:
+- ~500 games/sec
+- ~2.0 ms per game (median 2.07 ms fixed-seed, 1.99 ms varied-seed)
+- Target was 10,000 games/sec (spec §10) — **not yet hit**; ~20x off.
+
+Measured via `cargo bench` (criterion); CPU: AMD Ryzen 5 5600H. The "random"
+policy here is `legal[steps % legal.len()]` — deterministic but varied per
+step. Hot-path optimization (avoiding per-call `Vec` allocation in
+`legal_actions`, skipping observation tensor construction during pure
+self-play, etc.) is deferred — see plan task list for follow-ups.
+
 ## License
 
 TBD.
