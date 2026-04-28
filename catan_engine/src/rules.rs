@@ -317,7 +317,7 @@ fn pay(hand: &mut [u8; 5], bank: &mut [u8; 5], cost: &[u8; 5]) {
 }
 
 fn legal_actions_main(state: &GameState) -> Vec<Action> {
-    let mut out = vec![Action::EndTurn];
+    let mut out = Vec::new();
     let p = state.current_player;
     let hand = &state.hands[p as usize];
     if can_afford(hand, &SETTLEMENT_COST) {
@@ -341,6 +341,7 @@ fn legal_actions_main(state: &GameState) -> Vec<Action> {
             }
         }
     }
+    out.push(Action::EndTurn);
     out
 }
 
