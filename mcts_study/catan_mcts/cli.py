@@ -47,8 +47,15 @@ def main(argv: list[str] | None = None) -> int:
         _run_all(args.out_root)
     else:
         mod = _EXPERIMENTS[args.name]
-        # Forward unknown args to the experiment's CLI parser by pushing them onto sys.argv.
-        sys.argv = [f"catan_mcts.{args.name}", *rest]
+        # Forward --out-root + any unknown args to the experiment's CLI parser.
+        # The top-level parser consumes --out-root via runp.add_argument; without
+        # re-injecting it here, the experiment's cli_main uses its own default
+        # ("runs") and the user's --out-root is silently dropped.
+        sys.argv = [
+            f"catan_mcts.{args.name}",
+            "--out-root", str(args.out_root),
+            *rest,
+        ]
         mod.cli_main()
     return 0
 
