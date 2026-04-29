@@ -50,13 +50,19 @@ class CatanReplayDataset(Dataset):
                 moves_frames.append(pq.read_table(mv).to_pandas())
             for gv in rd.glob("games.*.parquet"):
                 games_frames.append(pq.read_table(gv).to_pandas())
-        if not moves_frames:
+        if not moves_frames and not games_frames:
             raise RuntimeError(f"No moves.*.parquet shards found under {run_dirs}")
         import pandas as pd
-        moves = pd.concat(moves_frames, ignore_index=True)
-        games = pd.concat(games_frames, ignore_index=True)
+        moves = pd.concat(moves_frames, ignore_index=True) if moves_frames else pd.DataFrame()
+        games = pd.concat(games_frames, ignore_index=True) if games_frames else pd.DataFrame()
         # Filter to v2 games only (need action_history).
-        games = games[games["schema_version"] >= 2]
+        if not games.empty:
+            games = games[games["schema_version"] >= 2]
+        if games.empty or "action_history" not in games.columns:
+            self._winner_by_seed = {}
+            self._history_by_seed = {}
+            self._index = moves.iloc[0:0].reset_index(drop=True) if not moves.empty else moves
+            return
         self._winner_by_seed = {int(s): int(w) for s, w in zip(games["seed"], games["winner"])}
         self._history_by_seed = {
             int(s): list(h) for s, h in zip(games["seed"], games["action_history"])
