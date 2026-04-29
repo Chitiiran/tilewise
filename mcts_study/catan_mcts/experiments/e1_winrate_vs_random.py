@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from multiprocessing import get_context
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,57 @@ class _RandomBot:
         return self._rng.choice(state.legal_actions())
 
 
+def _run_cell(rec: SelfPlayRecorder, sims: int, seeds: list[int],
+              done: set[int], max_seconds: float, leave_progress: bool = False,
+              progress_desc_prefix: str = "") -> None:
+    """Run one sims-cell's worth of seeds against a fresh game/bot per seed,
+    writing finalized games to `rec`'s buffers and timed-out games to skipped.csv."""
+    game = CatanGame()
+    desc = f"{progress_desc_prefix}sims={sims}"
+    for seed in tqdm(seeds, desc=desc, leave=leave_progress):
+        if seed in done:
+            continue
+        chance_rng = random.Random(seed)
+        mcts_bot = _build_mcts_bot(game, sims=sims, seed=seed)
+        bots = {0: mcts_bot, 1: _RandomBot(seed+1), 2: _RandomBot(seed+2), 3: _RandomBot(seed+3)}
+        with rec.game(seed=seed) as g_rec:
+            outcome = play_one_game(
+                game=game, bots=bots, seed=seed, chance_rng=chance_rng,
+                recorded_player=0, recorder_game=g_rec, mcts_bot=mcts_bot,
+                max_seconds=max_seconds,
+            )
+            if outcome.timed_out:
+                g_rec._moves.clear()
+                g_rec._finalized = True
+                rec.skip_game(
+                    seed=seed, reason="wall-clock-timeout",
+                    length_in_moves=outcome.length_in_moves,
+                )
+            else:
+                g_rec.finalize(
+                    winner=outcome.winner,
+                    final_vp=outcome.final_vp,
+                    length_in_moves=outcome.length_in_moves,
+                )
+                rec.mark_done(seed)
+
+
+def _worker(args) -> None:
+    """Top-level (pickle-safe) parallel worker. Runs all sims cells for one
+    slice of seeds in a fresh process, writing parquet shards to a per-worker
+    subdirectory."""
+    worker_idx, parent_out, sims_grid, seeds_per_cell, max_seconds, base_config = args
+    worker_dir = parent_out / f"worker{worker_idx}"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    rec = SelfPlayRecorder(worker_dir, config={**base_config, "worker_idx": worker_idx})
+    done = rec.done_seeds()
+    for sims, seeds in zip(sims_grid, seeds_per_cell):
+        _run_cell(rec, sims, seeds, done, max_seconds,
+                  progress_desc_prefix=f"w{worker_idx} ")
+        rec.checkpoint(f"sims={sims}")
+    rec.flush()
+
+
 def main(
     *,
     out_root: Path,
@@ -42,55 +94,54 @@ def main(
     seed_base: int = 1_000_000,
     max_seconds: float = 300.0,
     resume: bool = True,
+    workers: int = 1,
 ) -> Path:
     """v2: per-game wall-clock cap (max_seconds), per-cell parquet flush, and
     optional resume-from-done.txt so a kill+restart picks up where it left off.
+    workers > 1 splits seeds across `workers` processes; each writes its own
+    shards to `out_root/.../workerN/`.
     """
     out = make_run_dir(out_root, "e1_winrate_vs_random")
-    rec = SelfPlayRecorder(out, config={
+    base_config = {
         "experiment": "e1_winrate_vs_random",
         "uct_c": 1.4,
         "sims_per_move_grid": list(sims_per_move_grid),
         "num_games": num_games,
         "max_seconds": max_seconds,
-    })
-    done = rec.done_seeds() if resume else set()
+        "workers": workers,
+    }
 
-    game = CatanGame()
-    for sims in sims_per_move_grid:
-        for i in tqdm(range(num_games), desc=f"sims={sims}", leave=False):
+    if workers <= 1:
+        rec = SelfPlayRecorder(out, config=base_config)
+        done = rec.done_seeds() if resume else set()
+        for sims in sims_per_move_grid:
+            seeds = [seed_base + sims * 1_000 + i for i in range(num_games)]
+            _run_cell(rec, sims, seeds, done, max_seconds)
+            rec.checkpoint(f"sims={sims}")
+        rec.flush()
+        return out
+
+    # Parallel: split seeds round-robin across workers per cell.
+    seeds_per_cell_per_worker: list[list[list[int]]] = [
+        [[] for _ in range(workers)] for _ in sims_per_move_grid
+    ]
+    for cell_idx, sims in enumerate(sims_per_move_grid):
+        for i in range(num_games):
             seed = seed_base + sims * 1_000 + i
-            if seed in done:
-                continue
-            chance_rng = random.Random(seed)
-            mcts_bot = _build_mcts_bot(game, sims=sims, seed=seed)
-            bots = {0: mcts_bot, 1: _RandomBot(seed+1), 2: _RandomBot(seed+2), 3: _RandomBot(seed+3)}
-            with rec.game(seed=seed) as g_rec:
-                outcome = play_one_game(
-                    game=game, bots=bots, seed=seed, chance_rng=chance_rng,
-                    recorded_player=0, recorder_game=g_rec, mcts_bot=mcts_bot,
-                    max_seconds=max_seconds,
-                )
-                if outcome.timed_out:
-                    # Don't finalize; skip game's accumulated rows by replacing
-                    # with an empty list. The context-mgr's __exit__ won't
-                    # auto-finalize because we set _finalized=True via skip path.
-                    g_rec._moves.clear()
-                    g_rec._finalized = True
-                    rec.skip_game(
-                        seed=seed, reason="wall-clock-timeout",
-                        length_in_moves=outcome.length_in_moves,
-                    )
-                else:
-                    g_rec.finalize(
-                        winner=outcome.winner,
-                        final_vp=outcome.final_vp,
-                        length_in_moves=outcome.length_in_moves,
-                    )
-                    rec.mark_done(seed)
-        # Per-cell checkpoint: data lands incrementally even if a later cell stalls.
-        rec.checkpoint(f"sims={sims}")
-    rec.flush()  # no-op if all cells checkpointed
+            seeds_per_cell_per_worker[cell_idx][i % workers].append(seed)
+
+    args_list = []
+    for w in range(workers):
+        seeds_per_cell = [seeds_per_cell_per_worker[c][w]
+                          for c in range(len(sims_per_move_grid))]
+        args_list.append(
+            (w, out, list(sims_per_move_grid), seeds_per_cell, max_seconds, base_config),
+        )
+
+    ctx = get_context("spawn")
+    with ctx.Pool(processes=workers) as pool:
+        pool.map(_worker, args_list)
+
     return out
 
 
@@ -104,11 +155,14 @@ def cli_main():
                    help="v2: per-game wall-clock cap; timeouts go to skipped.csv")
     p.add_argument("--no-resume", action="store_true",
                    help="v2: ignore done.txt and re-run all seeds")
+    p.add_argument("--workers", type=int, default=1,
+                   help="v2: number of parallel worker processes (default 1 = serial)")
     args = p.parse_args()
     out = main(
         out_root=args.out_root, num_games=args.num_games,
         sims_per_move_grid=args.sims_grid, seed_base=args.seed_base,
         max_seconds=args.max_seconds, resume=not args.no_resume,
+        workers=args.workers,
     )
     print(f"e1 wrote to {out}")
 
