@@ -76,3 +76,19 @@ def test_deterministic_with_fixed_seed():
     v2, p2 = m2(batch)
     torch.testing.assert_close(v1, v2)
     torch.testing.assert_close(p1, p2)
+
+
+def test_scalars_collated_correctly_for_various_batch_sizes():
+    """Sanity: batch.scalars must have shape [B, 22] after PyG collation,
+    regardless of PyG version. Catches regressions if PyG changes how it
+    handles graph-level attributes."""
+    model = GnnModel(hidden_dim=32, num_layers=2)
+    for B in [1, 2, 4, 16]:
+        batch = Batch.from_data_list([_make_data(s) for s in range(B)])
+        assert batch.scalars.shape[0] == B
+        # Total elements must equal B * 22 regardless of layout.
+        assert batch.scalars.numel() == B * 22
+        # Forward should not raise.
+        value, policy = model(batch)
+        assert value.shape == (B, 4)
+        assert policy.shape == (B, 206)

@@ -38,6 +38,9 @@ def state_to_pyg(obs: dict) -> HeteroData:
     data["vertex", "to", "hex"].edge_index = _V2H_EI
     data["vertex", "to", "edge"].edge_index = _V2E_EI
     data["edge", "to", "vertex"].edge_index = _E2V_EI
-    data.scalars = torch.from_numpy(np.ascontiguousarray(obs["scalars"], dtype=np.float32))
+    # Shape [1, 22] (not [22]) so PyG's Batch collation deterministically produces
+    # [B, 22] regardless of PyG version. Otherwise some versions stack to [B, 22]
+    # and others concat to [B*22] requiring a view().
+    data.scalars = torch.from_numpy(np.ascontiguousarray(obs["scalars"], dtype=np.float32)).unsqueeze(0)
     data.legal_mask = torch.from_numpy(np.ascontiguousarray(obs["legal_mask"], dtype=np.uint8)).bool()
     return data

@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import HeteroConv, SAGEConv
+from torch_geometric.utils import scatter
 
 from catan_mcts import ACTION_SPACE_SIZE
 
@@ -59,12 +60,13 @@ class GnnBody(nn.Module):
         # Per-type mean pool, batched.
         # PyG's Batch concatenates node lists; batch[k].batch maps each node to
         # its graph index in the batch.
-        from torch_geometric.utils import scatter
         pooled = []
         for k in ("hex", "vertex", "edge"):
             idx = batch[k].batch
             pooled.append(scatter(x_dict[k], idx, dim=0, reduce="mean"))
-        # batch.scalars is [B*22] flattened -- reshape.
+        # state_to_pyg now stores data.scalars as [1, 22], so collation produces
+        # [B, 22] deterministically. Reshape kept as no-op safety against
+        # PyG-version layout drift.
         scalars = batch.scalars.view(-1, N_SCALARS)
         emb = torch.cat([*pooled, scalars], dim=1)
         return self.final(emb)
