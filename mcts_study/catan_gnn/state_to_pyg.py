@@ -15,14 +15,18 @@ import numpy as np
 import torch
 from torch_geometric.data import HeteroData
 
-from .adjacency import HEX_VERTEX_EDGE_INDEX, VERTEX_EDGE_EDGE_INDEX
+from .adjacency import HEX_VERTEX_EDGE_INDEX, VERTEX_EDGE_EDGE_INDEX, NUM_HEXES, NUM_EDGES
 
 
 # Pre-build edge_index tensors once (shared across all calls; they never change).
-_H2V_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, :114].copy())   # [2, 114] hex -> vertex
-_V2H_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, 114:].copy())   # [2, 114] vertex -> hex
-_V2E_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, :144].copy())  # [2, 144] vertex -> edge
-_E2V_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, 144:].copy())  # [2, 144] edge -> vertex
+# These are READ-ONLY at runtime -- do NOT mutate in place. PyG's standard ops
+# (Batch.from_data_list, HeteroConv, .to(device)) all return new tensors, so
+# sharing is safe. If you ever introduce custom in-place edge_index ops,
+# .clone() before mutating.
+_H2V_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, :NUM_HEXES * 6].copy())   # [2, 114] hex -> vertex
+_V2H_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, NUM_HEXES * 6:].copy())   # [2, 114] vertex -> hex
+_V2E_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, :NUM_EDGES * 2].copy())  # [2, 144] vertex -> edge
+_E2V_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, NUM_EDGES * 2:].copy())  # [2, 144] edge -> vertex
 
 
 def state_to_pyg(obs: dict) -> HeteroData:
