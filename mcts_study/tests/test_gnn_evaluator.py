@@ -56,6 +56,69 @@ def test_evaluate_does_not_mutate_state():
     assert history_before == history_after
 
 
+def test_prior_at_chance_node_returns_chance_outcomes_directly():
+    """At a chance node, prior() must return state.chance_outcomes() unchanged
+    -- not call the model. Catches a regression if the chance-node branch is
+    accidentally removed."""
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    # Drive forward to a chance node (after Setup ends, dice rolls trigger).
+    for _ in range(2000):
+        if state.is_chance_node():
+            break
+        state.apply_action(state.legal_actions()[0])
+    assert state.is_chance_node(), "test setup failed: no chance node found"
+
+    ev = GnnEvaluator(model=_untrained_model())
+    prior = ev.prior(state)
+    expected = state.chance_outcomes()
+    assert prior == expected
+
+
+def test_evaluate_and_prior_share_one_forward_pass():
+    """The cache must make evaluate(state) + prior(state) on the same state
+    cost exactly one model forward call. Wraps the model with a counter."""
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    _drive_to_player_decision(state)
+
+    base_model = _untrained_model()
+
+    class _CountingModel:
+        """Wrap a real GnnModel and count forward() calls."""
+        def __init__(self, m):
+            self._m = m
+            self.forward_count = 0
+        def to(self, device):
+            self._m = self._m.to(device)
+            return self
+        def eval(self):
+            self._m.eval()
+            return self
+        def __call__(self, batch):
+            self.forward_count += 1
+            return self._m(batch)
+
+    counter = _CountingModel(base_model)
+    ev = GnnEvaluator(model=counter)
+    ev.evaluate(state)
+    ev.prior(state)
+    assert counter.forward_count == 1, (
+        f"expected 1 forward call (cached), got {counter.forward_count}"
+    )
+
+    # And calling on a different state should trigger a new forward.
+    # Apply one legal action so action_history differs from `state` -> cache miss.
+    state2 = state.clone()
+    state2.apply_action(int(state2.legal_actions()[0]))
+    if state2.is_chance_node():
+        _drive_to_player_decision(state2)
+    ev.evaluate(state2)
+    assert counter.forward_count == 2, (
+        f"expected 2 forwards after new state, got {counter.forward_count}"
+    )
+
+
 def test_runs_inside_mctsbot_one_full_game():
     """End-to-end: MCTSBot(GnnEvaluator) + 3 random opponents play one game.
     Untrained model -> noise priors -> any legal play is fine; just ensure

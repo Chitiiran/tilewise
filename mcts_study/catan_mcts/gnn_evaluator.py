@@ -32,12 +32,19 @@ class GnnEvaluator(os_mcts.Evaluator):
 
     @torch.no_grad()
     def _forward(self, state):
+        # NOTE: each call is one forward pass at batch=1. At sims=400 with ~150
+        # MCTS-decided moves per game, that's ~60k sequential forward passes per
+        # game. Per-call host->device transfer dominates compute at this size.
+        # A BatchedGnnEvaluator that collects leaf evaluations across MCTS sims
+        # and runs them as one batched forward pass is the obvious v1 follow-up.
+        # See spec §5 "out of scope for v0".
         key = tuple(state._engine.action_history())
         if key == self._cache_key:
             return self._cache_value, self._cache_policy
         obs = state._engine.observation()
         data = state_to_pyg(obs).to(self.device)
         batch = Batch.from_data_list([data])
+        self.model.eval()
         v, logits = self.model(batch)
         v_np = v.squeeze(0).cpu().numpy().astype(np.float32)
         l_np = logits.squeeze(0).cpu().numpy().astype(np.float32)
