@@ -213,6 +213,122 @@ impl Engine {
         }
     }
 
+    /// Depth-bounded greedy evaluator. Returns a value vector in [-1, 1] suitable
+    /// for use as an OpenSpiel MCTS `Evaluator.evaluate` result.
+    ///
+    /// Semantics:
+    ///   - Plays forward up to `depth * 4` EndTurn-equivalents (i.e. roughly
+    ///     `depth` rounds of the game), or until terminal, whichever comes first.
+    ///   - Decision actions: each player picks the highest-priority legal action
+    ///     (ties broken by lowest action_id; matches Python `_action_priority`).
+    ///   - Chance actions: sampled uniformly by probability using a SmallRng
+    ///     seeded by `eval_seed`.
+    ///   - Terminal: returns AlphaZero-style returns (+1 winner, -1 losers).
+    ///   - Non-terminal: returns per-player VP scaled to [-1, 1] where
+    ///     `normalize(vp) = (vp / 10.0) * 2.0 - 1.0`. This matches the
+    ///     winning-VP threshold of 10, so a player at 10 VP -> +1.0.
+    ///
+    /// Mutates self into the post-lookahead state — caller should clone first
+    /// if they need to preserve the pre-lookahead engine.
+    pub fn lookahead_vp_value(&mut self, depth: u32, eval_seed: u64) -> [f32; 4] {
+        use rand::{Rng as _, SeedableRng};
+        use rand::rngs::SmallRng;
+
+        // Already terminal? Return AlphaZero returns directly.
+        if let crate::state::GamePhase::Done { winner } = self.state.phase {
+            let mut returns = [-1.0f32; 4];
+            returns[winner as usize] = 1.0;
+            return returns;
+        }
+
+        // depth=0 means evaluate at the current state, no forward play.
+        if depth == 0 {
+            return Self::vp_to_value(&self.state.vp);
+        }
+
+        let mut rng = SmallRng::seed_from_u64(eval_seed);
+        let mut end_turns_remaining = depth * 4;
+        // Bound steps to prevent any pathological non-terminating subtree under
+        // greedy play. depth*4 EndTurns each take O(20) decision steps + chance,
+        // so depth=25 -> ~2k steps; 50k cap is generous safety margin.
+        let mut steps = 0u32;
+        let step_cap = (depth * 4 * 200).max(2000);
+
+        while !self.is_terminal() && end_turns_remaining > 0 && steps < step_cap {
+            if self.is_chance_pending() {
+                let outcomes = self.chance_outcomes();
+                let r: f64 = rng.gen();
+                let mut cum = 0.0f64;
+                let mut chosen = outcomes.last().unwrap().0;
+                for (v, p) in &outcomes {
+                    cum += p;
+                    if r <= cum {
+                        chosen = *v;
+                        break;
+                    }
+                }
+                self.apply_chance_outcome(chosen);
+            } else {
+                let legal = self.legal_actions();
+                if legal.is_empty() {
+                    break;
+                }
+                let action = Self::greedy_pick(&legal);
+                if action == 204 {
+                    end_turns_remaining = end_turns_remaining.saturating_sub(1);
+                }
+                self.step(action);
+            }
+            steps += 1;
+        }
+
+        // Terminal during lookahead -> AlphaZero returns.
+        if let crate::state::GamePhase::Done { winner } = self.state.phase {
+            let mut returns = [-1.0f32; 4];
+            returns[winner as usize] = 1.0;
+            return returns;
+        }
+        Self::vp_to_value(&self.state.vp)
+    }
+
+    /// Mirrors Python `_action_priority` in `mcts_study/catan_mcts/bots.py`.
+    /// Higher score = bot prefers it. Ties broken by lowest action_id (deterministic).
+    fn action_priority(action_id: u32) -> i32 {
+        match action_id {
+            54..=107  => 100, // city — best
+            0..=53    => 80,  // settlement
+            108..=179 => 50,  // road
+            205       => 10,  // roll dice
+            204       => 1,   // end turn
+            180..=198 => 5,   // robber move
+            199..=203 => 5,   // discard
+            _ => 0,
+        }
+    }
+
+    fn greedy_pick(legal: &[u32]) -> u32 {
+        let mut best = legal[0];
+        let mut best_score = Self::action_priority(best);
+        for &a in &legal[1..] {
+            let s = Self::action_priority(a);
+            if s > best_score || (s == best_score && a < best) {
+                best = a;
+                best_score = s;
+            }
+        }
+        best
+    }
+
+    fn vp_to_value(vp: &[u8; 4]) -> [f32; 4] {
+        let mut out = [0f32; 4];
+        for p in 0..4 {
+            // 0 VP -> -1.0, 10 VP -> +1.0; clamp to [-1, 1] for safety.
+            let v = (vp[p] as f32 / 10.0) * 2.0 - 1.0;
+            out[p] = v.clamp(-1.0, 1.0);
+        }
+        out
+    }
+
     pub fn event_log(&self) -> &[GameEvent] {
         self.events.as_slice()
     }
