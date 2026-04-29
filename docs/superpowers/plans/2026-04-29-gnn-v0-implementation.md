@@ -45,10 +45,31 @@ Plus a one-time dependency add: `torch>=2.2`, `torch-geometric>=2.5` in `mcts_st
 
 ## Conventions used by every task
 
-- **WSL command prefix:** every Python invocation runs in the WSL venv. Wrap in `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/mcts-study && <CMD>"`.
-- **Engine rebuild after Rust changes:** `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/mcts-study && maturin develop --release"`.
+- **Working directory:** `C:/dojo/catan_bot/.claude/worktrees/gnn-v0/` (branch `gnn-v0`). All shell commands run from there.
+- **WSL command prefix:** every Python invocation runs in the WSL venv. Wrap in `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/gnn-v0 && <CMD>"`.
+- **Engine rebuild after Rust changes:** `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/gnn-v0 && maturin develop --release"`.
 - **Pytest run:** `cd mcts_study && python -m pytest tests/<file> -v` (mcts_study is the package root with pyproject.toml).
 - **Commit style:** match existing repo (`feat(scope): one-line summary` + Co-Authored-By trailer). Frequent commits — one per task.
+
+## GPU support (added 2026-04-29 mid-plan)
+
+The host has an **NVIDIA GeForce GTX 1650 (4 GB VRAM, CUDA Compute 7.5)** available from WSL via `torch.cuda.is_available()`. Task 1's pip install pulled `torch 2.11.0+cu130` so CUDA already works.
+
+Where GPU helps and where it doesn't:
+
+| Workload | Recommended device | Why |
+|---|---|---|
+| **Training** (Task 7) — large minibatch, lots of compute | **GPU when available** | Forward+backward over batch_size=64 amortizes host→device transfer; 5-50× speedup vs CPU on small models, even more for larger ones. |
+| **Bench-2 static eval** (Task 9) — sequential single-position calls | **CPU** | Per-call transfer overhead (~0.3-1ms) exceeds compute time at hidden_dim=32. |
+| **MCTS-time inference** (`GnnEvaluator`, Task 8) — one leaf at a time, latency-critical | **CPU default; GPU optional** | Same as bench-2 plus we need the ≤5ms latency target. GPU might help once model grows; not at v0. |
+| **Latency test** (Task 5 `test_cpu_latency_under_5ms_b1`) | **CPU only** | The whole point is the CPU budget. |
+
+Implementation rule:
+- Functions that take a `device` arg default to `"auto"` which resolves at call time: `cuda` if available, else `cpu`. **Exception:** `GnnEvaluator` defaults to `"cpu"` explicitly.
+- `train_main(device="auto")` → resolves to `cuda` here.
+- Tests that need deterministic devices (e.g. latency test) pass `device="cpu"` explicitly.
+
+**Affected tasks:** 5 (model is device-agnostic, no change), 7 (`device="auto"` kwarg + auto-resolver), 8 (keeps `device="cpu"` default + helpful comment), 11 (training step uses GPU automatically; MCTS step stays CPU).
 
 ---
 
