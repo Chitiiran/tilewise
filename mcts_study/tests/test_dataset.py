@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from catan_gnn.dataset import CatanReplayDataset
+from catan_gnn.dataset import CachedDataset, CatanReplayDataset
 
 
 @pytest.fixture(scope="module")
@@ -93,3 +93,45 @@ def test_v1_games_are_skipped(tmp_path: Path):
     # Dataset should construct without error but report 0 rows since no v2 games match.
     ds = CatanReplayDataset([run_dir])
     assert len(ds) == 0, f"Expected v1-only dataset to have 0 rows, got {len(ds)}"
+
+
+def test_cached_dataset_round_trip(minimal_run_dir, tmp_path):
+    """CachedDataset should produce items identical to the source dataset, and
+    persist + reload via cache_path."""
+    src = CatanReplayDataset([minimal_run_dir])
+    assert len(src) > 0
+
+    # First call: builds + persists.
+    cache_path = tmp_path / "cache.pt"
+    cached = CachedDataset(source=src, cache_path=cache_path, verbose=False)
+    assert cache_path.exists()
+    assert len(cached) == len(src)
+
+    # Items should be tensor-equal between source and cache.
+    src_data, src_value, src_policy, src_legal = src[0]
+    cached_data, cached_value, cached_policy, cached_legal = cached[0]
+    torch.testing.assert_close(src_data["hex"].x, cached_data["hex"].x)
+    torch.testing.assert_close(src_data["vertex"].x, cached_data["vertex"].x)
+    torch.testing.assert_close(src_data["edge"].x, cached_data["edge"].x)
+    torch.testing.assert_close(src_data.scalars, cached_data.scalars)
+    torch.testing.assert_close(src_value, cached_value)
+    torch.testing.assert_close(src_policy, cached_policy)
+    assert torch.equal(src_legal, cached_legal)
+
+    # Second call: loads from disk; no source needed.
+    reloaded = CachedDataset(source=None, cache_path=cache_path, verbose=False)
+    assert len(reloaded) == len(src)
+    r_data, r_value, _, _ = reloaded[0]
+    torch.testing.assert_close(r_data["hex"].x, src_data["hex"].x)
+    torch.testing.assert_close(r_value, src_value)
+
+
+def test_cached_dataset_seeds_attribute(minimal_run_dir, tmp_path):
+    """CachedDataset.seeds should mirror source._index['seed'] so train._split_by_seed
+    can do whole-game train/val splits without depending on the source dataset."""
+    src = CatanReplayDataset([minimal_run_dir])
+    cache_path = tmp_path / "cache.pt"
+    cached = CachedDataset(source=src, cache_path=cache_path, verbose=False)
+    assert len(cached.seeds) == len(cached)
+    expected = [int(s) for s in src._index["seed"]]
+    assert cached.seeds == expected

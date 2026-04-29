@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from torch_geometric.data import Batch
 
-from .dataset import CatanReplayDataset
+from .dataset import CachedDataset, CatanReplayDataset
 from .gnn_model import GnnModel
 
 
@@ -33,13 +33,25 @@ class EpochStats:
 
 def _split_by_seed(ds: CatanReplayDataset, val_frac: float, seed: int):
     rng = random.Random(seed)
-    seeds = sorted({int(s) for s in ds._index["seed"]})
+    # Pull a per-position seed list from whichever dataset type we got.
+    # CatanReplayDataset exposes ._index (pandas frame); CachedDataset exposes .seeds (list).
+    if hasattr(ds, "_index"):
+        per_pos_seeds = [int(s) for s in ds._index["seed"]]
+    elif hasattr(ds, "seeds"):
+        per_pos_seeds = list(ds.seeds)
+    else:
+        raise RuntimeError(
+            f"_split_by_seed: dataset {type(ds).__name__} has neither ._index nor .seeds"
+        )
+    if not per_pos_seeds:
+        raise RuntimeError("_split_by_seed: dataset has no per-position seeds")
+
+    seeds = sorted(set(per_pos_seeds))
     rng.shuffle(seeds)
     n_val = max(1, int(len(seeds) * val_frac))
     val_seeds = set(seeds[:n_val])
     train_idx, val_idx = [], []
-    for i in range(len(ds)):
-        s = int(ds._index.iloc[i]["seed"])
+    for i, s in enumerate(per_pos_seeds):
         if s in val_seeds:
             val_idx.append(i)
         else:
@@ -104,22 +116,52 @@ def train_main(
     val_frac: float = 0.1,
     seed: int = 0,
     device: str = "auto",
+    max_train_samples: int | None = None,
+    num_workers: int = 0,
+    cache_path: Path | None = None,
 ) -> Path:
+    """
+    max_train_samples: if set, subsample the training set to this many positions
+        per epoch. Useful for fast smoke runs when the dataset replay is CPU-bound
+        and full epochs would take too long. None = use full train set.
+    num_workers: DataLoader worker processes for parallel engine replay. 0 (default)
+        uses the main process. Higher values can speed up CPU-bound replay but PyG
+        HeteroData multiprocessing has known sharp edges; use with care.
+    cache_path: if set, build (or load) a CachedDataset to disk. The first call
+        with a given run_dirs replays every position once into RAM and persists
+        to cache_path. Subsequent calls load from disk and skip replay entirely.
+        This is the GPU-utilization fix: replay-from-scratch is CPU-bound and
+        starves the GPU; the cache puts all positions in RAM-resident tensors.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    full_ds = CatanReplayDataset([Path(p) for p in run_dirs])
+    if cache_path is not None:
+        cache_path = Path(cache_path)
+        if cache_path.exists():
+            full_ds = CachedDataset(source=None, cache_path=cache_path)
+        else:
+            source = CatanReplayDataset([Path(p) for p in run_dirs])
+            full_ds = CachedDataset(source=source, cache_path=cache_path)
+    else:
+        full_ds = CatanReplayDataset([Path(p) for p in run_dirs])
     if len(full_ds) == 0:
         raise RuntimeError(f"Empty dataset under {run_dirs}")
     train_ds, val_ds = _split_by_seed(full_ds, val_frac=val_frac, seed=seed)
+    if max_train_samples is not None and len(train_ds) > max_train_samples:
+        rng = np.random.default_rng(seed)
+        keep = rng.choice(len(train_ds), size=max_train_samples, replace=False)
+        train_ds = Subset(train_ds, sorted(keep.tolist()))
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, collate_fn=_collate,
+        num_workers=num_workers,
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False, collate_fn=_collate,
+        num_workers=num_workers,
     )
 
     dev = _resolve_device(device)
@@ -220,13 +262,22 @@ def cli_main() -> None:
     p.add_argument("--w-policy", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument("--max-train-samples", type=int, default=None,
+                   help="Subsample training set to this many positions per epoch (smoke runs).")
+    p.add_argument("--num-workers", type=int, default=0,
+                   help="DataLoader worker processes for parallel engine replay (0 = main process only).")
+    p.add_argument("--cache-path", type=Path, default=None,
+                   help="Path to a CachedDataset .pt file. If exists, loads from disk; "
+                        "otherwise builds the cache from run-dirs and saves there. "
+                        "Removes the per-epoch engine-replay bottleneck (GPU starvation fix).")
     args = p.parse_args()
     train_main(
         run_dirs=args.run_dirs, out_dir=args.out_dir,
         hidden_dim=args.hidden_dim, num_layers=args.num_layers,
         epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
         w_value=args.w_value, w_policy=args.w_policy, seed=args.seed,
-        device=args.device,
+        device=args.device, max_train_samples=args.max_train_samples,
+        num_workers=args.num_workers, cache_path=args.cache_path,
     )
 
 

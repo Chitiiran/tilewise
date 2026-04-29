@@ -140,3 +140,110 @@ class CatanReplayDataset(Dataset):
         legal_mask = torch.from_numpy(np.array(row["legal_action_mask"], dtype=np.bool_))
 
         return data, value, policy, legal_mask
+
+
+class CachedDataset(Dataset):
+    """In-RAM cache wrapper around a slow Dataset (typically CatanReplayDataset).
+
+    Why: CatanReplayDataset's __getitem__ replays the engine from scratch per
+    call, which is CPU-bound and dominates training wall-clock (GPU ends up
+    waiting). Replaying once and keeping the result in RAM removes that
+    bottleneck for subsequent epochs. With optional disk persistence
+    (via cache_path), a one-time precompute survives across training sessions.
+
+    Storage format: HeteroData reconstructed on load from raw tensor dicts,
+    avoiding PyG version drift in pickled HeteroData objects. Each cached
+    item is a dict of tensors (no Python objects).
+
+    Memory footprint: ~10-12 KB per position (3 small float matrices + scalars
+    + legal_mask + 4-vector value + 206-vector policy). 100k positions ~= 1 GB.
+    Fits comfortably in 16 GB RAM for any v0 dataset size.
+    """
+
+    def __init__(
+        self,
+        source: Dataset | None,
+        cache_path: Path | None = None,
+        verbose: bool = True,
+    ) -> None:
+        self._items: list[dict] = []
+        # Per-position seed list, mirroring the source's index. Used by
+        # train._split_by_seed to do whole-game train/val splits even when the
+        # source CatanReplayDataset has been wrapped in this cache.
+        self.seeds: list[int] = []
+        if cache_path is not None:
+            cache_path = Path(cache_path)
+
+        if cache_path is not None and cache_path.exists():
+            if verbose:
+                print(f"[CachedDataset] loading cache from {cache_path}", flush=True)
+            blob = torch.load(cache_path, map_location="cpu", weights_only=False)
+            self._items = blob["items"]
+            self.seeds = list(blob.get("seeds", []))
+            if verbose:
+                print(f"[CachedDataset] loaded {len(self._items)} positions", flush=True)
+            return
+
+        if source is None:
+            raise RuntimeError(
+                f"CachedDataset: no cache at {cache_path} and no source dataset provided"
+            )
+
+        # Pull seed-per-position from the source if it has _index (CatanReplayDataset).
+        source_seeds: list[int] | None = None
+        if hasattr(source, "_index"):
+            source_seeds = [int(s) for s in source._index["seed"]]
+
+        n = len(source)
+        if verbose:
+            print(f"[CachedDataset] building cache from {n} source positions", flush=True)
+        import time as _time
+        t0 = _time.perf_counter()
+        for i in range(n):
+            data, value, policy, legal_mask = source[i]
+            self._items.append({
+                "hex_x": data["hex"].x.contiguous(),
+                "vertex_x": data["vertex"].x.contiguous(),
+                "edge_x": data["edge"].x.contiguous(),
+                "scalars": data.scalars.contiguous(),
+                "legal_mask_attr": data.legal_mask.contiguous(),
+                "h2v_ei": data["hex", "to", "vertex"].edge_index,
+                "v2h_ei": data["vertex", "to", "hex"].edge_index,
+                "v2e_ei": data["vertex", "to", "edge"].edge_index,
+                "e2v_ei": data["edge", "to", "vertex"].edge_index,
+                "value": value,
+                "policy": policy,
+                "legal": legal_mask,
+            })
+            if source_seeds is not None:
+                self.seeds.append(source_seeds[i])
+            if verbose and (i + 1) % 500 == 0:
+                rate = (i + 1) / (_time.perf_counter() - t0)
+                eta_s = (n - (i + 1)) / max(rate, 1e-6)
+                print(f"[CachedDataset] built {i + 1}/{n} "
+                      f"({rate:.1f} pos/s, eta {eta_s:.0f}s)", flush=True)
+
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({"items": self._items, "seeds": self.seeds, "version": 2},
+                       cache_path)
+            if verbose:
+                print(f"[CachedDataset] saved cache to {cache_path}", flush=True)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, i: int):
+        from torch_geometric.data import HeteroData
+        it = self._items[i]
+        data = HeteroData()
+        data["hex"].x = it["hex_x"]
+        data["vertex"].x = it["vertex_x"]
+        data["edge"].x = it["edge_x"]
+        data["hex", "to", "vertex"].edge_index = it["h2v_ei"]
+        data["vertex", "to", "hex"].edge_index = it["v2h_ei"]
+        data["vertex", "to", "edge"].edge_index = it["v2e_ei"]
+        data["edge", "to", "vertex"].edge_index = it["e2v_ei"]
+        data.scalars = it["scalars"]
+        data.legal_mask = it["legal_mask_attr"]
+        return data, it["value"], it["policy"], it["legal"]
