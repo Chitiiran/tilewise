@@ -45,10 +45,31 @@ Plus a one-time dependency add: `torch>=2.2`, `torch-geometric>=2.5` in `mcts_st
 
 ## Conventions used by every task
 
-- **WSL command prefix:** every Python invocation runs in the WSL venv. Wrap in `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/mcts-study && <CMD>"`.
-- **Engine rebuild after Rust changes:** `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/mcts-study && maturin develop --release"`.
+- **Working directory:** `C:/dojo/catan_bot/.claude/worktrees/gnn-v0/` (branch `gnn-v0`). All shell commands run from there.
+- **WSL command prefix:** every Python invocation runs in the WSL venv. Wrap in `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/gnn-v0 && <CMD>"`.
+- **Engine rebuild after Rust changes:** `wsl -d Ubuntu -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && cd /mnt/c/dojo/catan_bot/.claude/worktrees/gnn-v0 && maturin develop --release"`.
 - **Pytest run:** `cd mcts_study && python -m pytest tests/<file> -v` (mcts_study is the package root with pyproject.toml).
 - **Commit style:** match existing repo (`feat(scope): one-line summary` + Co-Authored-By trailer). Frequent commits — one per task.
+
+## GPU support (added 2026-04-29 mid-plan)
+
+The host has an **NVIDIA GeForce GTX 1650 (4 GB VRAM, CUDA Compute 7.5)** available from WSL via `torch.cuda.is_available()`. Task 1's pip install pulled `torch 2.11.0+cu130` so CUDA already works.
+
+Where GPU helps and where it doesn't:
+
+| Workload | Recommended device | Why |
+|---|---|---|
+| **Training** (Task 7) — large minibatch, lots of compute | **GPU when available** | Forward+backward over batch_size=64 amortizes host→device transfer; 5-50× speedup vs CPU on small models, even more for larger ones. |
+| **Bench-2 static eval** (Task 9) — sequential single-position calls | **CPU** | Per-call transfer overhead (~0.3-1ms) exceeds compute time at hidden_dim=32. |
+| **MCTS-time inference** (`GnnEvaluator`, Task 8) — one leaf at a time, latency-critical | **CPU default; GPU optional** | Same as bench-2 plus we need the ≤5ms latency target. GPU might help once model grows; not at v0. |
+| **Latency test** (Task 5 `test_cpu_latency_under_5ms_b1`) | **CPU only** | The whole point is the CPU budget. |
+
+Implementation rule:
+- Functions that take a `device` arg default to `"auto"` which resolves at call time: `cuda` if available, else `cpu`. **Exception:** `GnnEvaluator` defaults to `"cpu"` explicitly.
+- `train_main(device="auto")` → resolves to `cuda` here.
+- Tests that need deterministic devices (e.g. latency test) pass `device="cpu"` explicitly.
+
+**Affected tasks:** 5 (model is device-agnostic, no change), 7 (`device="auto"` kwarg + auto-resolver), 8 (keeps `device="cpu"` default + helpful comment), 11 (training step uses GPU automatically; MCTS step stays CPU).
 
 ---
 
@@ -309,13 +330,13 @@ Create `mcts_study/tests/test_adjacency.py`:
 import numpy as np
 
 from catan_bot import _engine
-from catan_gnn.adjacency import HEX_VERTEX_EDGES, VERTEX_EDGE_EDGES
+from catan_gnn.adjacency import HEX_VERTEX_EDGE_INDEX, VERTEX_EDGE_EDGE_INDEX
 
 
 def test_hex_vertex_edge_index_shape():
     """[2, num_undirected_edges*2] format expected by PyG. Each undirected edge
     is represented twice (hex→vertex and vertex→hex)."""
-    ei = HEX_VERTEX_EDGES
+    ei = HEX_VERTEX_EDGE_INDEX
     assert ei.shape[0] == 2
     # 19 hexes * 6 vertices each = 114 hex→vertex edges + 114 reverse = 228.
     assert ei.shape[1] == 228
@@ -323,21 +344,21 @@ def test_hex_vertex_edge_index_shape():
 
 def test_vertex_edge_edge_index_shape():
     """72 edges * 2 vertices each = 144 vertex→edge + 144 reverse = 288."""
-    ei = VERTEX_EDGE_EDGES
+    ei = VERTEX_EDGE_EDGE_INDEX
     assert ei.shape[0] == 2
     assert ei.shape[1] == 288
 
 
 def test_hex_vertex_consistent_with_engine_hex_to_vertices():
-    """Each (hex, vertex) pair in HEX_VERTEX_EDGES (the hex→vertex direction)
+    """Each (hex, vertex) pair in HEX_VERTEX_EDGE_INDEX (the hex→vertex direction)
     must correspond to a vertex listed in the engine's hex_to_vertices for
     that hex. We can't read board.rs directly from Python — instead, use the
     engine's observation for a fresh game and check that the union of vertex
-    IDs across HEX_VERTEX_EDGES rows touching each hex hits all 6 expected
+    IDs across HEX_VERTEX_EDGE_INDEX rows touching each hex hits all 6 expected
     vertex slots."""
     # Hex 0 in the standard board has 6 vertices. In our table rows where
     # row[0] == hex_id == 0, the row[1] entries should be exactly 6 distinct values.
-    src, dst = HEX_VERTEX_EDGES[0], HEX_VERTEX_EDGES[1]
+    src, dst = HEX_VERTEX_EDGE_INDEX[0], HEX_VERTEX_EDGE_INDEX[1]
     # Direction is encoded by convention: first 114 entries are hex→vertex.
     hex_to_vertex_src = src[:114]
     hex_to_vertex_dst = dst[:114]
@@ -417,8 +438,8 @@ def _build_vertex_edge_edge_index() -> np.ndarray:
     return np.array([src_v2e + src_e2v, dst_v2e + dst_e2v], dtype=np.int64)
 
 
-HEX_VERTEX_EDGES: np.ndarray = _build_hex_vertex_edge_index()
-VERTEX_EDGE_EDGES: np.ndarray = _build_vertex_edge_edge_index()
+HEX_VERTEX_EDGE_INDEX: np.ndarray = _build_hex_vertex_edge_index()
+VERTEX_EDGE_EDGE_INDEX: np.ndarray = _build_vertex_edge_edge_index()
 ```
 
 The implementer must fill in `HEX_TO_VERTICES` (19 entries × 6 ints) and `EDGE_TO_VERTICES` (72 entries × 2 ints) by copying from `catan_engine/src/board.rs`. Specifically:
@@ -562,14 +583,14 @@ import numpy as np
 import torch
 from torch_geometric.data import HeteroData
 
-from .adjacency import HEX_VERTEX_EDGES, VERTEX_EDGE_EDGES
+from .adjacency import HEX_VERTEX_EDGE_INDEX, VERTEX_EDGE_EDGE_INDEX
 
 
 # Pre-build edge_index tensors once (shared across all calls; they never change).
-_H2V_EI = torch.from_numpy(HEX_VERTEX_EDGES[:, :114].copy())   # [2, 114] hex→vertex
-_V2H_EI = torch.from_numpy(HEX_VERTEX_EDGES[:, 114:].copy())   # [2, 114] vertex→hex
-_V2E_EI = torch.from_numpy(VERTEX_EDGE_EDGES[:, :144].copy())  # [2, 144] vertex→edge
-_E2V_EI = torch.from_numpy(VERTEX_EDGE_EDGES[:, 144:].copy())  # [2, 144] edge→vertex
+_H2V_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, :114].copy())   # [2, 114] hex→vertex
+_V2H_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, 114:].copy())   # [2, 114] vertex→hex
+_V2E_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, :144].copy())  # [2, 144] vertex→edge
+_E2V_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, 144:].copy())  # [2, 144] edge→vertex
 
 
 def state_to_pyg(obs: dict) -> HeteroData:

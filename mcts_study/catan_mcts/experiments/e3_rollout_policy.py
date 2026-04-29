@@ -100,6 +100,7 @@ def _run_cell(rec: SelfPlayRecorder, policy_name: str, sims: int, seeds: list[in
                     winner=outcome.winner,
                     final_vp=outcome.final_vp,
                     length_in_moves=outcome.length_in_moves,
+                    action_history=outcome.action_history,
                 )
                 rec.mark_done(seed)
 

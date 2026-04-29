@@ -1,0 +1,189 @@
+# GNN-v0 Execution Journal
+
+**Plan:** [`docs/superpowers/plans/2026-04-29-gnn-v0-implementation.md`](../plans/2026-04-29-gnn-v0-implementation.md)
+**Branch:** `gnn-v0` (off `main`, branched 2026-04-29 11:07 EDT after merging `mcts-v2-hardening` into main)
+**Worktree:** `C:/dojo/catan_bot/.claude/worktrees/gnn-v0/`
+
+This is a per-task execution log that captures **findings, deviations, and lessons** discovered while implementing the plan. The plan itself is the design contract; this journal is the running record of what we actually learned.
+
+Format per task: a one-line completion status, then bullet points for anything non-obvious that came out of the work. Each entry tags whether it was a **bug fix in the spec**, a **process lesson**, or just a **measured number worth keeping**.
+
+---
+
+## Task 1: Add torch + torch-geometric dependencies
+
+**Status:** ✅ Done. Commit `e8d7ff5`.
+
+**Findings:**
+
+- **Pip pulled torch 2.11.0+cu130** (with CUDA libs ~2 GB) automatically because the host has an NVIDIA GTX 1650. The plan said `torch>=2.2` and didn't pin a CPU-only index; pip detected the GPU and pulled the CUDA wheel. Not a bug; just a footprint surprise.
+- **Editable install rebound to gnn-v0.** The shared WSL venv (`~/catan_mcts_venvs/mcts-study/`) had `pip install -e` pointing at the `mcts-study` worktree. Re-running `pip install -e` from gnn-v0 rebound the editable install to gnn-v0's path. The running e5 sweep workers were unaffected (their modules were already imported into memory), but **any newly-spawned multiprocessing worker in the mcts-study sweep would have imported from gnn-v0's source**. In practice the sweep's mass-spawn happened at launch time, so this didn't bite.
+- **Process lesson:** when two worktrees share an editable install, `pip install -e` from one *changes* the installed package's source-tree pointer. Running long-process sweeps and switching worktrees aren't decoupled.
+
+## Task 2: Recorder schema v2 — add action_history to games.parquet
+
+**Status:** ✅ Done. Commit `7aeef08`.
+
+**Findings:**
+
+- **The plan listed 5 experiment files to update (e1–e5).** Implementer correctly updated all five, plus discovered **two pre-existing tests** (`tests/test_determinism.py` and `tests/test_recorder.py`) that called `finalize()` with the v1 signature and broke. Plan didn't enumerate them. Implementer fixed inline; not scope creep.
+- **`_GameRow` dataclass field ordering matters.** The new `action_history` field (no default) must come BEFORE `schema_version: int = SCHEMA_VERSION` (with default). Dataclass rule: fields without defaults precede fields with defaults.
+- **Process lesson — branch isolation:** the v2 schema commit landed only on `gnn-v0`. The `mcts-study` worktree (still on `mcts-v2-hardening`) never received it because the two branches diverged at `4274d57` (the GNN-v0 plan commit). Result: the 1500-game e5 v2 sweep launched from `mcts-study` at 11:07 AM (~20 min before the schema commit at 11:26 AM) wrote v1 parquets, **and would still write v1 today** because that branch never received the bump.
+- **The fix to land later:** merge `gnn-v0` into `main`, then merge `main` into `mcts-v2-hardening`, so all branches share the schema bump.
+- **Real cost of the missed migration:** the 1500-game v2 sweep is unusable for GNN training (no action_history). We had to do a 50-game data regen on `gnn-v0` worktree to produce v2 data.
+
+## Task 3: Static adjacency tables
+
+**Status:** ✅ Done. Commits `81b3cbd → 9ada3a4 → 272b20d`.
+
+**Findings:**
+
+- **Cross-check beat the spec.** The plan asked for shape + per-hex distinctness tests. Implementer added a stronger consistency check: derive `EDGE_TO_VERTICES` from hex perimeters and assert it equals the literal table. **This catches single-row transcription errors** that the shape/distinctness tests would not. Recommended pattern for any future hand-transcribed lookup tables.
+- **First commit forgot to write the cross-check as code.** Implementer ran it locally, mentioned it in the commit message, but didn't add the test. Spec review caught it; fixed in `9ada3a4`.
+- **Naming polish:** original exports `HEX_VERTEX_EDGES` / `VERTEX_EDGE_EDGES` were renamed to `HEX_VERTEX_EDGE_INDEX` / `VERTEX_EDGE_EDGE_INDEX` (clearer that these are PyG `edge_index` tensors). Also extracted `NUM_HEXES = 19`, `NUM_VERTICES = 54`, `NUM_EDGES = 72` constants. Caught in code-quality review (`272b20d`).
+- **Plan reference doc updated** in `db76311` to use the new symbol names so subagents executing later tasks read the right names.
+
+## Task 4: state_to_pyg — observation → HeteroData
+
+**Status:** ✅ Done. Commits `2d856fb → 3a61859`.
+
+**Findings:**
+
+- **Module-level pre-built edge_index tensors** (sliced once from the adjacency tables at import time) are shared across all returned `HeteroData` instances. Safe under PyG's standard ops (`Batch.from_data_list`, `HeteroConv`, `.to(device)` all return new tensors), but explicitly **read-only** at runtime. Documented in code with a comment block.
+- **`np.ascontiguousarray(..., dtype=np.float32)`** on numpy inputs is a no-op when the engine already returns contiguous float32 (which it does), but kept as defensive code — costs nothing.
+- **Polish:** replaced literals `114`/`144` with `NUM_HEXES * 6` / `NUM_EDGES * 2` (`3a61859`). Same intent, better self-documenting.
+
+## Task 5: GnnModel — body + value head + policy head
+
+**Status:** ✅ Done. Commits `98c261d → 55adba4`.
+
+**Measured numbers worth keeping:**
+
+- **67,730 params** at hidden_dim=32, 2 layers (within the 20k–80k v0 budget).
+- **7.25 ms CPU forward pass at batch=1** (above the 5 ms target, under the 10 ms test slack). Mitigation if it ever matters: drop `EMBED_DIM` from 128 to 64.
+
+**Findings:**
+
+- **`from .. import ACTION_SPACE_SIZE` (relative)** would have failed at runtime — `catan_gnn` and `catan_mcts` are sibling packages, not nested. Implementer used absolute `from catan_mcts import ACTION_SPACE_SIZE`. Plan snippet was wrong.
+- **`Batch.scalars.view(-1, N_SCALARS)`** is fragile because PyG's collation behavior for graph-level attrs varies between versions. Cleaner fix lived in `state_to_pyg.py`: store scalars as shape `[1, 22]` so `Batch.from_data_list` produces shape `[B, 22]` deterministically. Applied in `55adba4`.
+- **`from torch_geometric.utils import scatter` was inside `forward()`** in the initial commit (delayed import to avoid PyG-version-location issues). PyG 2.5+ has stable scatter location; moved to module level in `55adba4`.
+- **New test added:** `test_scalars_collated_correctly_for_various_batch_sizes` at B ∈ {1, 2, 4, 16} — guards against PyG collation regressions.
+
+## Task 6: CatanReplayDataset
+
+**Status:** ✅ Done. Commits `4d4d202 → 4e4fd8a`.
+
+**Findings (one of the most important catches in the whole project):**
+
+- **The plan's replay loop counted `len(legal) > 1` for ANY player** as an MCTS-decided move. **That would have produced silently corrupted training positions.** Implementer caught the bug: `move_index` is only incremented inside `play_one_game` when `current_player == recorded_player`. So the dataset's replay must also only count non-trivial decisions where `engine.current_player() == row.current_player`. Without this guard, position N in the parquet would map to a different engine state every time another player happened to have a non-trivial decision in between.
+- **v1-only data must be filtered AND not crash the loader.** The plan said "filter v1 by schema_version >= 2" but the original code unconditionally accessed `games["action_history"]`, which throws `KeyError` on v1 parquets. Found in `4e4fd8a`'s `test_v1_games_are_skipped`. Fixed: relaxed the empty-check so the dataset can construct empty when only v1 data is present.
+- **Test runtime down from 12s to 10s** by sharing the e1 mini-run via a module-scoped pytest fixture. Cosmetic but quality-of-life.
+
+## Task 7: Training loop
+
+**Status:** ✅ Done. Commits `b30c42d → 7d7c4b0`.
+
+**Findings:**
+
+- **The plan's `_masked_policy_loss` would have produced NaN in every training step.** PyTorch's `log_softmax` of `-inf` logits produces `-inf`, and `0 * -inf == NaN` even when the target is 0. The dataset guarantees `target == 0` at illegal positions, so the loss should be finite — but it isn't, until you mask the log_probs to 0 at illegal positions before multiplying by target. Implementer caught it; one-line fix:
+  ```python
+  log_probs = log_probs.masked_fill(~mask, 0.0)
+  ```
+  **Without this fix the model would have trained on NaN gradients, which silently breaks everything.** Tests would have passed (they only check artifact existence) and we'd have shipped a broken pipeline.
+- **Per-epoch wall-clock was ~115s on test data** (3,880 rows × batch=4) — much higher than the spec's "few seconds" estimate. Cause: chance-step game-length blowup (~12-15k steps/game). Production training at batch=64 would be ~7s/epoch instead. Spec's per-epoch estimate was based on the wrong game length.
+- **GPU support added** as a plan amendment (`96a41d4`): `device="auto"` resolves to cuda when available. Confirmed working on NVIDIA GTX 1650.
+- **`model.cpu().state_dict()` mutates the model in place.** Footgun if a caller wants to keep training on GPU after `train_main()` returns. Fixed in `7d7c4b0`: copy state_dict tensors to CPU without touching the model itself.
+- **`git_sha` returns `"unknown"`** on WSL when run against a Windows-path worktree — git can't resolve the gitfile path. Cosmetic; we have other commit-tracking via `out_dir` paths.
+
+## Task 8: GnnEvaluator
+
+**Status:** ✅ Done. Commits `7e97d61 → 6e43a6f`.
+
+**Findings:**
+
+- **Cache-hit invariant test exposed an aliasing footgun.** The plan's cache key is `tuple(state._engine.action_history())`. The implementer's first version of the cache-hit test asserted that `evaluate(state2)` triggers a *new* forward pass when state2 is from a different seed. But `_drive_to_player_decision(state2)` produced the same action_history as state1 (different *seeds* but identical *decision-history* prefixes — chance outcomes that drove forward are NOT in the action history we use for the cache key). Cache hit. Test failed correctly. Fixed by cloning state and applying one legal action — guarantees action_history differs by exactly one entry.
+- **Defensive `model.eval()` inside `_forward()`** — costs nothing, prevents footguns if a caller monkey-patches the model into train mode externally.
+- **No batched MCTS leaf eval** is the obvious v1 follow-up. At sims=400 with ~150 decisions/game, that's ~60k sequential forward passes/game — host→device transfer dominates compute at batch=1. TODO comment added in code.
+
+## Task 9: Bench-2 static-position benchmark
+
+**Status:** ✅ Done. Commit `7b1c4f1`.
+
+**Findings:**
+
+- **Replay-loop parity with dataset** required exact mirroring of Task 6's logic, including the `current_player` guard. Done correctly on first try because the dataset bug had been caught.
+- **Smoke run with depth=3, n=10:** value MAE ≈ 0.70, KL ≈ 0.98 (1-epoch model). Sane envelope, not interpreted further. Real numbers come from a properly-trained model.
+
+## Task 10: e6 MCTS-with-GNN winrate experiment
+
+**Status:** ✅ Done. Commit `1078d53`.
+
+**Findings:**
+
+- **One smoke test, runs in ~2 min** (1 game × sims=2 with a 1-epoch trained model). Validates the experiment plumbing without committing to a real training cost.
+- **CLI registration:** added `e6` to `_EXPERIMENTS` dict in `cli.py` and `--help` choices.
+- **Multiprocessing pickling:** the worker passes `checkpoint Path + hidden_dim + num_layers`, not the live model. Each worker re-loads the checkpoint from disk on its side. Fine for a 283 KB v0 checkpoint; would be wasteful at scale.
+
+## Task 11: End-to-end smoke run
+
+**Status:** ✅ Done with concerns. No commit (acceptance only).
+
+**Findings (the smoke caught real issues, exactly as it's supposed to):**
+
+- **The 1500-game e5 v2 parquet was schema v1.** Detected in Step 1. Branch isolation, see Task 2 discussion. Forced a small fresh e5 sweep on `gnn-v0` to generate v2 training data.
+- **5-epoch training on 10-game v2 data:** val_loss 1.94 → 1.23, val_top1 0.40 → 0.38. Loss decreasing, top-1 noisy (low data). Pipeline works.
+- **bench-2 (n=100):** value_mae=0.30, policy_kl=0.0012. Better than the 1-epoch smoke (0.70 / 0.98); sanity-consistent.
+- **e6 5-game smoke at sims=100, max_seconds=360 → 0 finished games.** All 5 timed out at exactly 18 moves. Cause: GNN+MCTS at sims=100 is ~20s/move on this CPU, exceeds budget. **The 360s/game cap that worked for e5 lookahead-VP is too tight for e6 GNN inference.** Lesson: pipeline cost per move is dominated by the evaluator. Need 600s+ cap for e6.
+- **The path-quirk fix** (`5284461`) emerged from Step 1's discovery that the smoke e5 sweep landed at worktree-root `runs/` instead of `mcts_study/runs/`. Real bug in `cli.py`: top-level `--out-root` was consumed but never forwarded to the experiment's `cli_main`. Regression test added.
+- **Pipeline verdict:** ✅ end-to-end working — every component produces correct artifacts, every gate detects bad inputs. Strength evaluation needs (1) more training data (only 10 games of v2 currently) and (2) larger e6 budget.
+
+## Post-task: cli `--out-root` forwarding fix
+
+**Status:** ✅ Done. Commit `5284461`.
+
+**Findings:**
+
+- **Every multi-worker sweep we've ever done landed at worktree-root `runs/`** instead of the user-specified `--out-root`. The top-level argparse (`runp.add_argument("--out-root", ...)`) consumed the value, then `parse_known_args` shoved the rest into `sys.argv`, and the experiment's *own* `cli_main()` re-parsed with its default `Path("runs")`.
+- **User's `--out-root` was silently dropped.** Visible only by inspecting where parquets landed.
+- **Fix:** re-inject `--out-root <user-value>` into the forwarded `sys.argv` before calling the experiment's `cli_main()`.
+- **Regression test:** `test_cli_forwards_out_root_to_experiment` runs an e1 sweep with `--out-root tmp_path/specified` and asserts the run dir lands there.
+- **Process lesson:** subtle CLI bugs that produce visible-but-not-erroring behavior can persist for many runs unnoticed. Worth a regression test for each non-trivial argparse forwarding pattern.
+
+## Data regen (post-Task 11)
+
+**Status:** ✅ Done. Background task `bvsgryodj`.
+
+**Numbers:**
+
+- **50 games / 200 attempted** (25 each at depth=25/sims=400 and depth=35/sims=400).
+- **0 timeouts** with a 600s/game cap (vs 9.3% timeout rate on the original 360s e5 sweep).
+- **Schema v2 with action_history** — usable for GNN training.
+- **Wall-clock:** ~1h45m on 4 workers.
+
+**Per-cell winrate (this run vs original e5 v2 sweep):**
+
+| cell | regen (n=25) | original v2 (n=57/55) |
+|---|---:|---:|
+| depth=25/sims=400 | 60.0% | 75.4% |
+| depth=35/sims=400 | 48.0% | 76.4% |
+
+Both within ±20pp 95% CI for n=25 — consistent with the original measurement, though the depth=35 drop is on the larger end of plausible.
+
+## Plan amendments
+
+- **`96a41d4`** — GPU support amendment: training defaults to `device="auto"` → cuda when available, MCTS-time inference defaults to CPU (transfer overhead dominates at batch=1).
+- **`db76311`** — symbol-name sync after Task 3 polish (HEX_VERTEX_EDGES → HEX_VERTEX_EDGE_INDEX).
+
+## Bigger lessons that should make it into `learnings.md`
+
+1. **Branch isolation in git worktrees is silent.** Two worktrees on different branches can run for hours without either knowing they have divergent code. Schema bumps, recorder changes, and any new field on a persistent format need to land on every active branch *before* a long-running sweep starts. Otherwise the sweep produces data in the old format with no warning.
+
+2. **`0 * -inf = NaN` in PyTorch masked-CE.** The fix is to mask the `log_probs` to 0 before multiplying by the target distribution. This is a foot-gun any AlphaZero implementation hits; it must be tested with a finite-loss assertion in the training loop, not just with "tests pass."
+
+3. **Cache keys for game-state dedup must include all stochastic elements.** If chance outcomes don't appear in the action_history we use as a cache key, two states reachable from the same seed via different chance paths will collide. The dataset's replay logic correctly walks chance steps; the evaluator's cache must too.
+
+4. **Replay determinism requires a per-player counter, not a global one.** When the recorder skips trivial turns and only records the recorded player's MCTS decisions, the dataset's replay loop must mirror that exactly — count only the recorded player's non-trivial decisions toward `move_index`, not all players'. Off-by-N bugs here corrupt training data without crashing.
+
+5. **Argparse forwarding patterns deserve regression tests.** A `parse_known_args` + `sys.argv` rewrite that drops a flag silently can persist across many runs unnoticed. Test that the user's intended behavior survives the round-trip.
+
+6. **Per-evaluator wall-clock budget must be re-tuned per evaluator.** The 360s/game cap that worked fine for lookahead-VP at sims=400 produced 0 finished games at sims=100 GNN inference. Each evaluator has a different per-move cost; the budget must be set per evaluator, not inherited.

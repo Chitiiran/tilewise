@@ -11,6 +11,7 @@ from .experiments import (
     e3_rollout_policy,
     e4_tournament,
     e5_lookahead_depth,
+    e6_mcts_gnn_winrate,
 )
 
 
@@ -20,6 +21,7 @@ _EXPERIMENTS = {
     "e3": e3_rollout_policy,
     "e4": e4_tournament,
     "e5": e5_lookahead_depth,
+    "e6": e6_mcts_gnn_winrate,
 }
 
 
@@ -32,7 +34,7 @@ def _run_all(out_root: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="catan_mcts")
     sub = p.add_subparsers(dest="cmd", required=True)
-    runp = sub.add_parser("run", help="run an experiment (e1..e5, or all)")
+    runp = sub.add_parser("run", help="run an experiment (e1..e6, or all)")
     runp.add_argument("name", choices=list(_EXPERIMENTS) + ["all"])
     runp.add_argument("--out-root", type=Path, default=Path("runs"))
     args, rest = p.parse_known_args(argv)
@@ -45,8 +47,15 @@ def main(argv: list[str] | None = None) -> int:
         _run_all(args.out_root)
     else:
         mod = _EXPERIMENTS[args.name]
-        # Forward unknown args to the experiment's CLI parser by pushing them onto sys.argv.
-        sys.argv = [f"catan_mcts.{args.name}", *rest]
+        # Forward --out-root + any unknown args to the experiment's CLI parser.
+        # The top-level parser consumes --out-root via runp.add_argument; without
+        # re-injecting it here, the experiment's cli_main uses its own default
+        # ("runs") and the user's --out-root is silently dropped.
+        sys.argv = [
+            f"catan_mcts.{args.name}",
+            "--out-root", str(args.out_root),
+            *rest,
+        ]
         mod.cli_main()
     return 0
 

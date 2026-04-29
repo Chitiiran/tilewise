@@ -10,7 +10,7 @@ from catan_mcts.recorder import SelfPlayRecorder, SCHEMA_VERSION
 
 
 def test_schema_version_is_constant():
-    assert SCHEMA_VERSION == 1  # bump explicitly when the schema changes
+    assert SCHEMA_VERSION == 2  # bump explicitly when the schema changes
 
 
 def test_recorder_writes_expected_columns(tmp_path: Path):
@@ -27,7 +27,7 @@ def test_recorder_writes_expected_columns(tmp_path: Path):
             action_taken=204,
             mcts_root_value=0.5,
         )
-        game_rec.finalize(winner=0, final_vp=[10, 5, 4, 3], length_in_moves=1)
+        game_rec.finalize(winner=0, final_vp=[10, 5, 4, 3], length_in_moves=1, action_history=[])
     rec.flush()
 
     moves = pq.read_table(tmp_path / "moves.parquet").to_pandas()
@@ -38,7 +38,8 @@ def test_recorder_writes_expected_columns(tmp_path: Path):
         "mcts_visit_counts", "action_taken", "mcts_root_value", "schema_version",
     }
     assert set(games.columns) == {
-        "seed", "winner", "final_vp", "length_in_moves", "mcts_config_id", "schema_version",
+        "seed", "winner", "final_vp", "length_in_moves", "mcts_config_id",
+        "action_history", "schema_version",
     }
     assert moves["schema_version"].iloc[0] == SCHEMA_VERSION
     assert games["schema_version"].iloc[0] == SCHEMA_VERSION
@@ -49,7 +50,7 @@ def test_recorder_writes_expected_columns(tmp_path: Path):
 def test_recorder_writes_config_json(tmp_path: Path):
     rec = SelfPlayRecorder(out_dir=tmp_path, config={"experiment": "smoke", "uct_c": 1.4})
     with rec.game(seed=1) as g:
-        g.finalize(winner=-1, final_vp=[0, 0, 0, 0], length_in_moves=0)
+        g.finalize(winner=-1, final_vp=[0, 0, 0, 0], length_in_moves=0, action_history=[])
     rec.flush()
 
     cfg = json.loads((tmp_path / "config.json").read_text())
@@ -90,7 +91,7 @@ def test_recorder_checkpoint_writes_labeled_shard(tmp_path: Path):
             mcts_visit_counts=np.zeros(ACTION_SPACE_SIZE, dtype=np.int32),
             action_taken=204, mcts_root_value=0.0,
         )
-        g.finalize(winner=0, final_vp=[10,5,4,3], length_in_moves=1)
+        g.finalize(winner=0, final_vp=[10,5,4,3], length_in_moves=1, action_history=[])
     rec.checkpoint("sims=5")
 
     # After checkpoint, shard files exist and buffers are clear.
@@ -102,7 +103,7 @@ def test_recorder_checkpoint_writes_labeled_shard(tmp_path: Path):
 
     # Second cell: another game. Must NOT include data from the first cell.
     with rec.game(seed=2) as g:
-        g.finalize(winner=1, final_vp=[5,10,4,3], length_in_moves=1)
+        g.finalize(winner=1, final_vp=[5,10,4,3], length_in_moves=1, action_history=[])
     rec.checkpoint("sims=25")
 
     games2 = pq.read_table(tmp_path / "games.sims=25.parquet").to_pandas()

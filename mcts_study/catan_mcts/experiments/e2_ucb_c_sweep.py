@@ -62,6 +62,7 @@ def _run_cell(rec: SelfPlayRecorder, c: float, sims: int, seeds: list[int],
                     winner=outcome.winner,
                     final_vp=outcome.final_vp,
                     length_in_moves=outcome.length_in_moves,
+                    action_history=outcome.action_history,
                 )
                 rec.mark_done(seed)
 

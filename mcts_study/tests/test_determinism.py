@@ -77,7 +77,10 @@ def _run_one(out_dir: Path) -> bytes:
         if state.is_terminal():
             rs = state.returns()
             winner = rs.index(1.0) if 1.0 in rs else -1
-        g.finalize(winner=winner, final_vp=[0,0,0,0], length_in_moves=steps)
+        g.finalize(
+            winner=winner, final_vp=[0,0,0,0], length_in_moves=steps,
+            action_history=list(state._engine.action_history()),
+        )
     rec.flush()
     return (out_dir / "moves.parquet").read_bytes()
 

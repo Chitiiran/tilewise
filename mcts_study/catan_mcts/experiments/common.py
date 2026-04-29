@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +20,7 @@ class GameOutcome:
     final_vp: list[int]
     length_in_moves: int
     timed_out: bool = False  # v2: True when max_seconds aborted the game
+    action_history: list[int] = field(default_factory=list)
 
 
 def make_run_dir(parent: Path, name: str) -> Path:
@@ -123,7 +124,9 @@ def play_one_game(
         # Pull VP from engine stats. The adapter exposes the underlying engine via _engine.
         stats = state._engine.stats()
         final_vp = [int(stats["players"][p]["vp_final"]) for p in range(4)]
+    action_history = list(state._engine.action_history())
     return GameOutcome(
         seed=seed, winner=winner, final_vp=final_vp,
         length_in_moves=steps, timed_out=timed_out,
+        action_history=action_history,
     )

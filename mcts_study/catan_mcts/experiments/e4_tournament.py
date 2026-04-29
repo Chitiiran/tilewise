@@ -80,6 +80,7 @@ def _run_cell(rec: SelfPlayRecorder, rot_idx: int, mcts_sims: int, seeds: list[i
                     winner=outcome.winner,
                     final_vp=outcome.final_vp,
                     length_in_moves=outcome.length_in_moves,
+                    action_history=outcome.action_history,
                 )
                 rec.mark_done(seed)
 
