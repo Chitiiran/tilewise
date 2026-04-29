@@ -54,6 +54,10 @@ impl PyEngine {
         self.inner.random_rollout_to_terminal(rollout_seed)
     }
 
+    fn lookahead_vp_value(&mut self, depth: u32, eval_seed: u64) -> [f32; 4] {
+        self.inner.lookahead_vp_value(depth, eval_seed)
+    }
+
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
     }
