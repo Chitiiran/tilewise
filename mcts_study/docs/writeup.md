@@ -129,6 +129,46 @@ For now, what we *can* learn from the v2-Python data on this run is *how often t
 - **Multiprocessing.** Each game is independent; trivially parallelizable across CPU cores. Linear speedup applies up to physical core count. With 8 cores, today's 1-2 minutes/game becomes ~10s/game.
 - **Smarter baseline.** A proper Catanatron-grade greedy bot would change e4's interpretation.
 
+## 5b. The lookahead-VP pivot (e5)
+
+After the v1 sweep, the rollout-cap firing rate (~8%) and the dice-luck-dominated nature of random play started to look like a fundamental limitation rather than a tunable knob. We replaced random rollouts with a **depth-bounded greedy-VP lookahead**: from each MCTS leaf, play forward `depth` rounds with greedy decisions and uniform chance sampling, then return per-player VP normalized to `[-1, 1]`. The signal is biased (greedy ≠ optimal) but it's *always present* — no `[0,0,0,0]` cap returns swamping the search.
+
+Cost: implementation is 1 Rust function (`Engine::lookahead_vp_value`) + 1 OpenSpiel evaluator (`LookaheadVpEvaluator`). Per-leaf wall-clock is **~6× faster than even the Rust-side full rollout**, because the lookahead exits after `depth*4` EndTurns instead of running to terminal.
+
+A second tweak compounded the speedup: **skip-trivial turns**. Catan has many forced moves (forced `EndTurn` after a no-resource roll, forced `Discard` when only one card matters). `play_one_game` now applies `len(legal)==1` actions directly and bypasses MCTS entirely on those steps.
+
+### e5 results (2026-04-29, 4 workers, ~25 min wall-clock)
+
+90 games, MCTS-vs-3-random across `(depth, sims) ∈ {3, 10, 25} × {25, 100, 400}`:
+
+| depth | sims | n  | MCTS wins | winrate | mean VP | avg game length |
+|------:|-----:|---:|----------:|--------:|--------:|----------------:|
+|     3 |   25 | 10 |         0 |    0.0% |    1.70 |          17,171 |
+|     3 |  100 | 10 |         0 |    0.0% |    3.30 |           9,637 |
+|     3 |  400 | 10 |         1 |   10.0% |    3.80 |           7,342 |
+|    10 |   25 | 10 |         0 |    0.0% |    1.20 |          17,334 |
+|    10 |  100 | 10 |         0 |    0.0% |    2.90 |           8,364 |
+|    10 |  400 |  6 |         1 |   16.7% |    4.33 |           7,574 |
+|    25 |   25 | 10 |         0 |    0.0% |    1.30 |          14,730 |
+|    25 |  100 | 10 |         3 |   30.0% |    5.50 |          11,412 |
+|    25 |  400 |  7 |         6 | **85.7%** |    9.86 |          10,183 |
+
+7 of 90 games timed out at the 300s/game cap (all in `depth ≥ 10`, where lookahead bookkeeping accumulates).
+
+### What changes vs v1 e1
+
+v1 random rollouts at sims=100 produced 45% winrate. e5's lookahead-VP at depth=25/sims=400 hits **85.7%** — a clean qualitative jump. Pattern is monotone in both axes:
+
+- **Depth matters more than sims.** At depth=3, more sims don't help: greedy 3-round lookahead is too myopic to distinguish cities-now from roads-for-future-settlements. At depth=25, the same sim budget that gave 0% becomes 85.7%.
+- **Skip-trivial collapses game length.** Random-vs-MCTS games at depth=3 still average ~17k steps; at depth=25/sims=400 they collapse to ~10k *and* the MCTS player is reaching 10 VP, not stuck in mid-game.
+- **Sims=25 is universally too small** under this evaluator — even at depth=25, MCTS doesn't have enough sims to differentiate moves.
+
+### Caveats
+
+- **Greedy-augmented MCTS, not pure MCTS.** The lookahead encodes domain knowledge (cities > settlements > roads). A network-based evaluator would replace this; the lookahead is a stepping stone.
+- **n=10 per cell.** 95% CI on a single proportion is roughly ±30pp. The depth=25/sims=400 cell is the only one where the effect is large enough to read through that uncertainty.
+- **No opponent strength scaling.** Random opponents are the trivial case. The next experiment is e5-vs-greedy: the lookahead might collapse against a non-trivial opponent that defends key vertices.
+
 ## 6. What this project actually delivered
 
 - Phase 0: chance-aware engine (commits 72f79de…918296f). The 9 commits show step-by-step TDD evolution.

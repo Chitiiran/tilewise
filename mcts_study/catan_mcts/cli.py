@@ -10,6 +10,7 @@ from .experiments import (
     e2_ucb_c_sweep,
     e3_rollout_policy,
     e4_tournament,
+    e5_lookahead_depth,
 )
 
 
@@ -18,6 +19,7 @@ _EXPERIMENTS = {
     "e2": e2_ucb_c_sweep,
     "e3": e3_rollout_policy,
     "e4": e4_tournament,
+    "e5": e5_lookahead_depth,
 }
 
 
@@ -30,7 +32,7 @@ def _run_all(out_root: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="catan_mcts")
     sub = p.add_subparsers(dest="cmd", required=True)
-    runp = sub.add_parser("run", help="run an experiment (e1, e2, e3, e4, or all)")
+    runp = sub.add_parser("run", help="run an experiment (e1..e5, or all)")
     runp.add_argument("name", choices=list(_EXPERIMENTS) + ["all"])
     runp.add_argument("--out-root", type=Path, default=Path("runs"))
     args, rest = p.parse_known_args(argv)

@@ -77,6 +77,51 @@ def test_play_one_game_natural_finish_not_marked_timed_out():
     assert outcome.timed_out is False
 
 
+def test_play_one_game_skips_bot_on_trivial_turns():
+    """Optimization: when len(legal_actions)==1, play_one_game should apply the
+    forced action directly without invoking the bot. We verify by giving every
+    bot a step() that *raises* — if even one trivial turn is delegated to a bot,
+    the game crashes. With len==1 turns common in Catan (forced Roll, forced
+    EndTurn after no resources), the game should still drive forward, terminating
+    or hitting the timeout cleanly."""
+    import random
+    from catan_mcts.adapter import CatanGame
+
+    class _TrivialOnlyBot:
+        """Bot that crashes if asked to choose between >1 legal actions —
+        i.e., asserts every call is a 'meaningful' decision. Conversely,
+        the test passes if play_one_game NEVER calls bot.step on a trivial
+        turn AND every multi-option turn it does call us on, we resolve.
+        For this test we just want it to not crash on len==1 turns."""
+        calls_with_multiple_legals = 0
+
+        def step(self, state):
+            legal = state.legal_actions()
+            if len(legal) > 1:
+                _TrivialOnlyBot.calls_with_multiple_legals += 1
+            else:
+                raise AssertionError(
+                    "bot.step called on trivial turn (len(legal)==1) — "
+                    "play_one_game should auto-apply forced actions"
+                )
+            return legal[0]
+
+    _TrivialOnlyBot.calls_with_multiple_legals = 0
+    game = CatanGame()
+    bots = {i: _TrivialOnlyBot() for i in range(4)}
+    outcome = play_one_game(
+        game=game, bots=bots, seed=42,
+        chance_rng=random.Random(42),
+        recorded_player=None, recorder_game=None,
+        max_seconds=10.0,
+    )
+    # Either the game finished or hit the wall clock; either way no bot.step
+    # was ever called on a forced turn.
+    assert outcome.length_in_moves > 0
+    # And we DID make at least some real decisions (otherwise the test is vacuous).
+    assert _TrivialOnlyBot.calls_with_multiple_legals > 0
+
+
 class _RandomBot:
     def __init__(self, seed: int) -> None:
         import random
