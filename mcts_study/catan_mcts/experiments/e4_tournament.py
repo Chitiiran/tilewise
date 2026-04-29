@@ -44,14 +44,20 @@ def main(
     num_games_per_seating: int = 25,
     mcts_sims: int = 100,
     seed_base: int = 4_000_000,
+    max_seconds: float = 300.0,
+    resume: bool = True,
 ) -> Path:
-    """4 cyclic rotations of [MCTS, Greedy, Random, Random]."""
+    """4 cyclic rotations of [MCTS, Greedy, Random, Random].
+
+    v2: per-game cap, per-rotation checkpoint, resume support."""
     out = make_run_dir(out_root, "e4_tournament")
     rec = SelfPlayRecorder(out, config={
         "experiment": "e4_tournament",
         "mcts_sims": mcts_sims,
         "num_games_per_seating": num_games_per_seating,
+        "max_seconds": max_seconds,
     })
+    done = rec.done_seeds() if resume else set()
 
     game = CatanGame()
     base_seating = ["MCTS", "Greedy", "Random", "Random"]
@@ -60,6 +66,8 @@ def main(
     for rot_idx, seating in enumerate(rotations):
         for i in tqdm(range(num_games_per_seating), desc=f"rot={rot_idx} {'-'.join(seating)}", leave=False):
             seed = seed_base + rot_idx * 10_000 + i
+            if seed in done:
+                continue
             chance_rng = random.Random(seed)
             mcts_bot = _build_mcts(game, sims=mcts_sims, seed=seed)
             bots = {}
@@ -77,12 +85,23 @@ def main(
                 outcome = play_one_game(
                     game=game, bots=bots, seed=seed, chance_rng=chance_rng,
                     recorded_player=mcts_slot, recorder_game=g_rec, mcts_bot=mcts_bot,
+                    max_seconds=max_seconds,
                 )
-                g_rec.finalize(
-                    winner=outcome.winner,
-                    final_vp=outcome.final_vp,
-                    length_in_moves=outcome.length_in_moves,
-                )
+                if outcome.timed_out:
+                    g_rec._moves.clear()
+                    g_rec._finalized = True
+                    rec.skip_game(
+                        seed=seed, reason="wall-clock-timeout",
+                        length_in_moves=outcome.length_in_moves,
+                    )
+                else:
+                    g_rec.finalize(
+                        winner=outcome.winner,
+                        final_vp=outcome.final_vp,
+                        length_in_moves=outcome.length_in_moves,
+                    )
+                    rec.mark_done(seed)
+        rec.checkpoint(f"rot={rot_idx}")
     rec.flush()
     return out
 
@@ -93,10 +112,13 @@ def cli_main():
     p.add_argument("--num-games-per-seating", type=int, default=25)
     p.add_argument("--mcts-sims", type=int, default=100)
     p.add_argument("--seed-base", type=int, default=4_000_000)
+    p.add_argument("--max-seconds", type=float, default=300.0)
+    p.add_argument("--no-resume", action="store_true")
     args = p.parse_args()
     out = main(
         out_root=args.out_root,
         num_games_per_seating=args.num_games_per_seating,
+        max_seconds=args.max_seconds, resume=not args.no_resume,
         mcts_sims=args.mcts_sims, seed_base=args.seed_base,
     )
     print(f"e4 wrote to {out}")

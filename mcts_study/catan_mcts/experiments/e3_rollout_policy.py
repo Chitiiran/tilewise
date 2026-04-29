@@ -73,7 +73,10 @@ def main(
     num_games: int = 50,
     sims_grid: list[int] = (5, 25, 100),
     seed_base: int = 3_000_000,
+    max_seconds: float = 300.0,
+    resume: bool = True,
 ) -> Path:
+    """v2: per-game cap, per-(policy,sims)-cell checkpoint, resume support."""
     out = make_run_dir(out_root, "e3_rollout_policy")
     rec = SelfPlayRecorder(out, config={
         "experiment": "e3_rollout_policy",
@@ -81,13 +84,17 @@ def main(
         "sims_grid": list(sims_grid),
         "num_games": num_games,
         "rollout_policies": ["random", "heuristic"],
+        "max_seconds": max_seconds,
     })
+    done = rec.done_seeds() if resume else set()
 
     game = CatanGame()
     for policy_name in ("random", "heuristic"):
         for sims in sims_grid:
             for i in tqdm(range(num_games), desc=f"{policy_name} sims={sims}", leave=False):
                 seed = seed_base + (0 if policy_name == "random" else 1) * 1_000_000 + sims * 1_000 + i
+                if seed in done:
+                    continue
                 chance_rng = random.Random(seed)
                 rng = np.random.default_rng(seed)
                 if policy_name == "random":
@@ -104,12 +111,23 @@ def main(
                     outcome = play_one_game(
                         game=game, bots=bots, seed=seed, chance_rng=chance_rng,
                         recorded_player=0, recorder_game=g_rec, mcts_bot=mcts_bot,
+                        max_seconds=max_seconds,
                     )
-                    g_rec.finalize(
-                        winner=outcome.winner,
-                        final_vp=outcome.final_vp,
-                        length_in_moves=outcome.length_in_moves,
-                    )
+                    if outcome.timed_out:
+                        g_rec._moves.clear()
+                        g_rec._finalized = True
+                        rec.skip_game(
+                            seed=seed, reason="wall-clock-timeout",
+                            length_in_moves=outcome.length_in_moves,
+                        )
+                    else:
+                        g_rec.finalize(
+                            winner=outcome.winner,
+                            final_vp=outcome.final_vp,
+                            length_in_moves=outcome.length_in_moves,
+                        )
+                        rec.mark_done(seed)
+            rec.checkpoint(f"{policy_name}-sims={sims}")
     rec.flush()
     return out
 
@@ -120,10 +138,13 @@ def cli_main():
     p.add_argument("--num-games", type=int, default=50)
     p.add_argument("--sims-grid", type=int, nargs="+", default=[5, 25, 100])
     p.add_argument("--seed-base", type=int, default=3_000_000)
+    p.add_argument("--max-seconds", type=float, default=300.0)
+    p.add_argument("--no-resume", action="store_true")
     args = p.parse_args()
     out = main(
         out_root=args.out_root, num_games=args.num_games,
         sims_grid=args.sims_grid, seed_base=args.seed_base,
+        max_seconds=args.max_seconds, resume=not args.no_resume,
     )
     print(f"e3 wrote to {out}")
 
