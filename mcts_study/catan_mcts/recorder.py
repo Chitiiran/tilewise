@@ -119,6 +119,36 @@ class SelfPlayRecorder:
         pq.write_table(moves_table, self._out_dir / "moves.parquet")
         pq.write_table(games_table, self._out_dir / "games.parquet")
 
+    def skip_game(self, *, seed: int, reason: str, length_in_moves: int = 0) -> None:
+        """v2 hardening: record an abandoned/timed-out game in skipped.csv
+        without polluting moves/games parquet. Append-only; safe to call across
+        restarts."""
+        csv_path = self._out_dir / "skipped.csv"
+        is_new = not csv_path.exists()
+        with csv_path.open("a", encoding="utf-8") as f:
+            if is_new:
+                f.write("seed,reason,length_in_moves\n")
+            f.write(f"{int(seed)},{reason},{int(length_in_moves)}\n")
+
+    def done_seeds(self) -> set[int]:
+        """v2 hardening: read seeds that finished cleanly in this run dir.
+        Used by experiments to skip already-completed work on restart."""
+        done_path = self._out_dir / "done.txt"
+        if not done_path.exists():
+            return set()
+        return {
+            int(line.strip())
+            for line in done_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+
+    def mark_done(self, seed: int) -> None:
+        """v2 hardening: append `seed` to done.txt. Idempotent in the sense
+        that downstream `done_seeds()` returns a set, so duplicate appends
+        cause no harm beyond a slightly larger file."""
+        with (self._out_dir / "done.txt").open("a", encoding="utf-8") as f:
+            f.write(f"{int(seed)}\n")
+
     def checkpoint(self, label: str) -> None:
         """v2 hardening: write `moves.<label>.parquet` + `games.<label>.parquet`
         for the currently-buffered rows, then clear the buffers.

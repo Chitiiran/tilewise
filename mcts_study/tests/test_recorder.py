@@ -117,6 +117,41 @@ def test_recorder_checkpoint_writes_labeled_shard(tmp_path: Path):
     assert (tmp_path / "games.sims=5.parquet").exists()
 
 
+def test_recorder_skip_game_writes_csv_sidecar(tmp_path: Path):
+    """v2: skip_game(seed, reason) appends to skipped.csv. Lets experiments
+    record timed-out games without polluting moves/games parquet."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    rec.skip_game(seed=1, reason="wall-clock-timeout", length_in_moves=15234)
+    rec.skip_game(seed=7, reason="rollout-cap-pathology", length_in_moves=8401)
+
+    csv_path = tmp_path / "skipped.csv"
+    assert csv_path.exists()
+    text = csv_path.read_text()
+    # Header + 2 rows
+    lines = [l for l in text.strip().split("\n") if l]
+    assert len(lines) == 3
+    assert lines[0].startswith("seed,reason,length_in_moves")
+    assert "1,wall-clock-timeout,15234" in lines[1]
+    assert "7,rollout-cap-pathology,8401" in lines[2]
+
+
+def test_recorder_done_seeds_round_trip(tmp_path: Path):
+    """v2: done_seeds() reads done.txt, mark_done(seed) appends. Used by
+    experiments to skip already-finished seeds on restart."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    assert rec.done_seeds() == set()
+
+    rec.mark_done(42)
+    rec.mark_done(99)
+    assert rec.done_seeds() == {42, 99}
+
+    # New recorder instance over same dir reads the same done.txt
+    rec2 = SelfPlayRecorder(out_dir=tmp_path, config={"foo": "bar"})
+    assert rec2.done_seeds() == {42, 99}
+    rec2.mark_done(7)
+    assert rec2.done_seeds() == {42, 99, 7}
+
+
 def test_recorder_checkpoint_empty_is_noop(tmp_path: Path):
     """checkpoint() with no buffered rows must not write empty shard files."""
     rec = SelfPlayRecorder(out_dir=tmp_path, config={})
