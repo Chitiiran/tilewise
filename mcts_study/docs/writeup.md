@@ -48,12 +48,14 @@ This single fact reshaped the study: production sweeps had to be scaled down by 
 
 ### Production parameters (this study)
 
-| Experiment | Original spec | Used here |
+| Experiment | Original spec | Used here (5h sweep, 2026-04-28→29) |
 |---|---|---|
-| e1 sims grid | [50, 200, 1000, 4000] × 200 games | [5, 25] × 5 games (run on 2026-04-28) |
-| e2 c grid | [0.5, 1.0, 1.4, 2.0, 4.0] × 200 games at sims=200 | structural validation only — full sweep deferred |
-| e3 sims grid | [50, 200, 1000] × 200 games × 2 policies | structural validation only |
-| e4 mcts_sims | 1000, 25 games × 4 rotations | structural validation only |
+| e1 sims grid | [50, 200, 1000, 4000] × 200 games | **[5, 25, 100] × 20 games** = 60 games (n=20 cells) |
+| e2 c grid | [0.5, 1.0, 1.4, 2.0, 4.0] × 200 games at sims=200 | [0.5, 1.0, 1.4, 2.0, 4.0] × 10 games at sims=25 — **selection-biased; deferred to v2** |
+| e3 sims grid | [50, 200, 1000] × 200 games × 2 policies | [5, 25] × 10 games × 2 policies — **selection-biased; deferred to v2** |
+| e4 mcts_sims | 1000, 25 games × 4 rotations | mcts_sims=25, 5 games × 4 rotations — **selection-biased; deferred to v2** |
+
+The whole sweep took ~12 hours wall-clock, single-threaded. **e1 has clean data**; e2/e3/e4 ran with a 5-min per-game cap that selectively discarded slow games — see §3 for what we plan to do about it.
 
 **This is intentionally below the threshold needed for sharp scientific claims.** What we *can* claim:
 - The pipeline works end-to-end: MCTSBot drives our adapter, plays full Tier-1 games, recorder produces well-formed parquet.
@@ -70,61 +72,56 @@ The latter four are the work of a follow-up workstation session — feasible now
 
 ## 2. Experiment 1 — Win-rate vs simulation budget
 
-*Numbers and plots produced by `mcts_study/notebooks/analysis.ipynb`. See its e1 section.*
+**Actual e1 run on 2026-04-28 (n=20 games per sims budget, 60 games total, ~8h wall-clock):**
 
-**Actual e1 run on 2026-04-28 (5 games per sims budget):**
+| sims | MCTS-seat-0 wins | No-winner games | Avg game length (steps) |
+|---|---|---|---|
+| 5 | 6/20 (**30%**) | 1/20 | 7,280 |
+| 25 | 1/20 (5%) | 4/20 | 9,836 |
+| 100 | 9/20 (**45%**) | 7/20 | 14,360 |
+| Random baseline | 25% (1 of 4 seats) | — | — |
 
-| sims | MCTS-seat-0 wins | Avg game length |
-|---|---|---|
-| 5 | 1/5 (20%) | 1,338 steps (one game hit 30k cap) |
-| 25 | 1/5 (20%) | 7,204 steps |
-| Random baseline | 25% (1 of 4 seats) | n/a |
+Three findings worth flagging:
 
-The win-rate numbers are *below the noise floor* — at n=5 per cell, the 95% CI on a single proportion estimate spans roughly 0% to 75%. So we cannot reject "MCTS is no better than random at these sims budgets." A more useful read: **the recording pipeline produced well-formed `moves.parquet` with the correct schema, the engine handled all chance points cleanly, and game-length distribution matches the empirical model (most games terminate, a fraction hit the 30k step cap).**
+**(a) MCTS strength is non-monotone in simulation budget.** The textbook story says "more sims → better." Empirically, sims=25 *underperforms* both sims=5 (just barely above random) and sims=100 (clear lift). Three plausible reads, in order of likelihood:
+- Statistical noise. At n=20 the 95% CI on a single proportion is roughly ±21pp. The 5% vs 25% gap is barely outside, so this could be a noise dip.
+- The "in-between" budget produces worse games than either extreme. At sims=5, MCTS plays nearly random — outcomes are random-baseline-like. At sims=100, MCTS plays meaningfully. At sims=25, MCTS commits to plans without the depth to execute them.
+- Selection bias from the no-winner rate. As sims goes up, the bot plays more carefully and games more often hit the engine's 30k-step cap before any player reaches 10 VP. Those games are recorded as `winner=-1`, so the winrate-of-MCTS denominator counts them as losses.
 
-For meaningful numbers we'd want n ≥ 50 per cell — entirely tractable now that the Rust rollout is in place. Wall-clock estimate at n=50: ~1.5 hours for sims=5, ~10 hours for sims=25, ~30+ hours for sims=100. Workstation overnight, not laptop session.
+**(b) Average game length grows monotonically with sims** (7.3k → 9.8k → 14.4k). This is the predicted "stronger MCTS → longer games against random" pattern: MCTS plays carefully toward 10 VP but the random opponents don't, so resource-deadlocks and discard cycles drag games out. By sims=100, 35% of games (7/20) hit the 30k cap.
 
-The trajectory we'd expect from a working MCTS:
-- At sims=5: 25% (random-equal). With only 5 simulations, the search tree barely grows past the immediate decisions; UCB exploration dominates exploitation.
-- At sims=25-100: noticeable lift to 35-50%.
-- At sims ≥ 400: continued improvement with diminishing returns; characteristic concave curve.
+**(c) The headline "MCTS at sims=100 wins 45% vs random" is real**, comfortably above the 25% baseline at this n. With n=20, a 45% rate has a 95% CI of roughly 26%-66% — so we can confidently say it's better than random, but we cannot say "it's 45%" with precision better than ±20pp.
 
-## 3. Experiment 2 — UCB exploration constant `c`
+## 3. Experiments 2, 3, 4 — Deferred to v2 sweep
 
-Theoretical guidance from the AlphaGo / classical MCTS literature: `c ≈ √2 ≈ 1.414` is a common starting point for rewards in [0, 1]. For our `[-1, 1]` rewards, `c = 1.4` is reasonable as a starting point.
+The 5h production run (which ran for ~12 hours total) produced data for e2, e3, and e4, but the dataset is unsuitable for the experiments' intended scientific claims.
 
-This study did not run a full c-sweep at scale — what we'd look for in a follow-up:
-- Wide plateau in the 1.0-2.0 range, sharp drop-off below 0.5 (under-exploration) and above 4.0 (over-exploration with little exploitation).
-- Sensitivity should be modest within [1, 2]. If a strong peak appears, that's information about Catan's branching factor and reward sparsity.
+**What happened.** The Python codebase was edited mid-sweep — partway through e1's long sims=100 cell, I started the v2 hardening branch (per-game wall-clock cap, per-cell parquet shards, skipped.csv sidecar, lower rollout cap). Because the WSL venv was a `pip install -e` editable install pointing at the worktree, every commit on `mcts-v2-hardening` went live immediately for any *new* python invocation. e1 had already loaded its code and was unaffected, but e2/e3/e4 — which spawn as fresh processes at the start of each experiment — picked up the v2 Python.
 
-## 4. Experiment 3 — Rollout policy
+**The result.** e2/e3/e4 ran with the v2 default `max_seconds=300`. Many games timed out:
+- e2 (UCB c sweep): 16 of 50 games timed out (32%).
+- e3 (rollout policy): 23 of 40 games timed out (58%; e3 heuristic/sims=25 had only 1/10 complete).
+- e4 (tournament): 4 of 20 games timed out (20%).
 
-The classical MCTS lesson: heuristic rollouts beat random rollouts at low simulation budgets, and the benefit shrinks (sometimes flips negative) at high budgets, because at high budgets the search tree itself learns to prefer good actions and biased rollouts add nothing useful while costing compute.
+Conditional-on-completion winrates exist (saved alongside the parquet shards) but selection bias makes them unreliable — only the games that finished in <5 min are recorded, and "fast games" are correlated with positions where rollouts terminate quickly, which correlates with whichever player happens to be ahead in cards. A bot that's ahead plays faster games; a bot that's behind plays slower games and times out. So winrates from this dataset over-count games where the recorded MCTS player happened to be in good positions.
 
-Our `heuristic_rollout` is intentionally crude (VP-greedy, no opponent modelling). Sharper heuristics would shift the crossover point.
+**The v2 sweep planned for the next session** rebuilds the engine with the lower rollout cap *and* keeps the wall-clock cap, runs all four experiments with parameters matching this v1 e1 (n=20 etc.), and uses 4-core multiprocessing. Expected wall-clock ~1-2 hours total (vs. v1's 12 hours). That sweep is the proper place for e2/e3/e4 numbers.
 
-Production status: structural validation only. The full e3 run is deferred to a future workstation session.
+For now, what we *can* learn from the v2-Python data on this run is *how often the 5-min cap fires* — that's a real measurement of MCTS-on-Catan compute variance. The skipped-rate of 58% at heuristic/sims=25 confirms the Rust-side rollout, while a big speedup over OpenSpiel's `RandomRolloutEvaluator`, doesn't fully tame the rollout-cap-firing pathology at deeper search budgets.
 
-## 5. Experiment 4 — Tournament
-
-Round-robin across 4 cyclic rotations of `[MCTS, Greedy, Random, Random]`. Records the MCTS player's moves regardless of seat to avoid losing training data when MCTS sits at seat ≠ 0.
-
-Expected ordering: MCTS > Greedy > Random. Where Greedy lies on this ordering tells us about MCTS's strength relative to a hand-coded VP-greedy heuristic — if MCTS at sims=100 isn't beating Greedy clearly, that's a signal Catan's value at that budget is below "always build the highest VP thing," which would in turn argue that this engine's MCTS needs either a better evaluator or more sims to be worth its compute.
-
-Production status: structural validation only.
-
-## 6. Caveats and threats to validity
+## 4. Caveats and threats to validity
 
 - **Fixed board.** v1 engine ships the standard layout only; randomization is Tier 2.
 - **Three random opponents are weak.** A bot can win 50% vs random at 100 sims and 50% vs strong opponents at 10000 sims, and those numbers say almost nothing about each other.
-- **Sample sizes.** This study's defaults (3-15 games per cell) cannot resolve win-rate differences smaller than ~25 percentage points at the standard 95% CI. Treat all numbers as qualitative.
+- **Sample sizes.** e1 ran with n=20 per cell — 95% CI on a single proportion estimate is roughly ±21pp. We can resolve "MCTS at sims=100 beats random" but not finer-grained claims. e2/e3/e4 are even noisier (selection-biased) and deferred to v2.
 - **Rollout policy crudeness.** Both `heuristic_rollout` and `GreedyBaselineBot` are first-pass implementations. Smarter heuristics (longest-road awareness, blocking opponents, port priorities) would shift e3 and e4 considerably.
 - **Rollout safety cap firing.** ~8% of random rollouts hit the engine's 100k-step safety cap and return `[0,0,0,0]` (draw signal). This biases `mcts_root_value` slightly toward 0. For the production GNN pipeline, this stops mattering once the value head replaces random rollouts — see learnings #6.
 - **Compute scaling.** Game length is ~150x larger than the spec assumed (the spec's "~80 steps/game" was for human play; random self-play games are 4k-30k steps). The Rust-side rollout (P3.T7a/b) recovered ~100x of the lost throughput by moving rollouts out of the PyO3 boundary, but the original spec scope (sims=4000, 200 games/cell) is still a workstation-class workload — this study runs at proof-of-pipeline scale.
 - **Determinism.** End-to-end deterministic given seed + MCTS config (verified by `tests/test_determinism.py`). This means experiments are reproducible, but it does NOT mean the engine is "fair" or noise-free relative to a real Catan game — chance points are sampled deterministically by seed at the test boundary.
 
-## 7. What's next
+## 5. What's next
 
+- **Run the v2 sweep.** All four experiments with n=20 / n=10 / n=10 / n=5-per-seating, on the v2-hardened pipeline (per-game wall-clock cap, per-cell parquet shards, lower engine rollout cap, 4-core multiprocessing). Expected wall-clock ~1-2 hours total. Replaces the selection-biased v1 e2/e3/e4 numbers with proper data.
 - **Hand off the self-play parquet to the GNN project.** `moves.parquet` records `(seed, move_index, current_player, legal_action_mask, mcts_visit_counts, action_taken, mcts_root_value, schema_version)` — exactly the AlphaZero training signal. The GNN project replays `(seed, action_history_up_to_move_index)` through the engine to materialize observation tensors on demand (engine is deterministic; spec v1 §9).
 - **Replace random rollouts with the network's value head.** This is the AlphaZero pipeline's actual compute model — one forward pass per simulation instead of a full rollout. Once GNN-v0 trains, swap in a `GnnEvaluator` (one PyO3 call passes board state to the network, network returns value estimate). This eliminates the rollout cost that dominates this study's wall-clock. See learnings #6 — the `RustRolloutEvaluator` here is bootstrap-only.
 - **Real production sweep at bootstrap scale.** With a workstation and 24-48 hours, the current `RustRolloutEvaluator` can produce ~10-100k self-play games — enough to bootstrap the first GNN. Once the network exists, training compute moves to a different cost model entirely (forward passes, not rollouts).
@@ -132,9 +129,11 @@ Production status: structural validation only.
 - **Multiprocessing.** Each game is independent; trivially parallelizable across CPU cores. Linear speedup applies up to physical core count. With 8 cores, today's 1-2 minutes/game becomes ~10s/game.
 - **Smarter baseline.** A proper Catanatron-grade greedy bot would change e4's interpretation.
 
-## 8. What this project actually delivered
+## 6. What this project actually delivered
 
 - Phase 0: chance-aware engine (commits 72f79de…918296f). The 9 commits show step-by-step TDD evolution.
 - Plan 2: Python adapter + recorder + bots, all tested (commits 70c505a…3132f81).
-- Plan 3: experiment scripts + CLI dispatcher + analysis notebook (commits 320e987…this).
+- Plan 3: experiment scripts + CLI dispatcher + analysis notebook (commits 320e987…and on).
+- v2 hardening (branch `mcts-v2-hardening`, 7 commits 2064eeb…e0fe172): per-game wall-clock cap, per-cell parquet checkpoint, skipped.csv + done.txt sidecars, lower engine rollout cap, multiprocessing pool runner, v2 production driver.
+- Production sweep 2026-04-28→29: 12 hours, all four experiments completed, parquet at `runs/2026-04-2{8,9}T*-e{1,2,3,4}_*/`. e1 has clean n=20 data; e2/e3/e4 selection-biased and queued for v2 redo.
 - Reusable learnings: see [`learnings.md`](learnings.md).
