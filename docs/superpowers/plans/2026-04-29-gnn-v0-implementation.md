@@ -330,13 +330,13 @@ Create `mcts_study/tests/test_adjacency.py`:
 import numpy as np
 
 from catan_bot import _engine
-from catan_gnn.adjacency import HEX_VERTEX_EDGES, VERTEX_EDGE_EDGES
+from catan_gnn.adjacency import HEX_VERTEX_EDGE_INDEX, VERTEX_EDGE_EDGE_INDEX
 
 
 def test_hex_vertex_edge_index_shape():
     """[2, num_undirected_edges*2] format expected by PyG. Each undirected edge
     is represented twice (hex→vertex and vertex→hex)."""
-    ei = HEX_VERTEX_EDGES
+    ei = HEX_VERTEX_EDGE_INDEX
     assert ei.shape[0] == 2
     # 19 hexes * 6 vertices each = 114 hex→vertex edges + 114 reverse = 228.
     assert ei.shape[1] == 228
@@ -344,21 +344,21 @@ def test_hex_vertex_edge_index_shape():
 
 def test_vertex_edge_edge_index_shape():
     """72 edges * 2 vertices each = 144 vertex→edge + 144 reverse = 288."""
-    ei = VERTEX_EDGE_EDGES
+    ei = VERTEX_EDGE_EDGE_INDEX
     assert ei.shape[0] == 2
     assert ei.shape[1] == 288
 
 
 def test_hex_vertex_consistent_with_engine_hex_to_vertices():
-    """Each (hex, vertex) pair in HEX_VERTEX_EDGES (the hex→vertex direction)
+    """Each (hex, vertex) pair in HEX_VERTEX_EDGE_INDEX (the hex→vertex direction)
     must correspond to a vertex listed in the engine's hex_to_vertices for
     that hex. We can't read board.rs directly from Python — instead, use the
     engine's observation for a fresh game and check that the union of vertex
-    IDs across HEX_VERTEX_EDGES rows touching each hex hits all 6 expected
+    IDs across HEX_VERTEX_EDGE_INDEX rows touching each hex hits all 6 expected
     vertex slots."""
     # Hex 0 in the standard board has 6 vertices. In our table rows where
     # row[0] == hex_id == 0, the row[1] entries should be exactly 6 distinct values.
-    src, dst = HEX_VERTEX_EDGES[0], HEX_VERTEX_EDGES[1]
+    src, dst = HEX_VERTEX_EDGE_INDEX[0], HEX_VERTEX_EDGE_INDEX[1]
     # Direction is encoded by convention: first 114 entries are hex→vertex.
     hex_to_vertex_src = src[:114]
     hex_to_vertex_dst = dst[:114]
@@ -438,8 +438,8 @@ def _build_vertex_edge_edge_index() -> np.ndarray:
     return np.array([src_v2e + src_e2v, dst_v2e + dst_e2v], dtype=np.int64)
 
 
-HEX_VERTEX_EDGES: np.ndarray = _build_hex_vertex_edge_index()
-VERTEX_EDGE_EDGES: np.ndarray = _build_vertex_edge_edge_index()
+HEX_VERTEX_EDGE_INDEX: np.ndarray = _build_hex_vertex_edge_index()
+VERTEX_EDGE_EDGE_INDEX: np.ndarray = _build_vertex_edge_edge_index()
 ```
 
 The implementer must fill in `HEX_TO_VERTICES` (19 entries × 6 ints) and `EDGE_TO_VERTICES` (72 entries × 2 ints) by copying from `catan_engine/src/board.rs`. Specifically:
@@ -583,14 +583,14 @@ import numpy as np
 import torch
 from torch_geometric.data import HeteroData
 
-from .adjacency import HEX_VERTEX_EDGES, VERTEX_EDGE_EDGES
+from .adjacency import HEX_VERTEX_EDGE_INDEX, VERTEX_EDGE_EDGE_INDEX
 
 
 # Pre-build edge_index tensors once (shared across all calls; they never change).
-_H2V_EI = torch.from_numpy(HEX_VERTEX_EDGES[:, :114].copy())   # [2, 114] hex→vertex
-_V2H_EI = torch.from_numpy(HEX_VERTEX_EDGES[:, 114:].copy())   # [2, 114] vertex→hex
-_V2E_EI = torch.from_numpy(VERTEX_EDGE_EDGES[:, :144].copy())  # [2, 144] vertex→edge
-_E2V_EI = torch.from_numpy(VERTEX_EDGE_EDGES[:, 144:].copy())  # [2, 144] edge→vertex
+_H2V_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, :114].copy())   # [2, 114] hex→vertex
+_V2H_EI = torch.from_numpy(HEX_VERTEX_EDGE_INDEX[:, 114:].copy())   # [2, 114] vertex→hex
+_V2E_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, :144].copy())  # [2, 144] vertex→edge
+_E2V_EI = torch.from_numpy(VERTEX_EDGE_EDGE_INDEX[:, 144:].copy())  # [2, 144] edge→vertex
 
 
 def state_to_pyg(obs: dict) -> HeteroData:
