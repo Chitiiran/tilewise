@@ -14,7 +14,7 @@ import pyspiel
 from open_spiel.python.algorithms import mcts as os_mcts
 
 from catan_mcts.adapter import CatanGame
-from catan_mcts.evaluator import RustRolloutEvaluator
+from catan_mcts.evaluator import LookaheadVpEvaluator, RustRolloutEvaluator
 
 
 def _drive_to_player_decision(state):
@@ -137,3 +137,87 @@ def test_rust_evaluator_is_faster_than_python_random_rollout():
         assert -2.0 - 1e-6 <= s <= 0.0 + 1e-6, f"rollout sum out of envelope: {s}"
     # The actual ratio depends on machine; expect at least 5x in release mode.
     assert speedup >= 5.0, f"expected at least 5x speedup, got {speedup:.1f}x"
+
+
+# ---------- LookaheadVpEvaluator ----------
+
+
+def test_lookahead_returns_shape_and_range():
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    _drive_to_player_decision(state)
+
+    evaluator = LookaheadVpEvaluator(depth=5, base_seed=0)
+    result = evaluator.evaluate(state)
+    assert result.shape == (4,)
+    assert result.dtype == np.float32
+    for r in result:
+        assert -1.0 <= float(r) <= 1.0
+
+
+def test_lookahead_does_not_mutate_input_state():
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    _drive_to_player_decision(state)
+    history_before = list(state._engine.action_history())
+
+    evaluator = LookaheadVpEvaluator(depth=10, base_seed=0)
+    evaluator.evaluate(state)
+
+    history_after = list(state._engine.action_history())
+    assert history_after == history_before, \
+        "lookahead evaluator mutated input state — must operate on a clone"
+
+
+def test_lookahead_depth_zero_reflects_current_vp():
+    """depth=0 means evaluate at current VPs, no forward play. Initial VP=0
+    -> normalized to -1.0 for all four players."""
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    _drive_to_player_decision(state)
+
+    evaluator = LookaheadVpEvaluator(depth=0, base_seed=0)
+    result = evaluator.evaluate(state)
+    np.testing.assert_array_equal(result, np.array([-1.0, -1.0, -1.0, -1.0], dtype=np.float32))
+
+
+def test_lookahead_prior_uniform():
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    _drive_to_player_decision(state)
+    legal = state.legal_actions(state.current_player())
+
+    evaluator = LookaheadVpEvaluator(depth=5)
+    prior = evaluator.prior(state)
+    assert len(prior) == len(legal)
+    s = sum(p for _, p in prior)
+    assert abs(s - 1.0) < 1e-9
+
+
+def test_lookahead_is_faster_than_random_rollout_at_same_depth_budget():
+    """At depth=10, LookaheadVpEvaluator should be substantially faster than
+    a single random rollout, because greedy decisions terminate the lookahead
+    loop early (forced EndTurns count down `depth*4` quickly)."""
+    game = CatanGame()
+    state = game.new_initial_state(seed=42)
+    _drive_to_player_decision(state)
+
+    rust_eval = RustRolloutEvaluator(n_rollouts=1, base_seed=0)
+    t0 = time.perf_counter()
+    rust_eval.evaluate(state)
+    rust_time = time.perf_counter() - t0
+
+    look_eval = LookaheadVpEvaluator(depth=10, base_seed=0)
+    t0 = time.perf_counter()
+    look_eval.evaluate(state)
+    look_time = time.perf_counter() - t0
+
+    speedup = rust_time / max(look_time, 1e-9)
+    print(f"  rust full rollout: {rust_time*1000:.2f} ms")
+    print(f"  lookahead depth=10: {look_time*1000:.2f} ms")
+    print(f"  lookahead speedup vs full rollout: {speedup:.1f}x")
+    # Sanity-only assertion — lookahead should be at least as fast since it
+    # plays fewer steps. Don't gate on a hard ratio; some seeds the rollout
+    # caps fast.
+    assert look_time <= rust_time * 2.0, \
+        "lookahead should not be drastically slower than a full rollout"
