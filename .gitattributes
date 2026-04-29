@@ -1,0 +1,7 @@
+# Force LF line endings for files that bash/WSL must execute.
+# Without this, Windows + git autocrlf turns shell scripts into broken
+# CRLF-laden files that fail with `'\r': command not found` in WSL.
+*.sh text eol=lf
+
+# Python source on Linux should also stay LF for cleanliness.
+*.py text eol=lf
