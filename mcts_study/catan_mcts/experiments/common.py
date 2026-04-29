@@ -76,6 +76,16 @@ def play_one_game(
         if state.is_chance_node():
             state.apply_action(_sample_chance_outcome(state, chance_rng))
         else:
+            legal = state.legal_actions()
+            # Skip-trivial-turn optimization: when only one legal action exists,
+            # apply it directly without invoking the bot or running MCTS. Catan
+            # has many forced turns (e.g. forced EndTurn after a no-resource
+            # roll) and burning MCTS sims on them is pure waste. Also bypasses
+            # recording for trivial moves -- they carry no decision signal.
+            if len(legal) == 1:
+                state.apply_action(int(legal[0]))
+                steps += 1
+                continue
             p = state.current_player()
             bot = bots[p]
             if recorder_game is not None and p == recorded_player and mcts_bot is not None:
