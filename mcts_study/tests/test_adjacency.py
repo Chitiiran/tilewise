@@ -1,8 +1,12 @@
 """Adjacency tables in catan_gnn.adjacency must match the engine's board topology."""
 import numpy as np
 
-from catan_bot import _engine
-from catan_gnn.adjacency import HEX_VERTEX_EDGES, VERTEX_EDGE_EDGES
+from catan_gnn.adjacency import (
+    EDGE_TO_VERTICES,
+    HEX_TO_VERTICES,
+    HEX_VERTEX_EDGES,
+    VERTEX_EDGE_EDGES,
+)
 
 
 def test_hex_vertex_edge_index_shape():
@@ -38,3 +42,26 @@ def test_hex_vertex_consistent_with_engine_hex_to_vertices():
         verts = hex_to_vertex_dst[hex_to_vertex_src == h]
         assert len(verts) == 6, f"hex {h} has {len(verts)} vertex edges, expected 6"
         assert len(set(verts.tolist())) == 6, f"hex {h} has duplicate vertices"
+
+
+def test_edges_match_hex_perimeters_consistency():
+    """Cross-check: derive (min,max)-vertex-pair edge set from each hex's
+    6-vertex perimeter and compare to the literal EDGE_TO_VERTICES table.
+    Catches single-row transcription errors in either table."""
+    edges_from_hexes: set[tuple[int, int]] = set()
+    for vs in HEX_TO_VERTICES:
+        assert len(vs) == 6
+        for i in range(6):
+            a, b = vs[i], vs[(i + 1) % 6]
+            edges_from_hexes.add((min(a, b), max(a, b)))
+
+    edges_from_table: set[tuple[int, int]] = set()
+    for vs in EDGE_TO_VERTICES:
+        assert len(vs) == 2
+        a, b = vs[0], vs[1]
+        edges_from_table.add((min(a, b), max(a, b)))
+
+    assert edges_from_hexes == edges_from_table, (
+        f"only in hex perimeters: {edges_from_hexes - edges_from_table}; "
+        f"only in EDGE_TO_VERTICES: {edges_from_table - edges_from_hexes}"
+    )
