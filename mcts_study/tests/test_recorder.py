@@ -75,6 +75,91 @@ def test_record_move_rejects_action_not_in_legal_mask(tmp_path: Path):
     raise AssertionError("expected record_move to reject action with mask=False")
 
 
+def test_recorder_checkpoint_writes_labeled_shard(tmp_path: Path):
+    """v2 hardening: checkpoint(label) flushes accumulated rows to a labeled
+    shard (`moves.<label>.parquet` + `games.<label>.parquet`) and clears the
+    in-memory buffers. Lets us flush per cell instead of only at end of main()."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={"experiment": "smoke"})
+
+    # First cell: one game.
+    with rec.game(seed=1) as g:
+        mask = np.zeros(ACTION_SPACE_SIZE, dtype=bool); mask[204] = True
+        g.record_move(
+            current_player=0, move_index=0,
+            legal_action_mask=mask,
+            mcts_visit_counts=np.zeros(ACTION_SPACE_SIZE, dtype=np.int32),
+            action_taken=204, mcts_root_value=0.0,
+        )
+        g.finalize(winner=0, final_vp=[10,5,4,3], length_in_moves=1)
+    rec.checkpoint("sims=5")
+
+    # After checkpoint, shard files exist and buffers are clear.
+    assert (tmp_path / "moves.sims=5.parquet").exists()
+    assert (tmp_path / "games.sims=5.parquet").exists()
+    games = pq.read_table(tmp_path / "games.sims=5.parquet").to_pandas()
+    moves = pq.read_table(tmp_path / "moves.sims=5.parquet").to_pandas()
+    assert len(games) == 1 and len(moves) == 1
+
+    # Second cell: another game. Must NOT include data from the first cell.
+    with rec.game(seed=2) as g:
+        g.finalize(winner=1, final_vp=[5,10,4,3], length_in_moves=1)
+    rec.checkpoint("sims=25")
+
+    games2 = pq.read_table(tmp_path / "games.sims=25.parquet").to_pandas()
+    moves2 = pq.read_table(tmp_path / "moves.sims=25.parquet").to_pandas()
+    assert len(games2) == 1
+    assert int(games2["seed"].iloc[0]) == 2
+    assert len(moves2) == 0  # no record_move calls in the second game
+
+    # Final flush() with empty buffers should not crash and not overwrite shards.
+    rec.flush()
+    # Shard files still exist and unchanged.
+    assert (tmp_path / "games.sims=5.parquet").exists()
+
+
+def test_recorder_skip_game_writes_csv_sidecar(tmp_path: Path):
+    """v2: skip_game(seed, reason) appends to skipped.csv. Lets experiments
+    record timed-out games without polluting moves/games parquet."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    rec.skip_game(seed=1, reason="wall-clock-timeout", length_in_moves=15234)
+    rec.skip_game(seed=7, reason="rollout-cap-pathology", length_in_moves=8401)
+
+    csv_path = tmp_path / "skipped.csv"
+    assert csv_path.exists()
+    text = csv_path.read_text()
+    # Header + 2 rows
+    lines = [l for l in text.strip().split("\n") if l]
+    assert len(lines) == 3
+    assert lines[0].startswith("seed,reason,length_in_moves")
+    assert "1,wall-clock-timeout,15234" in lines[1]
+    assert "7,rollout-cap-pathology,8401" in lines[2]
+
+
+def test_recorder_done_seeds_round_trip(tmp_path: Path):
+    """v2: done_seeds() reads done.txt, mark_done(seed) appends. Used by
+    experiments to skip already-finished seeds on restart."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    assert rec.done_seeds() == set()
+
+    rec.mark_done(42)
+    rec.mark_done(99)
+    assert rec.done_seeds() == {42, 99}
+
+    # New recorder instance over same dir reads the same done.txt
+    rec2 = SelfPlayRecorder(out_dir=tmp_path, config={"foo": "bar"})
+    assert rec2.done_seeds() == {42, 99}
+    rec2.mark_done(7)
+    assert rec2.done_seeds() == {42, 99, 7}
+
+
+def test_recorder_checkpoint_empty_is_noop(tmp_path: Path):
+    """checkpoint() with no buffered rows must not write empty shard files."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    rec.checkpoint("sims=5")
+    assert not (tmp_path / "moves.sims=5.parquet").exists()
+    assert not (tmp_path / "games.sims=5.parquet").exists()
+
+
 def test_extract_visit_counts_from_mcts_root():
     """OpenSpiel's MCTSBot exposes the search tree root via `bot.mcts_search(state)`.
     The recorder needs a helper that converts that to a fixed-width visit-count array."""

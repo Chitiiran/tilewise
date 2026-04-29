@@ -109,10 +109,64 @@ class SelfPlayRecorder:
                 rec.finalize(winner=-1, final_vp=[0]*4, length_in_moves=len(rec._moves))
 
     def flush(self) -> None:
+        """Write the unlabeled `moves.parquet` + `games.parquet` for whatever's
+        in the buffer. No-op if buffers are empty (so post-checkpoint flushes
+        don't overwrite shards with empty files)."""
+        if not self._move_rows and not self._game_rows:
+            return
         moves_table = pa.Table.from_pylist([row.__dict__ for row in self._move_rows])
         games_table = pa.Table.from_pylist([row.__dict__ for row in self._game_rows])
         pq.write_table(moves_table, self._out_dir / "moves.parquet")
         pq.write_table(games_table, self._out_dir / "games.parquet")
+
+    def skip_game(self, *, seed: int, reason: str, length_in_moves: int = 0) -> None:
+        """v2 hardening: record an abandoned/timed-out game in skipped.csv
+        without polluting moves/games parquet. Append-only; safe to call across
+        restarts."""
+        csv_path = self._out_dir / "skipped.csv"
+        is_new = not csv_path.exists()
+        with csv_path.open("a", encoding="utf-8") as f:
+            if is_new:
+                f.write("seed,reason,length_in_moves\n")
+            f.write(f"{int(seed)},{reason},{int(length_in_moves)}\n")
+
+    def done_seeds(self) -> set[int]:
+        """v2 hardening: read seeds that finished cleanly in this run dir.
+        Used by experiments to skip already-completed work on restart."""
+        done_path = self._out_dir / "done.txt"
+        if not done_path.exists():
+            return set()
+        return {
+            int(line.strip())
+            for line in done_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+
+    def mark_done(self, seed: int) -> None:
+        """v2 hardening: append `seed` to done.txt. Idempotent in the sense
+        that downstream `done_seeds()` returns a set, so duplicate appends
+        cause no harm beyond a slightly larger file."""
+        with (self._out_dir / "done.txt").open("a", encoding="utf-8") as f:
+            f.write(f"{int(seed)}\n")
+
+    def checkpoint(self, label: str) -> None:
+        """v2 hardening: write `moves.<label>.parquet` + `games.<label>.parquet`
+        for the currently-buffered rows, then clear the buffers.
+
+        Lets experiments flush per sims-grid cell (or per c-value, or per policy)
+        so partial data survives a kill mid-run. Notebooks glob `moves.*.parquet`
+        on read.
+
+        No-op if buffers are empty.
+        """
+        if not self._move_rows and not self._game_rows:
+            return
+        moves_table = pa.Table.from_pylist([row.__dict__ for row in self._move_rows])
+        games_table = pa.Table.from_pylist([row.__dict__ for row in self._game_rows])
+        pq.write_table(moves_table, self._out_dir / f"moves.{label}.parquet")
+        pq.write_table(games_table, self._out_dir / f"games.{label}.parquet")
+        self._move_rows.clear()
+        self._game_rows.clear()
 
 
 def visit_counts_from_root(root) -> np.ndarray:
