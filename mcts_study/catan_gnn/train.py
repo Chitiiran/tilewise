@@ -181,8 +181,10 @@ def train_main(
               f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f}",
               flush=True)
 
-    # Persist (move to CPU for portability).
-    torch.save(model.cpu().state_dict(), out_dir / "checkpoint.pt")
+    # Move state_dict tensors to CPU for portable serialization without
+    # mutating the model in place — caller may want to keep using it on GPU.
+    cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+    torch.save(cpu_state, out_dir / "checkpoint.pt")
     (out_dir / "training_log.json").write_text(json.dumps(log, indent=2))
     config = {
         "run_dirs": [str(p) for p in run_dirs],

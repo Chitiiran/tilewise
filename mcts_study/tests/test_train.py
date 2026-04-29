@@ -42,7 +42,10 @@ def test_train_produces_artifacts(tmp_path: Path):
             assert k in ep, f"missing key {k} in epoch row"
 
 
-def test_checkpoint_is_loadable(tmp_path: Path):
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_checkpoint_is_loadable(tmp_path: Path, device: str):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
     run_dir = _make_minimal_run(tmp_path / "run")
     out_dir = tmp_path / "gnn_v0"
     train_main(
@@ -50,6 +53,7 @@ def test_checkpoint_is_loadable(tmp_path: Path):
         hidden_dim=32, num_layers=2,
         epochs=1, batch_size=4, lr=1e-3,
         w_value=1.0, w_policy=1.0, seed=0,
+        device=device,
     )
     from catan_gnn.gnn_model import GnnModel
     model = GnnModel(hidden_dim=32, num_layers=2)
