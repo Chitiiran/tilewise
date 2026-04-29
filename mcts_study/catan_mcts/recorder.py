@@ -109,10 +109,34 @@ class SelfPlayRecorder:
                 rec.finalize(winner=-1, final_vp=[0]*4, length_in_moves=len(rec._moves))
 
     def flush(self) -> None:
+        """Write the unlabeled `moves.parquet` + `games.parquet` for whatever's
+        in the buffer. No-op if buffers are empty (so post-checkpoint flushes
+        don't overwrite shards with empty files)."""
+        if not self._move_rows and not self._game_rows:
+            return
         moves_table = pa.Table.from_pylist([row.__dict__ for row in self._move_rows])
         games_table = pa.Table.from_pylist([row.__dict__ for row in self._game_rows])
         pq.write_table(moves_table, self._out_dir / "moves.parquet")
         pq.write_table(games_table, self._out_dir / "games.parquet")
+
+    def checkpoint(self, label: str) -> None:
+        """v2 hardening: write `moves.<label>.parquet` + `games.<label>.parquet`
+        for the currently-buffered rows, then clear the buffers.
+
+        Lets experiments flush per sims-grid cell (or per c-value, or per policy)
+        so partial data survives a kill mid-run. Notebooks glob `moves.*.parquet`
+        on read.
+
+        No-op if buffers are empty.
+        """
+        if not self._move_rows and not self._game_rows:
+            return
+        moves_table = pa.Table.from_pylist([row.__dict__ for row in self._move_rows])
+        games_table = pa.Table.from_pylist([row.__dict__ for row in self._game_rows])
+        pq.write_table(moves_table, self._out_dir / f"moves.{label}.parquet")
+        pq.write_table(games_table, self._out_dir / f"games.{label}.parquet")
+        self._move_rows.clear()
+        self._game_rows.clear()
 
 
 def visit_counts_from_root(root) -> np.ndarray:
