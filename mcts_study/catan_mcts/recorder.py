@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 from . import ACTION_SPACE_SIZE
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -41,6 +41,7 @@ class _GameRow:
     final_vp: list[int]
     length_in_moves: int
     mcts_config_id: str
+    action_history: list[int]
     schema_version: int = SCHEMA_VERSION
 
 
@@ -76,13 +77,15 @@ class _GameRecorder:
             mcts_root_value=float(mcts_root_value),
         ))
 
-    def finalize(self, *, winner: int, final_vp: list[int], length_in_moves: int) -> None:
+    def finalize(self, *, winner: int, final_vp: list[int], length_in_moves: int,
+                 action_history: list[int]) -> None:
         self._parent._game_rows.append(_GameRow(
             seed=self._seed,
             winner=int(winner),
             final_vp=[int(x) for x in final_vp],
             length_in_moves=int(length_in_moves),
             mcts_config_id=self._parent._config_id,
+            action_history=[int(x) for x in action_history],
         ))
         self._parent._move_rows.extend(self._moves)
         self._finalized = True
@@ -106,7 +109,10 @@ class SelfPlayRecorder:
         finally:
             if not rec._finalized:
                 # Game ended without finalize — record a -1 winner
-                rec.finalize(winner=-1, final_vp=[0]*4, length_in_moves=len(rec._moves))
+                rec.finalize(
+                    winner=-1, final_vp=[0]*4,
+                    length_in_moves=len(rec._moves), action_history=[],
+                )
 
     def flush(self) -> None:
         """Write the unlabeled `moves.parquet` + `games.parquet` for whatever's
