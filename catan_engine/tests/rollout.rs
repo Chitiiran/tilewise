@@ -86,14 +86,20 @@ fn rollout_from_mid_game_state_terminates() {
 }
 
 #[test]
+fn rollout_step_cap_constant_is_30k() {
+    // v2 (2026-04-28): cap was lowered from 100_000 to 30_000 to bound the
+    // worst-case single-game cost in MCTS rollouts. If this changes, also
+    // update writeup §6 (caveats) and re-run the rollout-cap-firing-rate
+    // measurement (project_rollout_cap_firing_rate.md).
+    assert_eq!(catan_engine::engine::ROLLOUT_STEP_CAP, 30_000);
+}
+
+#[test]
 fn rollout_caps_at_safety_limit_does_not_panic() {
-    // We can't easily construct a stuck state, but we CAN verify that the
-    // implementation has SOME upper step bound — by reading the source. This
-    // test is a guard so anyone removing the cap explicitly breaks a test.
-    // (The implementation must use 100_000 as the cap; if you change it, change
-    // this test.)
+    // Sanity guard: any rollout call must complete without panic, whether it
+    // hits a natural terminal or the safety cap.
     let mut e = Engine::new(42);
-    // 100_000 is far above any realistic Tier-1 game (we measure 4-12k typical).
     let _ = e.random_rollout_to_terminal(42);
-    assert!(e.is_terminal() || true, "rollout completed (possibly via cap, possibly via terminal)");
+    // (We intentionally don't assert is_terminal here — under the lower cap,
+    //  more rollouts will hit the cap and return [0;4] without a Done phase.)
 }

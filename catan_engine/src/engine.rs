@@ -9,6 +9,17 @@ use crate::state::GameState;
 use crate::stats::GameStats;
 use std::sync::Arc;
 
+/// Maximum number of state mutations a single `random_rollout_to_terminal` call
+/// may perform before bailing with `[0.0; 4]` (no winner). Empirically Tier-1
+/// games under uniformly-random play take 4-12k steps; 30k leaves headroom for
+/// the long-tail distribution while bounding the worst case sharply enough to
+/// prevent multi-hour single-game stalls in MCTS rollouts.
+///
+/// v2 (2026-04-28): lowered from 100_000 to 30_000 after observing that the
+/// 100k cap allowed individual MCTS games at sims=100 to stall for 5+ hours
+/// when entering a state region with many cap-firing rollouts.
+pub const ROLLOUT_STEP_CAP: u32 = 30_000;
+
 #[derive(Clone)]
 pub struct Engine {
     pub state: GameState,
@@ -165,9 +176,8 @@ impl Engine {
         use rand::rngs::SmallRng;
         let mut rng = SmallRng::seed_from_u64(rollout_seed);
         let mut steps = 0u32;
-        let cap: u32 = 100_000;
 
-        while !self.is_terminal() && steps < cap {
+        while !self.is_terminal() && steps < ROLLOUT_STEP_CAP {
             if self.is_chance_pending() {
                 // Sample a chance outcome by probability.
                 let outcomes = self.chance_outcomes();
