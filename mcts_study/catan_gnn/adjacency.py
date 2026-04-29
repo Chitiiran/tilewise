@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import numpy as np
 
+NUM_HEXES = 19
+NUM_VERTICES = 54
+NUM_EDGES = 72
+
 
 # Each hex's 6 vertex IDs in clockwise order from the top vertex.
 # Source: catan_engine/src/board.rs `standard_hex_to_vertices()`.
@@ -116,8 +120,8 @@ EDGE_TO_VERTICES: list[list[int]] = [
 
 
 def _build_hex_vertex_edge_index() -> np.ndarray:
-    """Returns [2, 228] long-tensor-shaped array. First 114 entries are
-    hex->vertex direction (src=hex, dst=vertex); next 114 are vertex->hex
+    """Returns [2, NUM_HEXES*6*2] long-tensor-shaped array. First half is
+    hex->vertex direction (src=hex, dst=vertex); second half is vertex->hex
     (src=vertex, dst=hex). PyG expects this format for HeteroConv with both
     edge types, so we stack them and split by direction in state_to_pyg.py."""
     src_h2v, dst_h2v = [], []
@@ -131,8 +135,8 @@ def _build_hex_vertex_edge_index() -> np.ndarray:
 
 
 def _build_vertex_edge_edge_index() -> np.ndarray:
-    """Returns [2, 288]. First 144: vertex->edge (src=vertex, dst=edge_id).
-    Next 144: edge->vertex (reverse)."""
+    """Returns [2, NUM_EDGES*2*2]. First half: vertex->edge (src=vertex, dst=edge_id).
+    Second half: edge->vertex (reverse)."""
     src_v2e, dst_v2e = [], []
     for e, vs in enumerate(EDGE_TO_VERTICES):
         for v in vs:
@@ -143,5 +147,5 @@ def _build_vertex_edge_edge_index() -> np.ndarray:
     return np.array([src_v2e + src_e2v, dst_v2e + dst_e2v], dtype=np.int64)
 
 
-HEX_VERTEX_EDGES: np.ndarray = _build_hex_vertex_edge_index()
-VERTEX_EDGE_EDGES: np.ndarray = _build_vertex_edge_edge_index()
+HEX_VERTEX_EDGE_INDEX: np.ndarray = _build_hex_vertex_edge_index()
+VERTEX_EDGE_EDGE_INDEX: np.ndarray = _build_vertex_edge_edge_index()
