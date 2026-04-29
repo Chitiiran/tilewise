@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,7 @@ class GameOutcome:
     winner: int
     final_vp: list[int]
     length_in_moves: int
+    timed_out: bool = False  # v2: True when max_seconds aborted the game
 
 
 def make_run_dir(parent: Path, name: str) -> Path:
@@ -48,6 +50,7 @@ def play_one_game(
     recorder_game=None,    # an active _GameRecorder context
     mcts_bot=None,         # only required if recording (visit count extraction)
     max_steps: int = 30000,
+    max_seconds: Optional[float] = None,
 ) -> GameOutcome:
     """Drive one game to completion. Optionally record `recorded_player`'s MCTS moves.
 
@@ -56,14 +59,20 @@ def play_one_game(
     `mcts_bot.mcts_search(state)` to extract visit counts.
 
     max_steps default 30000 because Tier-1 chance-aware games take ~12-15k steps.
+    max_seconds is a v2 wall-clock cap; on timeout returns winner=-1, timed_out=True.
     """
     from ..recorder import visit_counts_from_root
 
     state = game.new_initial_state(seed=seed)
     move_index = 0
     steps = 0
+    t_start = time.perf_counter()
+    timed_out = False
 
     while not state.is_terminal() and steps < max_steps:
+        if max_seconds is not None and time.perf_counter() - t_start > max_seconds:
+            timed_out = True
+            break
         if state.is_chance_node():
             state.apply_action(_sample_chance_outcome(state, chance_rng))
         else:
@@ -104,4 +113,7 @@ def play_one_game(
         # Pull VP from engine stats. The adapter exposes the underlying engine via _engine.
         stats = state._engine.stats()
         final_vp = [int(stats["players"][p]["vp_final"]) for p in range(4)]
-    return GameOutcome(seed=seed, winner=winner, final_vp=final_vp, length_in_moves=steps)
+    return GameOutcome(
+        seed=seed, winner=winner, final_vp=final_vp,
+        length_in_moves=steps, timed_out=timed_out,
+    )
