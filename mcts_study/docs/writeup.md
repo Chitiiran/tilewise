@@ -169,6 +169,35 @@ v1 random rollouts at sims=100 produced 45% winrate. e5's lookahead-VP at depth=
 - **n=10 per cell.** 95% CI on a single proportion is roughly ±30pp. The depth=25/sims=400 cell is the only one where the effect is large enough to read through that uncertainty.
 - **No opponent strength scaling.** Random opponents are the trivial case. The next experiment is e5-vs-greedy: the lookahead might collapse against a non-trivial opponent that defends key vertices.
 
+## 5c. e5 v2 — 1500 games, 5×3 grid (2026-04-29)
+
+The n=10 caveat above was the dominant uncertainty. We re-ran e5 at n=100 per cell, with a 5×3 grid widened to depth ∈ {3, 10, 17, 25, 35} and a tighter 360s/game cap. ~7 hours wall-clock on 4 workers, 1500 game-attempts.
+
+| depth \ sims | sims=25 | sims=100 | sims=400 |
+|------:|--------:|---------:|---------:|
+| **3**  | 1.0% (1/100) | 0.0% (0/100) | 1.0% (1/100) |
+| **10** | 2.0% (2/100) | 1.0% (1/100) | 12.0% (10/83) |
+| **17** | 0.0% (0/100) | 2.0% (2/100) | 46.2% (30/65) |
+| **25** | 1.0% (1/100) | 14.0% (14/100) | **75.4% (43/57)** |
+| **35** | 1.0% (1/100) | 41.0% (41/100) | **76.4% (42/55)** |
+
+Headline corrections vs v1:
+- The v1 n=7 result of 85.7% at depth=25/sims=400 was real but inflated. True winrate is ~75%.
+- **At sims=400, returns plateau past depth=25** — depth=35/sims=400 is statistically indistinguishable from depth=25/sims=400.
+- **At sims=100, deeper still helps** — depth=35/sims=100 hits 41%, vs 14% at depth=25/sims=100. There's a real depth-vs-sims tradeoff curve.
+- **sims=25 is universally noise-floor** at every depth tested. Insufficient sims swamps any signal.
+- 140/1500 (9.3%) timed out, all concentrated in heavy cells. Effective n shrinks where wall-clock saturates.
+
+### Schema-version migration note
+
+The recorder bumped from `SCHEMA_VERSION = 1` to `SCHEMA_VERSION = 2` partway through the 2026-04-29 work, adding an `action_history: list[int32]` column to `games.parquet`. The motivation was downstream replay: GNN training needs to reconstruct the engine state at any (seed, move_index) cheaply, which requires the full action trace.
+
+Three consequences for anyone reading the parquets:
+
+1. **The 1500-game e5 v2 sweep above was actually written under SCHEMA_VERSION=1** — the bump landed on a parallel branch and only took effect for sweeps started afterward. The cell winrate analysis here is unaffected (it only needs `winner` and `final_vp`), but the parquets are not directly usable for GNN training.
+2. **`CatanReplayDataset` filters out v1 games** at construction (silently — they cannot be replayed without action_history). Anyone trying to train a GNN on the 1500-game sweep will see an empty dataset and need to re-record.
+3. **Going forward, any sweep that wants to feed the GNN pipeline must run on a branch where SCHEMA_VERSION ≥ 2 is in effect at the time the recorder writes.** A small re-recording sweep (~hours at depth=25/sims=400 cells) under v2 is the canonical path.
+
 ## 6. What this project actually delivered
 
 - Phase 0: chance-aware engine (commits 72f79de…918296f). The 9 commits show step-by-step TDD evolution.
