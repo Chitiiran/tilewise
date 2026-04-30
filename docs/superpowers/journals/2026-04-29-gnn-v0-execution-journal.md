@@ -187,3 +187,87 @@ Both within ±20pp 95% CI for n=25 — consistent with the original measurement,
 5. **Argparse forwarding patterns deserve regression tests.** A `parse_known_args` + `sys.argv` rewrite that drops a flag silently can persist across many runs unnoticed. Test that the user's intended behavior survives the round-trip.
 
 6. **Per-evaluator wall-clock budget must be re-tuned per evaluator.** The 360s/game cap that worked fine for lookahead-VP at sims=400 produced 0 finished games at sims=100 GNN inference. Each evaluator has a different per-move cost; the budget must be set per evaluator, not inherited.
+
+---
+
+## Long-running operations timeline
+
+Visual log of every sweep, cache build, and training run that took >10 minutes wall-clock. Times are local EDT (UTC-4). Rows added when an op starts; finalized when it completes. Each "block" of `█` characters spans the elapsed time on a 24-hour axis. One `█` ≈ 30 minutes.
+
+Read this top-to-bottom in starting-time order to see what was running when, and side-by-side to see overlapping CPU/GPU contention.
+
+```
+2026-04-29 EDT
+hour:    06   08   10   12   14   16   18   20   22   00   02   04   06   08
+
+07:08 ─[████████████]──── 14:11    e5 v2 sweep, 1500 games  (mcts-study branch, schema v1)
+                          14:30 ─[█]─ 14:50  50-game data regen (gnn-v0, schema v2)
+                                                  19:07 ─[█]─ 19:15  cache_w0.pt build (36k pos, 250 MB)
+                                                  19:32 ─[██]─ 20:12  cache_full.pt build (136k pos, 938 MB)
+                                                              20:14 ─[█]─ 20:21  D4 1-epoch b=64 baseline
+                                                                  20:25 ─[█]─ 20:32  D4b 1-epoch b=256
+                                                                          22:41 ─[ongoing]  user 400-game e5 sweep
+                                                                                       (running, eta TBD)
+```
+
+### 07:08–14:11 EDT — `e5 v2 1500-game sweep` (mcts-study worktree)
+
+- **Goal:** comprehensive winrate measurement for lookahead-VP at depth ∈ {3,10,17,25,35} × sims ∈ {25,100,400} with n=100 per cell.
+- **Outcome:** 1360 finished games + 140 timeouts (9.3% timeout at 360s cap).
+- **Run dir:** `mcts-study/runs/2026-04-29T11-07-e5_lookahead_depth/`
+- **Wall-clock:** 7 h 03 min on 4 workers.
+- **Schema:** v1 (no `action_history`) — branch isolation issue, see Task 2 lesson. Data unusable for GNN training as-is.
+- **Headline:** depth=25/sims=400 = 75.4% winrate (n=57). depth=35 ≈ depth=25 at same sims.
+
+### 14:30–14:50 EDT — `50-game data regen` (gnn-v0)
+
+- **Goal:** generate v2 schema training data targeted at known-strong cells.
+- **Outcome:** 50 / 200 attempted finished. 0 timeouts. Schema v2 with `action_history`.
+- **Run dir:** `gnn-v0/runs/2026-04-29T20-49-e5_lookahead_depth/`
+- **Wall-clock:** 1 h 45 min on 4 workers.
+- **Cells:** depth ∈ {25, 35} × sims=400, 25 games each.
+- **Per-cell winrate:** depth=25/sims=400 = 60% (n=25), depth=35/sims=400 = 48% (n=25).
+
+### 19:07–19:15 EDT — `cache_w0.pt build` (worker0 subset)
+
+- **Goal:** smoke-validate the cache pipeline (`CachedDataset` build + persist + reload).
+- **Outcome:** 36k positions cached, 250 MB on disk, ~10 min build at ~60 pos/s.
+- **Path:** `mcts_study/runs/gnn_v0_smoke/cache_w0.pt`
+- **Used by:** Step A smoke training (10 epochs, ~7 sec/epoch).
+
+### 19:32–20:12 EDT — `cache_full.pt build` (full 50-game)
+
+- **Goal:** Derisk 3 — confirm cache scales linearly past worker0.
+- **Outcome:** 136k positions cached, 938 MB on disk, ~40 min build at ~57 pos/s, peak RSS 3.91 GB. Linear scaling confirmed across the dataset.
+- **Path:** `mcts_study/runs/gnn_v0_smoke/cache_full.pt`
+- **Projection to 400-game:** ~5.4 hr build, ~7.5 GB disk, ~31 GB RAM peak (need WSL bump from 31 GB cap).
+
+### 20:14–20:21 EDT — `D4 1-epoch baseline (b=64)` (full cache)
+
+- **Goal:** measure per-epoch training cost on the cached dataset.
+- **Outcome:** 6 min 59 sec total. Per-batch ~170 ms, suggesting ~165 ms is non-GPU work (PyG `Batch.from_data_list` + I/O).
+
+### 20:25–20:32 EDT — `D4b 1-epoch (b=256)`
+
+- **Goal:** test whether batch size flattens per-batch overhead.
+- **Outcome:** 6 min 12 sec total. Marginal improvement. Per-batch overhead doesn't scale with batch size as hoped.
+
+### 22:41–ongoing — `user 400-game e5 sweep` (gnn-v0 — user-launched, do not touch)
+
+- **Goal:** generate the proper-scale v2 training data for v0 GNN.
+- **Cells:** depth ∈ {15, 25, 35} × sims=400, 100 games each.
+- **No max_seconds cap.**
+- **Run dir:** `gnn-v0/runs/gnn-data-2026-04-29-evening/2026-04-29T22-41-e5_lookahead_depth/`
+- **ETA:** unknown; running on 4 workers.
+- **Constraint:** while this runs, no competing 4-worker CPU sweeps from me.
+
+---
+
+### Update protocol for this section
+
+- **At op start:** add a new entry block with start time, goal, run dir.
+- **Every 30-60 min while running:** append a brief progress note ("at HH:MM: 240/1500 done, 8 timeouts, ETA ~3h").
+- **At op end:** finalize with end time, total wall-clock, headline outcome, and a 1-sentence interpretation if any.
+- **Periodically:** redraw the ASCII timeline at the top so the visual stays current.
+
+The point: someone reading the journal next week should be able to see at a glance which sweeps overlapped with which, and what the total compute budget went into.

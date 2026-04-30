@@ -133,12 +133,14 @@ def train_main(
         This is the GPU-utilization fix: replay-from-scratch is CPU-bound and
         starves the GPU; the cache puts all positions in RAM-resident tensors.
     """
+    import time as _time
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    t_load_start = _time.perf_counter()
     if cache_path is not None:
         cache_path = Path(cache_path)
         if cache_path.exists():
@@ -150,6 +152,8 @@ def train_main(
         full_ds = CatanReplayDataset([Path(p) for p in run_dirs])
     if len(full_ds) == 0:
         raise RuntimeError(f"Empty dataset under {run_dirs}")
+    load_secs = _time.perf_counter() - t_load_start
+    print(f"[timing] dataset load: {load_secs:.1f}s for {len(full_ds)} positions", flush=True)
     train_ds, val_ds = _split_by_seed(full_ds, val_frac=val_frac, seed=seed)
     if max_train_samples is not None and len(train_ds) > max_train_samples:
         rng = np.random.default_rng(seed)
@@ -173,6 +177,7 @@ def train_main(
         # Train.
         model.train()
         tot, tv, tp, n = 0.0, 0.0, 0.0, 0
+        t_train_start = _time.perf_counter()
         for batch, value_t, policy_t, legal in train_loader:
             batch = batch.to(dev)
             value_t = value_t.to(dev)
@@ -186,10 +191,12 @@ def train_main(
             loss.backward()
             opt.step()
             tot += loss.item(); tv += lv.item(); tp += lp.item(); n += 1
+        train_secs = _time.perf_counter() - t_train_start
 
         # Val.
         model.eval()
         vt, vv, vp_, vmae, top1, n_pos = 0.0, 0.0, 0.0, 0.0, 0, 0
+        t_val_start = _time.perf_counter()
         with torch.no_grad():
             for batch, value_t, policy_t, legal in val_loader:
                 batch = batch.to(dev)
@@ -207,6 +214,7 @@ def train_main(
                 gt = policy_t.argmax(dim=1)
                 top1 += int((pred == gt).sum())
                 n_pos += value_t.shape[0]
+        val_secs = _time.perf_counter() - t_val_start
 
         stats = EpochStats(
             epoch=epoch,
@@ -220,7 +228,9 @@ def train_main(
         )
         log["epochs"].append(asdict(stats))
         print(f"[epoch {epoch}/{epochs}] train_loss={stats.train_loss_total:.3f} "
-              f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f}",
+              f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f} "
+              f"[timing] train={train_secs:.1f}s ({n} batches, "
+              f"{train_secs * 1000 / max(1, n):.0f}ms/batch) val={val_secs:.1f}s",
               flush=True)
 
     # Move state_dict tensors to CPU for portable serialization without
