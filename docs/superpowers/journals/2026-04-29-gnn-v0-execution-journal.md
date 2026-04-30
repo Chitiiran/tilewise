@@ -301,12 +301,17 @@ Quick GPU/single-process derisks while user's e5 sweep ran. All passed.
 
 Watches for the first depth=15-sims=400 parquet to appear in the user's e5 sweep dir. When detected: stages worker dirs, builds an in-RAM cache, trains a v1 GNN on it, runs bench-2.
 
-- **Sweep status as of 02:28 UTC:** 291/1200 games done across 4 workers. All still in cell 0 (depth=15). Workers at 70-75 each → first cell flush expected at ~100-each, ~25-50 more min.
-- **Polls every 5 min** until first depth=15 shard lands.
-- **Cache will be ~75% size of cache_full.pt** (depth=15 games are shorter than depth=25/35) → ~700 MB on disk, ~3 GB peak RAM. Fits comfortably in WSL's 31 GB.
-- **Self-contained:** no manual intervention needed. Waits up to 30 min after first shard for additional workers to finalize, then proceeds.
+**04:15 UTC: 4 depth=15 shards landed.** Watcher staged all 4 workers and started cache build. Source dataset reported **816,923 positions** — much larger than projected (50-game cache had only 136k for 50 games; 400 games at d=15 produced 6× more positions). At 50 pos/s build rate, ETA was 4.2 hours; projected RAM peak ~25 GB (right at WSL's 31 GB cap, risky for swap).
 
-(Will be filled in with build + train results when triggered.)
+**Pivot at 04:24 UTC:** killed the 4-worker build mid-run. Restarted with a **2-worker subset** (worker0 + worker1, ~408k positions). Projected: ~12 GB RAM peak, ~2.3 hr build, ~70 min train after.
+
+### 04:24–ongoing — v1_d15_subset (autonomous side-pipeline, 2-worker subset)
+
+- **Goal:** train v1 GNN on a tractable subset of the depth=15 sweep (worker0 + worker1).
+- **Cache target:** ~408k positions, ~2-3 GB on disk, ~12 GB RAM peak.
+- **Status:** cache build running concurrently with v0b train (running at epoch ~38/40 at this point).
+
+(Will be filled in with cache + train + bench-2 results.)
 
 ---
 
