@@ -574,3 +574,56 @@ GnnMcts (0% winrate, 2.3 mean VP — MCTS amplifies noisy GNN, makes it worst)
 ```
 
 The v2 target should be: **GnnMcts mean VP > LookaheadMcts mean VP** in head-to-head. That's the threshold where the trained model has actually surpassed the hand-engineered evaluator.
+
+---
+
+## Engine-rule gap: building inventory limits not enforced (2026-04-30)
+
+**Discovered while building the replay viewer.** The Catan rules cap each player's lifetime building inventory at:
+- 5 settlements
+- 4 cities
+- 15 roads
+
+The v1 engine (`catan_engine`) **does not enforce these caps.** A player can place more than 5 settlements, more than 4 cities, etc., as long as basic adjacency / cost / resource rules pass. The replay-viewer tooling found this implicitly because it computes live VP from total settlements + cities × 2 with no upper bound; in some long games we'd see VP totals that exceeded what the inventory rules allow.
+
+**Why this matters for v0/v1 GNN:**
+- Training data has been generated under "unbounded inventory" rules. The model has learned a value function and policy that includes positions where seat 0 has 7 settlements down — positions that are illegal in real Catan.
+- LookaheadMcts (depth=25 lookahead) and PureGnn / GnnMcts all play under the same unbounded rules, so the tournament fairness is preserved *between bots*. But against a real Catan rule set, all four would behave differently.
+- More importantly, the **terminal condition** in our engine is "first to 10 VP", and VP is computed solely from buildings (no longest road / largest army / dev cards yet). With unbounded inventory, hitting 10 VP is just "build until you have 10 cumulative VP-worth of buildings." That changes the strategic problem from real Catan in non-trivial ways.
+
+**What's NOT broken:**
+- The engine is internally consistent. State transitions are deterministic, costs are checked, no-overlap rules apply, etc.
+- The training pipeline is sound — the model is learning the function our engine actually instantiates, which is what we want for v0.
+- Bot comparison results are valid for our engine's rules.
+
+**What we should fix in v2 engine:**
+1. **Add inventory caps** to `legal_actions()`: filter `BuildSettlement(v)` if `settlement_count >= 5`, etc. ~10 lines of Rust.
+2. **Add longest road / largest army** to win condition (currently just building VP). Major Tier-2 work, deferred.
+3. **Add dev cards.** Major Tier-2 work, deferred.
+
+**For v2 training:** if we add inventory caps before the next training data run, all v2 data will be under the new rules and the model will learn the correct game. If we re-train v1 *without* re-recording data, the existing parquets are still valid for the existing engine but won't transfer to the inventory-capped v2 engine.
+
+**Decision:** add inventory caps as a small-scope Rust change before any further training data runs. This is cheap, correct, and ensures the model learns real Catan strategy.
+
+---
+
+## Architecture note: replay viewer can be Windows-native, not WSL-bound (2026-04-30)
+
+The replay viewer (`scratch_replay_lite.py` + the served HTML) currently runs entirely in WSL because the parent Python project lives there. **It doesn't have to.**
+
+The viewer is a static HTML + SVG page once the data is generated. Three approaches, in order of decoupling:
+
+1. **Current:** Python (WSL) generates JSON + PNG, Python (WSL) serves HTTP, browser (Windows) reads localhost:8765. Tight coupling — viewer can't run without WSL up.
+
+2. **Hybrid:** Python (WSL) generates JSON + PNG, then we copy them to a Windows-native folder. Browser opens the folder via a Windows-side server (`python -m http.server` from PowerShell, or a static-site host). WSL only needed for data generation.
+
+3. **Fully decoupled:** Generate the JSON + PNG once, **inline everything into a single self-contained HTML** (which we already do — `replay_lite/index.html` is 1.4 MB self-contained). Open the HTML directly via `file://` — no server needed at all.
+
+**We're effectively already at #3** for the inlined HTML. The fact that we needed a local server was because the *non-inlined* version's `fetch()` of sibling files fails under `file://`. The inlined version works without any server.
+
+**For future iterations:** the viewer should be treated as a **portable artifact** — the inlined HTML can be copied anywhere, opened with no infrastructure. WSL is only needed at generation time. This decoupling matters because:
+- Sharing replays with others doesn't require them to set up WSL.
+- Replays survive WSL state being reset.
+- A non-developer can examine a saved game without the dev environment.
+
+Action item for the next session: **prefer the inlined `index.html` as the primary distribution format.** The non-inlined `layout.json` + `overlays.json` + `board.png` triple is for development/iteration where you'd rebuild often. Once a replay is "final", embed everything and ship as one file.
