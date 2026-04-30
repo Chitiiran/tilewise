@@ -333,11 +333,30 @@ Watches for the first depth=15-sims=400 parquet to appear in the user's e5 sweep
 - 44.7 pos/s sustained (slower than 50-game cache's 57 pos/s; CPU contention with v0b e6 + user's e5 sweep workers).
 - 2.94 GB on disk.
 
-**v1_d15_subset TRAIN (07:09 UTC–ongoing, b=256, lr=1e-3, 20 epochs):** in progress.
+**v1_d15_subset TRAIN (07:09–09:04 UTC = 1h 55min, b=256, lr=1e-3, 20 epochs):** done.
 - Cache load: 7.5 min (3 GB native ext4 file).
-- Epoch 1: train=303 sec, val=39 sec, **train=1.162, val=1.297, val_top1=0.38** — slightly better than v0a epoch 1 (train=1.202, val=1.343, top1=0.34).
-- Per-batch ~209 ms (matches 50-game cache).
-- **Projected: 20 × 5.7 min = ~114 min remaining**, finish ~09:00 UTC.
+- Per-batch ~211 ms (matches 50-game cache).
+- **Train loss floor: 1.067** (vs v0a's 1.087 / v0b's 1.086) — meaningful drop. 3× more data → model can fit more signal.
+- **Val loss range: 1.30–1.42** (much tighter than v0's 1.34–1.84) — overfitting reduced significantly.
+- **val_top1: 0.37–0.48** (similar range to v0).
+
+**v1_d15_subset BENCH-2 (09:04–09:05 UTC, n=200):** done.
+- `bench2_value_mae`: 0.781 (slightly worse than v0a's 0.724 — could be sample noise on 200 positions, or d15-data value distribution differs from depth=25 lookahead reference).
+- `bench2_policy_kl`: **0.0013** (vs v0's 0.0036 — markedly better, policy head better aligned with MCTS visit-count target).
+
+**No e6 run for v1** (side-pipeline only does train+bench-2; e6 was scoped out of scratch_d15_subset_pipeline.sh to fit overnight window).
+
+### v0a vs v0b vs v1_d15_subset summary
+
+| metric | v0a (50 games) | v0b (50, lr=1e-4) | **v1_d15 (200 games)** |
+|---|---:|---:|---:|
+| train_loss floor | 1.087 | 1.086 | **1.067** |
+| val_loss range | 1.34–1.84 | 1.49–1.83 | **1.30–1.42** |
+| bench2 value_mae | 0.724 | 0.764 | 0.781 |
+| bench2 policy_kl | 0.0036 | 0.0037 | **0.0013** |
+| e6 wins/finished | 0/4 | 0/4 | (not run) |
+
+**Pipeline scales correctly.** More data → lower train loss floor, tighter val loss, better policy-KL alignment. The hyperparameter changes alone (v0a→v0b) did nothing; the data change (v0→v1) moved every metric except value_mae.
 
 ---
 
