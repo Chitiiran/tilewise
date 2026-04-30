@@ -26,7 +26,15 @@ class GnnEvaluator(os_mcts.Evaluator):
     def __init__(self, model: GnnModel, device: str = "cpu") -> None:
         self.model = model.to(device).eval()
         self.device = device
-        self._cache_key: tuple | None = None
+        # Cache the most recent forward result so MCTSBot's back-to-back
+        # evaluate(state) + prior(state) calls share one forward pass.
+        # Key by id(state) — Python object identity. MCTSBot keeps the same
+        # State object alive for those paired calls, so id() is constant.
+        # Using tuple(state._engine.action_history()) was O(N) per call where
+        # N grows to 5000+ in deep games; that O(N) hash dominated MCTS+GNN
+        # wall-clock at sims=100 (each move was ~6-10 sec; theoretical was
+        # ~700ms). id() is O(1).
+        self._cache_id: int | None = None
         self._cache_value: np.ndarray | None = None
         self._cache_policy: np.ndarray | None = None
 
@@ -38,8 +46,8 @@ class GnnEvaluator(os_mcts.Evaluator):
         # A BatchedGnnEvaluator that collects leaf evaluations across MCTS sims
         # and runs them as one batched forward pass is the obvious v1 follow-up.
         # See spec §5 "out of scope for v0".
-        key = tuple(state._engine.action_history())
-        if key == self._cache_key:
+        sid = id(state)
+        if sid == self._cache_id:
             return self._cache_value, self._cache_policy
         obs = state._engine.observation()
         data = state_to_pyg(obs).to(self.device)
@@ -48,7 +56,7 @@ class GnnEvaluator(os_mcts.Evaluator):
         v, logits = self.model(batch)
         v_np = v.squeeze(0).cpu().numpy().astype(np.float32)
         l_np = logits.squeeze(0).cpu().numpy().astype(np.float32)
-        self._cache_key = key
+        self._cache_id = sid
         self._cache_value = v_np
         self._cache_policy = l_np
         return v_np, l_np
