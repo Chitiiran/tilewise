@@ -529,3 +529,48 @@ gnn-v0 worktree:
 2. How do we measure "did the model learn anything useful?" without an obvious benchmark — is "beat lookahead-VP at sims=100" the right target?
 3. Should we collect data with multiple evaluator depths (mix d=15, 25, 35 in training) to teach the model robustness, or stick to one depth for cleanliness?
 4. How important is Tier-2 game support (dev cards, longest road, largest army) for v2? Tier-1 may be a local maximum.
+
+---
+
+## e7 12-game tournament (2026-04-30, sims=50)
+
+12-game round-robin with all 4 player kinds rotated through 4 cyclic seat positions (3 games per rotation).
+
+| player | games | wins | winrate | mean VP |
+|---|---:|---:|---:|---:|
+| **LookaheadMcts** | 12 | **12** | **100.0%** | **10.00** |
+| PureGnn | 12 | 0 | 0.0% | 3.92 |
+| Random | 12 | 0 | 0.0% | 2.83 |
+| **GnnMcts** | 12 | 0 | 0.0% | **2.33** |
+
+**Five hard findings at n=12:**
+
+1. **LookaheadMcts dominates absolutely (12/12, 100%).** Wins every game by reaching 10 VP. Across all 4 seat positions, no exceptions.
+2. **GnnMcts is the WORST player (mean VP 2.33).** Below even Random (2.83). The MCTS+GNN combination is genuinely worse than random play at sims=50 with the v1 model. **Confirms the structural finding from the 1-game tournament: MCTS amplifies the noisy GNN's mistakes.**
+3. **PureGnn (no search) beats Random by ~1 VP** (3.92 vs 2.83). The trained policy head provides a small but real signal — better than random but not strategic.
+4. **Adding search to v1 GNN flips the sign:** PureGnn 3.92 → GnnMcts 2.33. Search makes the model **worse** by ~1.6 mean VP.
+5. **0 timeouts.** The `id(state)` cache-key fix held — games complete cleanly in the 600s budget at sims=50.
+
+**Player ordering established:** LookaheadMcts > PureGnn > Random > GnnMcts.
+
+**What the v1 GNN tells us about the trained model:**
+- Value head: not accurate enough to guide MCTS (search amplifies its errors).
+- Policy head: better than uniform random but well below greedy domain heuristics.
+- The model knows *something* — PureGnn beats Random — but not enough to be useful as an MCTS leaf evaluator.
+
+**Aggregator-bug postmortem (worth noting for the next iteration):**
+Initial aggregation reported all players at 25.0% winrate (3 wins each), which was implausible. Root cause: the aggregator pulled `seed_base` from `config.json`, but the experiment's CLI doesn't write the user-specified seed_base back to config — only the default. With seed_base hardcoded to 7M and actual seeds at 13M+, the rotation index decoded to `rot_idx=600`, which made `seating[rot_idx:] + seating[:rot_idx]` an empty list. **Lesson:** experiments should persist all CLI args (especially seed_base) into config.json so downstream aggregators can reconstruct the experimental setup without guessing. Fixed by deriving seed_base from `min(seed)` observed in the parquets.
+
+### Updated player ordering (2026-04-30, n=12)
+
+```
+LookaheadMcts (100% winrate, 10.0 mean VP — wins every game)
+    ▲ +6 VP gap
+PureGnn (0% winrate, 3.9 mean VP — small policy-head signal above random)
+    ▲ +1 VP
+Random (0% winrate, 2.8 mean VP)
+    ▲ +0.5 VP
+GnnMcts (0% winrate, 2.3 mean VP — MCTS amplifies noisy GNN, makes it worst)
+```
+
+The v2 target should be: **GnnMcts mean VP > LookaheadMcts mean VP** in head-to-head. That's the threshold where the trained model has actually surpassed the hand-engineered evaluator.
