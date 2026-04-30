@@ -549,6 +549,39 @@ These outlasted the runs themselves:
 
 7. **`docs/superpowers/specs/2026-04-30-engine-v2-wishlist.md`** — single source of truth for everything we want to push to Rust later: inventory caps, longest road, balanced map gen (Tier 1 ABC + Tier 2 rejection), missing PyO3 stats fields, `engine.bank()`, `engine.all_hands()`, `engine.observation_for(viewer)`, training pipeline improvements (§4b.1-.8).
 
+### 1200-game permutation tournament — KILLED at 36/1200, lessons captured
+
+After the 12-game tournaments, attempted a **24-permutation × 50-games = 1200-game tournament** (added wishlist §4b.3 permutations mode + per-game flush kill-safety to e8). Ran 4 workers for ~1.5 hours.
+
+**Throughput reality check:** projected ~6 hr based on 12-game timing extrapolation. Actual sustained throughput was ~0.10 games/min/worker → revised ETA was **~48 hours.** Killed at 36 games done.
+
+**Result of those 36 games (CAVEAT — all from permutation 0 only):**
+
+| role | label | games | wins | winrate | mean VP |
+|---|---|---:|---:|---:|---:|
+| LookaheadMcts | depth=25, sims=50 | 36 | **32** | **88.9%** | 9.25 |
+| GnnA | v2_value | 36 | 0 | 0% | **4.31** |
+| GnnB | v2_pw4 | 36 | 0 | 0% | 4.14 |
+| Random | uniform | 36 | 4 | 11.1% | 3.75 |
+
+**Caveat is critical:** the workers never finished permutation 0 in the time allotted, so **all 36 games used the same seating** (`GnnA-GnnB-LookaheadMcts-Random`). The permutations-mode data is effectively a third 12-ish-game slice from a single seating, not a balanced mix. Per-seat sanity check confirms: every win came from seat 2 (LookaheadMcts) or seat 3 (Random), the only seats those roles ever sat in.
+
+**Pattern is consistent with prior tournaments:**
+- v2_value still edges v2_pw4 by mean VP (4.31 vs 4.14, gap 0.17 — same as 12-game's 0.25 gap, within noise).
+- LookaheadMcts dominates as always.
+- Random's 11.1% is right at expected variance for a 4-player game where the strong player loses ~10%.
+- 0 timeouts — quality of completed games is good.
+
+**Lessons captured for next time:**
+
+1. **Wall-clock estimates from small-N tournaments don't extrapolate cleanly.** The 12-game runs hit short games with decisive LookaheadMcts wins; a wider seed range pulls in long-tail behavior that's much slower per game. Need to **measure per-game throughput on a small representative slice before committing to a 1200-game run.**
+
+2. **Multiprocessing pool work distribution is unbalanced under spawn.** With workers=4 and num_games_per_seating=50, each worker got 12-13 games per permutation. Workers process permutations sequentially — they all sit on permutation 0 for hours before any of them can write a permutation 1 shard. **This makes mid-run kills look much worse than they should** (no balanced sample by definition).
+
+3. **The kill-safety machinery worked.** 36 games saved across 4 workers via per-5-game chunk flushes. `done.txt` and per-chunk parquets recovered without loss. **Wishlist §4b.3 + the per-chunk flush pattern is good engineering** — just doesn't cover the "permutation balance" requirement.
+
+4. **Future tournament design:** instead of `--num-games-per-seating N` × 24 perms, **iterate the OUTER loop over `i in range(N)` and the INNER loop over permutations.** That way every "round" of N×24 games covers all permutations once before starting the next round. A kill mid-run leaves a balanced subset, not a biased one. Add to wishlist as §4b.4 (renumber as needed).
+
 ### Net summary of v2 day
 
 - **Best v2 model: `gnn_v2_d25_keep/checkpoint_best.pt` (epoch 7, val_top1=0.642).** Used in tournaments, mean VP 3.58–3.83.

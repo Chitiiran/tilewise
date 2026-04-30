@@ -209,6 +209,20 @@ The 20-game val set gives noisy val_top1 swings (40% → 61% → 36%) because th
 
 **Implementation:** ~25 lines. Group val positions by seed, compute per-game top1, log min/p25/median/p75/max. Add to `EpochStats`.
 
+### 4b.6. Round-robin tournament loop order
+
+The current e8 implementation iterates `for perm in permutations: for game in range(N):` — every worker finishes all N games for permutation 0 before touching permutation 1. **Result:** any mid-run kill produces a single-permutation biased subset, not a balanced sample.
+
+**Fix:** swap loop order. `for round in range(N): for perm in permutations:`. Each round produces `len(permutations)` games covering all seatings exactly once. After K rounds, you have K games per permutation — kill-safe and balanced.
+
+Discovered the hard way during the 1200-game kill at 36 games (all from permutation 0). Adds maybe 30 lines of refactoring in `_run_cell` / `main`. Cheap and high-value.
+
+### 4b.7. Throughput probe before committing to long tournaments
+
+Before launching N=1000+ tournaments, run a small N=24 (one game per permutation) probe and measure wall-clock per game per worker. Extrapolate. Only commit if the projected total is acceptable. Don't trust extrapolation from 12-game runs that happened to hit short-game seeds.
+
+Trivial — just a `--probe` flag that prints "estimated total wall-clock: X hours" and exits.
+
 ### 4b.8. Live progress plot during training
 
 `train.py` writes a `progress.png` after every epoch (same plot as `scratch_plot_v2_d25_progress.py`, but baked in). Any session can see how training is going visually without parsing the log.
