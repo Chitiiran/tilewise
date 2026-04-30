@@ -295,7 +295,26 @@ Quick GPU/single-process derisks while user's e5 sweep ran. All passed.
 
 **v0a complete in 112 min total.** Under the 3h soft limit, so v0b kicked off automatically at 03:24 UTC.
 
-**v0b TRAIN (03:24–ongoing UTC, b=256, lr=1e-4, 40 epochs):** in progress. Lower learning rate + 2x epochs to test whether v0a converged early due to lr being too high. Loss curves will tell us.
+**v0b TRAIN (03:24–04:37 UTC = 73 min, b=256, lr=1e-4, 40 epochs):** done.
+- Train loss flatlined at 1.086-1.087 from epoch ~5 onward (same plateau as v0a).
+- Val loss noisy 1.49-1.83. Final 1.513 (better than v0a's 1.836).
+- val_top1 final 0.348.
+- **Lower lr + more epochs DID NOT help.** The plateau is data-imposed, not optimization-imposed.
+
+**v0b BENCH-2 (04:37–04:38 UTC, n=200):** done.
+- `bench2_value_mae`: 0.764 (slightly worse than v0a's 0.724).
+- `bench2_policy_kl`: 0.0037 (same range).
+
+**v0b E6 (04:38–06:20 UTC = 102 min, 1 worker, 8 games, sims=100, max_seconds=1200):** done.
+- 4/8 finished, 4 timed out.
+- **0 wins.** Mean VP 2.50 (worse than v0a's 3.00).
+- **Same conclusion as v0a:** GNN priors actively mislead MCTS at sims=100. Model is data-starved.
+
+### v0a vs v0b verdict
+
+Both v0a and v0b lose every e6 game against random. The 50-game training set is too thin for any hyperparam configuration to learn a useful evaluator. **The pipeline is mechanically correct; the data is insufficient.** The d15 sweep data, when its cache finishes, is the next test — 3× more effective games, 6× more positions.
+
+Pipeline total wall-clock: **289 min (4h 49min)** from v0a start to v0b e6 finish.
 
 ### 21:45–ongoing — D15 watcher (autonomous side-pipeline)
 
