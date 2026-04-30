@@ -271,18 +271,35 @@ Quick GPU/single-process derisks while user's e5 sweep ran. All passed.
 
 ### 23:46–ongoing — overnight v0a + v0b training pipeline (autonomous)
 
-- **Goal:** train v0 GNN on the existing 50-game v2 cache, run bench-2 + small e6, compare against a v0b config (lower lr, more epochs) if time permits within 3h budget.
-- **Hard limit:** 6h total before script self-stops.
+- **Goal:** train v0 GNN on the existing 50-game v2 cache, run bench-2 + small e6, compare against a v0b config if time permits.
 - **Run dir:** `mcts_study/runs/gnn_v0_overnight/`
-- **Steps:**
-  1. v0a train (20 epochs, b=256, lr=1e-3) → ~45 min projected
-  2. v0a bench-2 (n=200) → ~5 min
-  3. v0a e6 small (1 worker, 8 games, sims=100, max_seconds=1200) → ~30-60 min
-  4. If under 3h elapsed: v0b train (40 epochs, lr=1e-4) + bench-2 + e6 → another ~90 min
-- **Commits + pushes after each artifact lands.**
-- **Cache:** `~/cache_full.pt` (native ext4, 938 MB, 136k positions).
+- **Cache:** `~/cache_full.pt` (native ext4, 938 MB, 136k positions, 50 games).
 
-(This row will be filled in with results as steps complete.)
+**v0a TRAIN (00:54–01:30 UTC = 36 min, 20 epochs, b=256, lr=1e-3):** done.
+- Train loss flatlined at 1.087 from epoch 4 onward (early convergence; data-starved).
+- Val loss climbed 1.34 → 1.84 (overfitting on 50 games).
+- val_top1 noisy 33-69%, mostly 35-50% (model picks meaningful actions but unstably).
+- Per-epoch wall-clock 95-105 sec; matches D4d projection.
+- Checkpoint: `gnn_v0_overnight/v0a/checkpoint.pt` (283 KB).
+
+**v0a BENCH-2 (01:31–01:32 UTC = 32 sec, n=200, lookahead_depth=25):** done.
+- `bench2_value_mae`: 0.724 — model value head substantially off vs lookahead reference. Expected at 50 games.
+- `bench2_policy_kl`: 0.0036 — peaky-vs-peaky KL is uninformative.
+
+**v0a E6 (01:32–ongoing, 1 worker, 8 games, sims=100, max_seconds=1200):** in progress at write time. Going slow due to 1-worker constraint while user's e5 sweep occupies 4 cores.
+
+(v0b will run after v0a e6 if total elapsed under 3h.)
+
+### 21:45–ongoing — D15 watcher (autonomous side-pipeline)
+
+Watches for the first depth=15-sims=400 parquet to appear in the user's e5 sweep dir. When detected: stages worker dirs, builds an in-RAM cache, trains a v1 GNN on it, runs bench-2.
+
+- **Sweep status as of 02:28 UTC:** 291/1200 games done across 4 workers. All still in cell 0 (depth=15). Workers at 70-75 each → first cell flush expected at ~100-each, ~25-50 more min.
+- **Polls every 5 min** until first depth=15 shard lands.
+- **Cache will be ~75% size of cache_full.pt** (depth=15 games are shorter than depth=25/35) → ~700 MB on disk, ~3 GB peak RAM. Fits comfortably in WSL's 31 GB.
+- **Self-contained:** no manual intervention needed. Waits up to 30 min after first shard for additional workers to finalize, then proceeds.
+
+(Will be filled in with build + train results when triggered.)
 
 ---
 
