@@ -261,6 +261,29 @@ hour:    06   08   10   12   14   16   18   20   22   00   02   04   06   08
 - **ETA:** unknown; running on 4 workers.
 - **Constraint:** while this runs, no competing 4-worker CPU sweeps from me.
 
+### 21:30–ongoing — D4c, D4d, D5 derisks (autonomous)
+
+Quick GPU/single-process derisks while user's e5 sweep ran. All passed.
+
+- **D4c (instrumented baseline, /mnt/c cache):** dataset load 250s, train epoch 100s, val 13s, total ~6 min.
+- **D4d (native ext4 cache, ~/cache_full.pt):** dataset load 145s, train epoch 108s, val 15s, total ~4.5 min. Native filesystem ~40% faster on load; train phase identical (RAM-resident).
+- **D5 (replay correctness):** 10/10 random positions in cache match fresh CatanReplayDataset output bit-for-bit. Replay logic correctness verified at scale.
+
+### 23:46–ongoing — overnight v0a + v0b training pipeline (autonomous)
+
+- **Goal:** train v0 GNN on the existing 50-game v2 cache, run bench-2 + small e6, compare against a v0b config (lower lr, more epochs) if time permits within 3h budget.
+- **Hard limit:** 6h total before script self-stops.
+- **Run dir:** `mcts_study/runs/gnn_v0_overnight/`
+- **Steps:**
+  1. v0a train (20 epochs, b=256, lr=1e-3) → ~45 min projected
+  2. v0a bench-2 (n=200) → ~5 min
+  3. v0a e6 small (1 worker, 8 games, sims=100, max_seconds=1200) → ~30-60 min
+  4. If under 3h elapsed: v0b train (40 epochs, lr=1e-4) + bench-2 + e6 → another ~90 min
+- **Commits + pushes after each artifact lands.**
+- **Cache:** `~/cache_full.pt` (native ext4, 938 MB, 136k positions).
+
+(This row will be filled in with results as steps complete.)
+
 ---
 
 ### Update protocol for this section
