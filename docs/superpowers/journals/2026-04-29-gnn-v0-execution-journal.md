@@ -358,6 +358,25 @@ Watches for the first depth=15-sims=400 parquet to appear in the user's e5 sweep
 
 **Pipeline scales correctly.** More data → lower train loss floor, tighter val loss, better policy-KL alignment. The hyperparameter changes alone (v0a→v0b) did nothing; the data change (v0→v1) moved every metric except value_mae.
 
+### One-game 4-player tournament (sims=50, seed=12345, ~3 min wall-clock)
+
+After v1 training finished, ran a head-to-head 1-game tournament with all four player types:
+
+| Seat | Player | Final VP | Avg time/move |
+|---|---|---:|---:|
+| 0 | 🤖G GnnMcts (sims=50 + v1 GnnEvaluator) | 2 | 789 ms |
+| 1 | 📊P PureGnn (argmax of GNN policy) | 4 | 15 ms |
+| 2 | 🔍L LookaheadMcts (sims=50 + LookaheadVpEvaluator d=25) | 9 | 11 ms |
+| 3 | 🎲R Random | **10 (winner)** | <1 ms |
+
+**Ranking:** Random (10) > LookaheadMcts (9) > PureGnn (4) > GnnMcts (2).
+
+**Key finding: PureGnn (no search) beats GnnMcts (MCTS-augmented).** Adding search to a noisy evaluator amplifies its mistakes. The v1 GNN's policy/value heads aren't yet accurate enough to help MCTS — they actively mislead it. Same pattern v0a/v0b showed in e6 (0 wins) was reproduced here.
+
+**Per-call cost:** GnnMcts at 789ms/move is 70× slower than LookaheadMcts at 11ms/move at the same sim count. The GNN forward pass × 50 sims is the dominant tournament wall-clock.
+
+**One-game caveat:** n=1 game means seat 3 (random) winning is partly luck of the seating. The pattern (PureGnn > GnnMcts, LookaheadMcts strong) is consistent with the structural reasoning, but the random winning could be sample noise. A multi-game tournament would settle the absolute ranking.
+
 ---
 
 ### Update protocol for this section
