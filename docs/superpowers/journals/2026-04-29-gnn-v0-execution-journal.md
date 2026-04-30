@@ -286,9 +286,16 @@ Quick GPU/single-process derisks while user's e5 sweep ran. All passed.
 - `bench2_value_mae`: 0.724 — model value head substantially off vs lookahead reference. Expected at 50 games.
 - `bench2_policy_kl`: 0.0036 — peaky-vs-peaky KL is uninformative.
 
-**v0a E6 (01:32–ongoing, 1 worker, 8 games, sims=100, max_seconds=1200):** in progress at write time. Going slow due to 1-worker constraint while user's e5 sweep occupies 4 cores.
+**v0a E6 (01:32–03:24 UTC = 112 min, 1 worker, 8 games, sims=100, max_seconds=1200):** done.
+- **4/8 games finished, 4 timed out** at the 1200s cap.
+- **0 wins out of 4 finished games** — MCTS+GNN-v0a underperformed random baseline (25%).
+- mean_vp_p0 = 3.00 (vs random baseline of ~3-4).
+- **Diagnostic read:** v0a value/policy heads are noisy enough at 50-game training that they actively mislead MCTS. With only sims=100 there aren't enough rollouts to recover from bad priors. This matches the bench-2 reading (value_mae=0.72 — significant disagreement with the lookahead reference).
+- **Pipeline-level finding:** at sims=100 with the GNN evaluator, per-move time is ~30-60 sec. 1200s cap = ~20-40 moves before timeout. Catan games take ~150-200 MCTS-decided moves, so 4/8 timeouts is unsurprising.
 
-(v0b will run after v0a e6 if total elapsed under 3h.)
+**v0a complete in 112 min total.** Under the 3h soft limit, so v0b kicked off automatically at 03:24 UTC.
+
+**v0b TRAIN (03:24–ongoing UTC, b=256, lr=1e-4, 40 epochs):** in progress. Lower learning rate + 2x epochs to test whether v0a converged early due to lr being too high. Loss curves will tell us.
 
 ### 21:45–ongoing — D15 watcher (autonomous side-pipeline)
 
