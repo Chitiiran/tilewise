@@ -206,8 +206,19 @@ hour:    06   08   10   12   14   16   18   20   22   00   02   04   06   08
                                                   19:32 ─[██]─ 20:12  cache_full.pt build (136k pos, 938 MB)
                                                               20:14 ─[█]─ 20:21  D4 1-epoch b=64 baseline
                                                                   20:25 ─[█]─ 20:32  D4b 1-epoch b=256
-                                                                          22:41 ─[ongoing]  user 400-game e5 sweep
-                                                                                       (running, eta TBD)
+                                                                          22:41 ──[████████]── 04:30 (4/30)
+                                                                                       user 400-game e5 sweep (d15+d25 done; d35 partial)
+```
+
+```
+2026-04-30 EDT
+hour:    00   02   04   06   08   10   12   14   16
+
+23:46 (4/29) ─[██████]── 04:38   v0a/v0b overnight train+bench-2+e6 (50-game cache, 0 wins each)
+              04:35 ─[█████████]── 09:04            v1_d15_subset cache build + train (200 games d15)
+                                  10:08 ─[ ]─ 10:15  e7 12-game tournament (LookaheadMcts 12/12)
+                                            07:23 ─[█████████████████]── ~17:00
+                                                  v2_d25_w0w1 cache build + train (200 games d25, 60 ep)
 ```
 
 ### 07:08–14:11 EDT — `e5 v2 1500-game sweep` (mcts-study worktree)
@@ -252,14 +263,14 @@ hour:    06   08   10   12   14   16   18   20   22   00   02   04   06   08
 - **Goal:** test whether batch size flattens per-batch overhead.
 - **Outcome:** 6 min 12 sec total. Marginal improvement. Per-batch overhead doesn't scale with batch size as hoped.
 
-### 22:41–ongoing — `user 400-game e5 sweep` (gnn-v0 — user-launched, do not touch)
+### 22:41 (2026-04-29) – ~04:30 (2026-04-30) — `user 400-game e5 sweep` (gnn-v0)
 
 - **Goal:** generate the proper-scale v2 training data for v0 GNN.
-- **Cells:** depth ∈ {15, 25, 35} × sims=400, 100 games each.
+- **Cells:** depth ∈ {15, 25, 35} × sims=400, 100 games per worker per cell (400/cell).
 - **No max_seconds cap.**
 - **Run dir:** `gnn-v0/runs/gnn-data-2026-04-29-evening/2026-04-29T22-41-e5_lookahead_depth/`
-- **ETA:** unknown; running on 4 workers.
-- **Constraint:** while this runs, no competing 4-worker CPU sweeps from me.
+- **Outcome:** d15 + d25 cells fully flushed (100 games × 4 workers each = 400 games per cell, 800 games total). d35 cell was in flight when the process exited; partial d35 data may exist but not used for v2 training.
+- **Total moves recorded:** ~1.86M across d15 (817k) + d25 (1.04M).
 
 ### 21:30–ongoing — D4c, D4d, D5 derisks (autonomous)
 
@@ -376,6 +387,176 @@ After v1 training finished, ran a head-to-head 1-game tournament with all four p
 **Per-call cost:** GnnMcts at 789ms/move is 70× slower than LookaheadMcts at 11ms/move at the same sim count. The GNN forward pass × 50 sims is the dominant tournament wall-clock.
 
 **One-game caveat:** n=1 game means seat 3 (random) winning is partly luck of the seating. The pattern (PureGnn > GnnMcts, LookaheadMcts strong) is consistent with the structural reasoning, but the random winning could be sample noise. A multi-game tournament would settle the absolute ranking.
+
+### 2026-04-30 07:23 UTC – ongoing — `gnn_v2_d25_w0w1` cache build + train (autonomous)
+
+- **Goal:** train v2 GNN on **200 games of depth=25 lookahead self-play** (worker0+worker1 of the user's evening sweep). Direct apples-to-apples comparison with v1_d15_subset (same 200 games, same workers, but d15 vs d25).
+- **Hyperparams:** b=256, lr=1e-3, hidden=32, num_layers=2, **epochs=60** (was 20 for v1; bumped per user request — testing whether more epochs + deeper data helps the policy collapse seen in v1's 12-game tournament).
+- **Pre-task housekeeping:** deleted v0 caches (`mcts_study/runs/gnn_v0_smoke/cache_full.pt` 938 MB + `cache_w0.pt` 250 MB, 1.2 GB freed). Worker subset staged via symlinks at `mcts_study/runs/gnn_v2_d25_w0w1/staged/` so glob matches only d25 shards (excluding d15+d35 from same source dirs).
+- **Run dir:** `mcts_study/runs/gnn_v2_d25_w0w1/`
+- **Cache path:** `~/cache_v2_d25_w0w1.pt` (WSL native ext4)
+- **PID:** 10479
+
+**Cache build (07:23–09:57 UTC = 2h 47min):** done.
+- 495,447 positions cached, **3.4 GB on disk**, ~52 pos/s sustained, peak RSS 11.1 GB (well under 31 GB cap).
+- 18% slower per-pos than the 50-game cache build (52 vs 60 pos/s) — likely d25 games are longer (~2475 moves/game vs d15's 2042) so more replay work per position.
+- Validates RAM projection: linear scaling extrapolates 4-worker d25 (~990k pos) to ~22 GB RAM peak — fits without WSL bump.
+
+**Train phase (09:57 UTC – ongoing):** at epoch 9/60 as of 11:15 UTC. Per-epoch wall-clock ~7.0 min (372–397s train + ~55s val), slightly above the 6.8 min projection. ETA finish ~17:30 local / 21:30 UTC.
+
+Loss curve (epochs 1–9):
+
+| epoch | train_loss | val_loss | val_top1 |
+|---:|---:|---:|---:|
+| 1 | 1.157 | 1.152 | 0.469 |
+| 2 | 1.092 | 1.197 | 0.479 |
+| 3 | 1.085 | 1.147 | 0.464 |
+| 4 | 1.086 | 1.275 | 0.407 |
+| 5 | 1.081 | 1.269 | 0.343 |
+| 6 | 1.081 | 1.277 | 0.585 |
+| 7 | 1.079 | 1.309 | **0.611** ← run-best |
+| 8 | 1.079 | 1.272 | 0.363 |
+| 9 | 1.079 | 1.326 | 0.504 |
+
+**Reading the curve so far:**
+- **Train loss flatlined at 1.079** by epoch 7, matching v1_d15's floor of 1.067 (within noise). 200 d25 games ≈ 200 d15 games for raw fitting capacity. Confirms what the journal predicted: model is data-bound, not capacity-bound, at this size.
+- **Val loss climbing** from 1.15 (ep 1) to 1.33 (ep 9). Classic mild overfit pattern — train converged but val getting worse.
+- **Val top1 = 61% at ep 7** is the highest top-1 we've seen on any run (v0a peaked ~50%, v1_d15 peaked ~48%). Could be a real signal that d25 data is more learnable, or a 20-game-val-set noise peak. Need to see full curve to know.
+- **Val top1 volatility (40% → 61% → 36%)** is classic small-val effect: ~20 games × 2475 moves = ~50k positions but only 20 *independent* game seeds; one game's worth of pattern shift swings top-1 by ±10pp.
+- **No per-epoch checkpoints saved** (train.py only writes ep 60). If the actual best model is at ep 7-15, we won't be able to recover it. Captured as wishlist §4b.1.
+
+### Process lesson (added during v2 training)
+
+**The "we'll only know after epoch 60" trap.** Mid-run, observed val_top1 hit 0.611 at epoch 7 — possibly the strongest model we've trained. But our train.py only writes the final checkpoint, so even if the model peaks at epoch 7 and overfits afterward, we ship epoch 60. **For ANY future training run on noisy/small data, save per-epoch (or per-N-epoch) checkpoints by default.** The disk cost is trivial (~67 KB × 60 = 4 MB); the cost of *not* saving is "we can't tell what the model could have been." Wishlist §4b.1.
+
+### v2_d25 training run #1 — KILLED at epoch 11 (no checkpoint saved)
+
+The original 60-epoch run hit the §4b.1 wishlist gap directly: train.py only saved a checkpoint at the end of all epochs, so killing it lost everything despite 11 completed epochs. Train_loss flatlined at 1.079 by epoch 7, val_top1 peaked at 0.611 (epoch 7). Cache file (`~/cache_v2_d25_w0w1.pt`, 3.4 GB) was preserved and reused for run #2.
+
+Lesson made permanent: train.py now saves per-epoch bundles + `checkpoint_best.pt` every epoch (wishlist §4b.1, .4 implemented).
+
+### v2_d25 training run #2 (10 epochs, value-equal, with new wishlist features)
+
+Re-ran on same cache after killing #1, with the upgraded train.py. 10 epochs only, b=256, lr=1e-3, w_value=1.0, w_policy=1.0. Cache was already on disk so no rebuild needed (load took 12 min from cold cache).
+
+Per-epoch results:
+
+| epoch | train | val | val_top1 | per-game spread | best? |
+|---:|---:|---:|---:|---|---|
+| 1 | 1.156 | 1.139 | 0.461 | 0.36–0.59 | ✓ |
+| 2 | 1.093 | 1.219 | 0.486 | 0.33–0.62 | ✓ |
+| 3 | 1.086 | 1.149 | 0.429 | 0.24–0.70 | |
+| 4 | 1.083 | 1.221 | 0.524 | 0.33–0.62 | ✓ |
+| 5 | 1.082 | 1.265 | 0.349 | 0.23–0.60 | |
+| 6 | 1.081 | 1.271 | 0.576 | 0.29–0.70 | ✓ |
+| **7** | 1.080 | 1.273 | **0.642** | 0.34–**0.75** | **✓ best** |
+| 8 | 1.079 | 1.272 | 0.343 | 0.28–0.51 | |
+| 9 | 1.079 | 1.234 | 0.509 | 0.37–0.64 | |
+| 10 | 1.078 | 1.276 | 0.367 | 0.28–0.52 | |
+
+**Findings:**
+- **Best epoch 7 (val_top1=0.642)** — meaningful jump above v1_d15's 0.37–0.48 range. Best top-1 we've ever measured.
+- **Per-game peak: 0.75** at epoch 7 — one val game has 75% top-1 alignment with MCTS visits.
+- **Train loss floor: 1.078** — basically tied with v1's 1.067. 200 d25 games provide same fitting capacity as 200 d15 games.
+- **Volatile val_top1** (40-64% across epochs) confirms 20-game val effective sample size is the dominant noise source.
+- **The §4b.1 win was real:** epoch 10's val_top1=0.367 was 27pp worse than ep 7's 0.642. Without per-epoch saves we'd have shipped a much weaker model. **Strong validation of the wishlist-driven train.py upgrade.**
+
+Archive: `mcts_study/runs/gnn_v2_d25_keep/` (all 10 epoch bundles + checkpoint_best.pt + ARCHIVE_README.md).
+
+### v2_d25_pw4 training run (10 epochs, policy-weighted)
+
+Hypothesis: with 200 games (sparse value signal) but 495k positions (dense policy signal), increase policy gradient by 4× to let the policy head learn faster without affecting model capacity. Same data, same epochs, same architecture; only `w_value=1.0, w_policy=4.0`.
+
+| epoch | val_top1 (w_p=1) | val_top1 (w_p=4) |
+|---:|---:|---:|
+| 1 | 0.461 | 0.526 |
+| 2 | 0.486 | 0.431 |
+| 3 | 0.429 | 0.470 |
+| 4 | 0.524 | 0.451 |
+| 5 | 0.349 | 0.382 |
+| 6 | 0.576 | 0.564 |
+| **7** | **0.642** ✓ best | **0.643** ✓ best |
+| 8 | 0.343 | 0.524 |
+| 9 | 0.509 | 0.398 |
+| 10 | 0.367 | 0.469 |
+
+**Key finding: both runs peak at epoch 7 with effectively identical val_top1.** The 4× policy weight did not unlock additional policy-head accuracy. Plausible reasons:
+1. The policy head is already at its data-bound ceiling at 200 games.
+2. The body representation learned to maximize policy_loss either way, so changing weights only affects how much value-loss is "tolerated" — and the policy head saturated regardless.
+3. pw4 ran ~25% faster per epoch (5.2 vs 7.0 min) because the cache was hot — incidental but noted.
+
+Archive: `mcts_study/runs/gnn_v2_d25_pw4_keep/` (all 10 epoch bundles + checkpoint_best.pt + ARCHIVE_README.md).
+
+### Tournament: v1_d15 vs v2_d25_value vs LookaheadMcts vs Random (e8, 12 games, sims=50, no MCTS-on-GNN)
+
+Pure-policy tournament (PureGnn for the GNN seats, no MCTS wrapping the GNN evaluator), to isolate raw policy-head quality.
+
+| role | model | wins | winrate | mean VP |
+|---|---|---:|---:|---:|
+| **LookaheadMcts** | depth=25, sims=50 | **9/12** | **75.0%** | 7.83 |
+| **v2_d25_ep7** | (w_p=1, this) | 0/12 | 0% | **3.58** |
+| **v1_d15** | (older, d15 data) | 0/12 | 0% | 3.17 |
+| Random | uniform | 1/12 | 8.3% | 3.08 |
+| (timeouts: 2/12) | | | | |
+
+**v2 beats v1 by mean VP** (3.58 vs 3.17) — small but consistent edge. Both GNNs beat Random. **LookaheadMcts dominates as expected.** Random's 1 win was a setup-phase fluke (seed 15010000, rot=1, Random in seat 2).
+
+Run dir: `mcts_study/runs/gnn_v2_d25_w0w1/final_tourney/2026-04-30T17-41-e8_gnn_vs_gnn/`.
+
+### Tournament: v2_d25_value vs v2_d25_pw4 vs LookaheadMcts vs Random (e8, 12 games, sims=50)
+
+The hypothesis test: does policy-weighting (w_p=4) actually improve PureGnn play vs equal-weighting (w_p=1)?
+
+| role | model | wins | winrate | mean VP |
+|---|---|---:|---:|---:|
+| **LookaheadMcts** | depth=25, sims=50 | **10/12** | **83.3%** | 8.67 |
+| **v2_value** (w_p=1) | gnn_v2_d25_keep | 0/12 | 0% | **3.83** |
+| **v2_pw4** (w_p=4) | gnn_v2_d25_pw4_keep | 0/12 | 0% | 3.58 |
+| Random | uniform | 1/12 | 8.3% | 2.75 |
+| (timeouts: 1/12) | | | | |
+
+**Headline finding (negative result, important): policy-weighting did NOT outperform equal-weighting.** v2_pw4 actually scored slightly *worse* mean VP (3.58 vs 3.83). Possible reasons (in order of plausibility):
+
+1. **Policy head was already at its data-bound capacity.** Both models reached val_top1 ≈ 0.642 at epoch 7. With 200 games, the policy head ran out of distinct strategic situations to learn from regardless of loss weight.
+2. **Body representation drifted away from value-useful features.** The model body is shared. With 4× more policy gradient, the body's internal representation may have become less semantically rich, costing PureGnn play quality even with same top-1 accuracy.
+3. **Sample noise.** n=12 with 0.25 VP gap is within noise.
+
+**Important caveat:** the val_top1 = 0.642 metric was the same for both models, but mean tournament VP differed by 0.25. This means **val_top1 is not a perfect proxy for tournament strength** — a model can score the same on policy top-1 yet play differently. Future tournaments are the only ground truth.
+
+Run dir: `mcts_study/runs/gnn_v2_d25_pw4_keep/tourney/2026-04-30T19-32-e8_gnn_vs_gnn/`.
+
+### Architectural deliverables this iteration
+
+These outlasted the runs themselves:
+
+1. **`scratch_card_tracker.py`** — Python reconstruction of all 4 players' resource hands + bank from action_history alone. Verified end-to-end on two e7 games (665+ steps each). Plug-and-play interface (`CardTracker.snapshot_at(step_idx)`) so a future `EngineCardTracker` (after the v2 engine API lands) is a one-line swap. Lives in `scratch_card_tracker.py`.
+
+2. **`scratch_replay_lite.py` overhaul** — replay viewer now shows all 4 players' full resource breakdowns at every step (not just current player), bank state per resource, and the terminal-state perspective bug fixed. The "stale" cache logic was removed entirely.
+
+3. **`mcts_study/catan_gnn/train.py` upgrades (wishlist §4b.1, .2, .4, .5, .8 implemented):**
+   - Per-epoch checkpoint bundles (`checkpoint_epoch{NN}.pt`)
+   - `checkpoint_best.pt` updated whenever val_top1 hits a new high
+   - `--resume <path>` for continuation
+   - Per-game val_top1 quartiles in `EpochStats` and inline log
+   - `progress.png` regenerated after every epoch
+   - `_write_progress_plot()` helper extracted
+
+4. **`mcts_study/catan_mcts/experiments/e8_gnn_vs_gnn.py` (wishlist §4b.3):** new tournament script for two-GNN head-to-head + LookaheadMcts + Random. Used for the v1-vs-v2 and v2_value-vs-v2_pw4 tournaments.
+
+5. **`scratch_e8_aggregate.py`** — pretty-print results from any e8 run dir.
+
+6. **`scratch_plot_v2_d25_progress.py`** — standalone live-plot script (precursor to the in-train.py version).
+
+7. **`docs/superpowers/specs/2026-04-30-engine-v2-wishlist.md`** — single source of truth for everything we want to push to Rust later: inventory caps, longest road, balanced map gen (Tier 1 ABC + Tier 2 rejection), missing PyO3 stats fields, `engine.bank()`, `engine.all_hands()`, `engine.observation_for(viewer)`, training pipeline improvements (§4b.1-.8).
+
+### Net summary of v2 day
+
+- **Best v2 model: `gnn_v2_d25_keep/checkpoint_best.pt` (epoch 7, val_top1=0.642).** Used in tournaments, mean VP 3.58–3.83.
+- **No GNN ever beat LookaheadMcts** at sims=50 across any tournament configuration tried.
+- **Policy-weighting (w_p=4) did not help.** Possibly the bottleneck is data, not loss balance.
+- **The wishlist-driven train.py upgrades paid off immediately:** without §4b.1 we'd have lost both runs to mid-training kills. We now have full per-epoch artifact preservation by default.
+- **The replay viewer is now strictly more useful** with all-hands + bank visibility.
+- **Open question for v3:** is depth=35 data better? RAM check confirms 200 d35 games fits in 31 GB cap (~15.5 GB peak). Cache build ~3 hr; training another ~1h. Pending user decision.
 
 ---
 

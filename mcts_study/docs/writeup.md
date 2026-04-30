@@ -198,6 +198,37 @@ Three consequences for anyone reading the parquets:
 2. **`CatanReplayDataset` filters out v1 games** at construction (silently — they cannot be replayed without action_history). Anyone trying to train a GNN on the 1500-game sweep will see an empty dataset and need to re-record.
 3. **Going forward, any sweep that wants to feed the GNN pipeline must run on a branch where SCHEMA_VERSION ≥ 2 is in effect at the time the recorder writes.** A small re-recording sweep (~hours at depth=25/sims=400 cells) under v2 is the canonical path.
 
+## 5d. e5 v2 was wall-clock-censored — the 75% number is not real
+
+While running the GNN-v0 data regen (50 games on `gnn-v0` worktree, 600s/game cap), a comparison against the 1500-game sweep showed a 15–28pp "regression":
+
+| cell | original v2 (n=55–57, 360s cap) | regen (n=25, 600s cap) |
+|---|---:|---:|
+| depth=25/sims=400 | 75.4% | 60.0% |
+| depth=35/sims=400 | 76.4% | 48.0% |
+
+**The original number was a wall-clock-filter artefact, not a real strength measurement.** Three lines of evidence:
+
+1. **Length distributions are mutually exclusive.** The original sweep's *finished* games had median length 5,787 / 5,559 moves; the 140 *skipped* games had median length 26,674. Skipped games were a separate population — long games censored before they could record a winner.
+
+2. **Within the original sweep, winrate collapses on long games.** Stratifying the 57 finished depth=25 games by length quartile:
+
+   | Quartile | Median len | n | P0 winrate | No-winner rate |
+   |---|---:|---:|---:|---:|
+   | Q1 (short) | 2,151 | 15 | 86.7% | 0% |
+   | Q4 (long) | 27,647 | 14 | **50.0%** | **50%** |
+
+   Same pattern at depth=35 (Q4: 42.9% wr, 50% no-winner). Lookahead's edge already vanished on long games *inside the original data* — it was just hidden because the wall-clock cap dropped most of the long-game population entirely.
+
+3. **Among finished games, the two sweeps agree.** Restricting both to `winner != -1`: original-finished 86.0% vs regen-finished 88.2% at depth=25; 87.5% vs 100% (n=12) at depth=35. The sweeps measure the same thing on the same population. The gap is entirely the no-winner population that the original excluded.
+
+The honest summary: lookahead-VP at sims=400 is **~85–90% strong on short games** (someone reaches 10 VP fast) and **~45–50% on long games with a 50% no-winner rate**. The 360s cap silently dropped the hard-game population, so the headline "75%" was the best-case half of the distribution.
+
+**Implications:**
+- Section 5c headline numbers should be read as "winrate among games that finished in 6 minutes," not "winrate." The cells with high timeout rates (depth=10 sims=400 had 17/100 timeouts; depth=17/sims=400 had 35/100) are most distorted.
+- For winrate experiments going forward: report wins / losses / no-decisions as separate counts. Default cap should be loose enough that the 30k-step cap fires before the wall-clock cap, OR skipped games must be counted as no-decisions in the denominator.
+- The unintended insight: **lookahead-VP doesn't help close out long games**. The bot's strength at "getting to 10 VP fast" doesn't generalise to "winning when nobody is on track." A network-based evaluator with a real value head should help here — exactly what GNN-v0 is.
+
 ## 6. What this project actually delivered
 
 - Phase 0: chance-aware engine (commits 72f79de…918296f). The 9 commits show step-by-step TDD evolution.

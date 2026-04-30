@@ -1,11 +1,23 @@
-"""GNN-v0 training loop. Reads parquets, trains, writes artifacts."""
+"""GNN-v0 training loop. Reads parquets, trains, writes artifacts.
+
+Per-epoch artifacts (wishlist §4b.1, .4, .8 — added 2026-04-30):
+- checkpoint_epoch{NN}.pt — saved after each epoch
+- checkpoint_best.pt — copy of the epoch with the best val_top1
+- checkpoint.pt — alias for the latest epoch's checkpoint (backward compat)
+- progress.png — live training plot regenerated after each epoch
+- training_log.json — accumulating per-epoch stats
+
+Resume (wishlist §4b.2): --resume <path> loads model+optimizer state and
+continues from the recorded epoch. The cache file is reused as-is.
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import random
 import subprocess
-from dataclasses import asdict, dataclass
+from collections import defaultdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +41,15 @@ class EpochStats:
     val_loss_policy: float
     val_value_mae: float
     val_policy_top1_acc: float
+    # Per-game val_top1 distribution (wishlist §4b.5). Aggregate val_top1 is
+    # noisy because effective n is the # of distinct val games, not positions.
+    # These fields show the spread across val games at this epoch.
+    val_top1_per_game_min: float = 0.0
+    val_top1_per_game_p25: float = 0.0
+    val_top1_per_game_median: float = 0.0
+    val_top1_per_game_p75: float = 0.0
+    val_top1_per_game_max: float = 0.0
+    val_n_games: int = 0
 
 
 def _split_by_seed(ds: CatanReplayDataset, val_frac: float, seed: int):
@@ -102,6 +123,56 @@ def _resolve_device(device: str) -> torch.device:
     return torch.device(device)
 
 
+def _write_progress_plot(out_path: Path, log: dict, *, epochs_total: int,
+                          best_top1: float, best_top1_epoch: int) -> None:
+    """Generate a live progress plot from accumulated per-epoch stats.
+    Wishlist §4b.8."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    eps = [e["epoch"] for e in log["epochs"]]
+    if not eps:
+        return
+    tl = [e["train_loss_total"] for e in log["epochs"]]
+    vl = [e["val_loss_total"] for e in log["epochs"]]
+    vt = [e["val_policy_top1_acc"] for e in log["epochs"]]
+    pg_min = [e.get("val_top1_per_game_min", 0.0) for e in log["epochs"]]
+    pg_max = [e.get("val_top1_per_game_max", 0.0) for e in log["epochs"]]
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True,
+                             gridspec_kw={"height_ratios": [1.4, 1]})
+    fig.suptitle(
+        f"GNN training — epoch {eps[-1]}/{epochs_total}",
+        fontsize=12, fontweight="bold",
+    )
+    ax = axes[0]
+    ax.plot(eps, tl, "o-", color="#1f77b4", label="train_loss", linewidth=2)
+    ax.plot(eps, vl, "s-", color="#d62728", label="val_loss", linewidth=2)
+    ax.set_ylabel("loss")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(alpha=0.3)
+    ax.set_title(f"final train_loss={tl[-1]:.3f}, val_loss={vl[-1]:.3f}",
+                 fontsize=10, color="#444")
+
+    ax = axes[1]
+    ax.fill_between(eps, pg_min, pg_max, color="#2ca02c", alpha=0.15,
+                    label="per-game min..max")
+    ax.plot(eps, vt, "^-", color="#2ca02c", label="val_top1 (mean over positions)", linewidth=2)
+    if best_top1_epoch > 0:
+        ax.scatter([best_top1_epoch], [best_top1], color="orange", s=140, zorder=5,
+                   edgecolor="black", linewidth=1.5,
+                   label=f"best: ep{best_top1_epoch} ({best_top1:.3f})")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("val top-1 acc")
+    ax.set_xlabel("epoch")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
 def train_main(
     *,
     run_dirs: list[Path],
@@ -119,6 +190,7 @@ def train_main(
     max_train_samples: int | None = None,
     num_workers: int = 0,
     cache_path: Path | None = None,
+    resume_from: Path | None = None,
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
@@ -172,8 +244,43 @@ def train_main(
     model = GnnModel(hidden_dim=hidden_dim, num_layers=num_layers).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
-    log = {"epochs": []}
-    for epoch in range(1, epochs + 1):
+    # Per-game val seed list (wishlist §4b.5). val_ds is a Subset of
+    # full_ds; full_ds.seeds[i] gives the seed for position i. The Subset
+    # carries indices via .indices.
+    if hasattr(full_ds, "seeds"):
+        all_seeds = list(full_ds.seeds)
+        val_position_seeds = [int(all_seeds[i]) for i in val_ds.indices]
+    else:
+        # Fallback: CatanReplayDataset uses ._index["seed"].
+        per_pos = [int(s) for s in full_ds._index["seed"]]
+        val_position_seeds = [per_pos[i] for i in val_ds.indices]
+
+    # Resume support (wishlist §4b.2): if resume_from is set, load state_dict
+    # + optimizer state and figure out which epoch to start from.
+    start_epoch = 1
+    log: dict = {"epochs": []}
+    best_top1 = -1.0
+    best_top1_epoch = -1
+    if resume_from is not None:
+        resume_path = Path(resume_from)
+        ck = torch.load(resume_path, map_location=dev)
+        if "model_state" in ck:
+            # Full resume bundle (model + optimizer + epoch + log).
+            model.load_state_dict(ck["model_state"])
+            if "opt_state" in ck:
+                opt.load_state_dict(ck["opt_state"])
+            start_epoch = int(ck.get("next_epoch", 1))
+            log = ck.get("log", log)
+            best_top1 = float(ck.get("best_top1", -1.0))
+            best_top1_epoch = int(ck.get("best_top1_epoch", -1))
+            print(f"[resume] loaded {resume_path} → resuming from epoch {start_epoch}", flush=True)
+        else:
+            # Older checkpoint (model state_dict only). Load weights, restart
+            # optimizer, count starting epoch from current epochs already done.
+            model.load_state_dict(ck)
+            print(f"[resume] loaded weights from {resume_path} (no optimizer state)", flush=True)
+
+    for epoch in range(start_epoch, epochs + 1):
         # Train.
         model.train()
         tot, tv, tp, n = 0.0, 0.0, 0.0, 0
@@ -196,6 +303,10 @@ def train_main(
         # Val.
         model.eval()
         vt, vv, vp_, vmae, top1, n_pos = 0.0, 0.0, 0.0, 0.0, 0, 0
+        # Per-game tracking (wishlist §4b.5): hit/total counts per game seed.
+        per_game_hits: dict[int, int] = defaultdict(int)
+        per_game_total: dict[int, int] = defaultdict(int)
+        val_pos_offset = 0  # tracks our position into val_position_seeds
         t_val_start = _time.perf_counter()
         with torch.no_grad():
             for batch, value_t, policy_t, legal in val_loader:
@@ -212,9 +323,34 @@ def train_main(
                 masked = p_logits.masked_fill(~legal, float("-inf"))
                 pred = masked.argmax(dim=1)
                 gt = policy_t.argmax(dim=1)
-                top1 += int((pred == gt).sum())
+                hits = (pred == gt).cpu().numpy()
+                top1 += int(hits.sum())
                 n_pos += value_t.shape[0]
+                # Attribute hits/totals per source game seed. val_loader is
+                # shuffle=False so position order is stable.
+                bsz = value_t.shape[0]
+                for j in range(bsz):
+                    s = val_position_seeds[val_pos_offset + j]
+                    per_game_total[s] += 1
+                    if hits[j]:
+                        per_game_hits[s] += 1
+                val_pos_offset += bsz
         val_secs = _time.perf_counter() - t_val_start
+
+        # Per-game val_top1 distribution.
+        per_game_acc = sorted(
+            per_game_hits[s] / per_game_total[s] for s in per_game_total
+        )
+        n_games = len(per_game_acc)
+        if n_games > 0:
+            quart = lambda q: per_game_acc[max(0, min(n_games - 1, int(round(q * (n_games - 1)))))]
+            pg_min = per_game_acc[0]
+            pg_p25 = quart(0.25)
+            pg_p50 = quart(0.50)
+            pg_p75 = quart(0.75)
+            pg_max = per_game_acc[-1]
+        else:
+            pg_min = pg_p25 = pg_p50 = pg_p75 = pg_max = 0.0
 
         stats = EpochStats(
             epoch=epoch,
@@ -225,19 +361,61 @@ def train_main(
             val_loss_policy=vp_ / max(1, len(val_loader)),
             val_value_mae=vmae / max(1, len(val_loader)),
             val_policy_top1_acc=top1 / max(1, n_pos),
+            val_top1_per_game_min=pg_min,
+            val_top1_per_game_p25=pg_p25,
+            val_top1_per_game_median=pg_p50,
+            val_top1_per_game_p75=pg_p75,
+            val_top1_per_game_max=pg_max,
+            val_n_games=n_games,
         )
         log["epochs"].append(asdict(stats))
         print(f"[epoch {epoch}/{epochs}] train_loss={stats.train_loss_total:.3f} "
               f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f} "
+              f"per_game[{pg_min:.2f}|{pg_p25:.2f}|{pg_p50:.2f}|{pg_p75:.2f}|{pg_max:.2f}] "
               f"[timing] train={train_secs:.1f}s ({n} batches, "
               f"{train_secs * 1000 / max(1, n):.0f}ms/batch) val={val_secs:.1f}s",
               flush=True)
 
-    # Move state_dict tensors to CPU for portable serialization without
-    # mutating the model in place — caller may want to keep using it on GPU.
-    cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-    torch.save(cpu_state, out_dir / "checkpoint.pt")
-    (out_dir / "training_log.json").write_text(json.dumps(log, indent=2))
+        # === Post-epoch artifacts (wishlist §4b.1, .4, .8) ===
+        # Save state_dict on CPU without mutating the live model.
+        cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+        # Per-epoch checkpoint as a full bundle (model + optimizer + epoch +
+        # log + best_so_far) so resume can pick up cleanly.
+        bundle = {
+            "model_state": cpu_state,
+            "opt_state": opt.state_dict(),
+            "next_epoch": epoch + 1,
+            "log": log,
+            "best_top1": best_top1,
+            "best_top1_epoch": best_top1_epoch,
+            "hidden_dim": hidden_dim,
+            "num_layers": num_layers,
+        }
+        torch.save(bundle, out_dir / f"checkpoint_epoch{epoch:02d}.pt")
+        # Plain weights-only checkpoint for downstream loaders (e7 tournament,
+        # bench-2, etc.) that expect torch.save(model.state_dict()).
+        torch.save(cpu_state, out_dir / "checkpoint.pt")
+        # Best-checkpoint tracking.
+        if stats.val_policy_top1_acc > best_top1:
+            best_top1 = stats.val_policy_top1_acc
+            best_top1_epoch = epoch
+            torch.save(cpu_state, out_dir / "checkpoint_best.pt")
+            print(f"  ↳ new best_top1={best_top1:.3f} at epoch {epoch} (saved checkpoint_best.pt)",
+                  flush=True)
+        # Append-only training log (so a kill mid-run still has all stats).
+        (out_dir / "training_log.json").write_text(json.dumps(log, indent=2))
+        # Live progress plot.
+        try:
+            _write_progress_plot(out_dir / "progress.png", log,
+                                 epochs_total=epochs,
+                                 best_top1=best_top1,
+                                 best_top1_epoch=best_top1_epoch)
+        except Exception as e:
+            # Plot is non-critical; don't crash training.
+            print(f"  (progress.png write failed: {e})", flush=True)
+
+    # Per-epoch artifacts already wrote checkpoint.pt + training_log.json
+    # after the final epoch. Just write the run config below.
     config = {
         "run_dirs": [str(p) for p in run_dirs],
         "hidden_dim": hidden_dim,
@@ -280,6 +458,10 @@ def cli_main() -> None:
                    help="Path to a CachedDataset .pt file. If exists, loads from disk; "
                         "otherwise builds the cache from run-dirs and saves there. "
                         "Removes the per-epoch engine-replay bottleneck (GPU starvation fix).")
+    p.add_argument("--resume", type=Path, default=None, dest="resume_from",
+                   help="Path to a checkpoint_epochNN.pt bundle to resume from. "
+                        "Loads model + optimizer state and continues from the saved next_epoch. "
+                        "Use this with --epochs > saved_epoch to extend training.")
     args = p.parse_args()
     train_main(
         run_dirs=args.run_dirs, out_dir=args.out_dir,
@@ -288,6 +470,7 @@ def cli_main() -> None:
         w_value=args.w_value, w_policy=args.w_policy, seed=args.seed,
         device=args.device, max_train_samples=args.max_train_samples,
         num_workers=args.num_workers, cache_path=args.cache_path,
+        resume_from=args.resume_from,
     )
 
 
