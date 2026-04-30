@@ -387,3 +387,145 @@ After v1 training finished, ran a head-to-head 1-game tournament with all four p
 - **Periodically:** redraw the ASCII timeline at the top so the visual stays current.
 
 The point: someone reading the journal next week should be able to see at a glance which sweeps overlapped with which, and what the total compute budget went into.
+
+---
+
+## End-of-day-1 findings + known limitations (2026-04-30)
+
+This section is the load-bearing record for the next iteration. It distills what we measured, what we *think* it means, and the limitations we hit that bound the next experiment's design.
+
+### What we learned about the v0/v1 GNN
+
+**Pipeline is mechanically correct.** All 11 plan tasks shipped, all derisks (3-5) green, replay correctness 10/10 against fresh dataset. The data → cache → train → checkpoint → evaluator → MCTS → recorder loop closes end-to-end with no silent corruption.
+
+**Training scales with data, not hyperparameters.**
+
+| run | data | train_loss floor | val_loss range | bench2_value_mae | bench2_policy_kl |
+|---|---|---:|---|---:|---:|
+| v0a | 50 games (136k pos), lr=1e-3, 20ep | 1.087 | 1.34-1.84 | 0.724 | 0.0036 |
+| v0b | 50 games, lr=1e-4, 40ep | 1.086 | 1.49-1.83 | 0.764 | 0.0037 |
+| v1 (d15 subset) | 200 games (420k pos), lr=1e-3, 20ep | **1.067** | **1.30-1.42** | 0.781 | **0.0013** |
+
+- v0a vs v0b: same data, different hyperparams → essentially identical results. **Hyperparameter tuning at 50 games is throwing darts at noise.**
+- v0 vs v1: 4× more positions, same hyperparams → train loss floor drops, val loss tightens, policy_kl drops 2.7×. **Data is the binding constraint at this model size.**
+- value_mae went *up* from v0 to v1 (0.72 → 0.78). Two plausible causes: (a) sample noise on n=200 bench positions, (b) the d15 dataset has shorter games with different value distributions than the depth=25 lookahead reference uses to compute MAE. Either way, value MAE alone is not a reliable signal of model quality at this stage.
+
+**The v1 GNN actively misleads MCTS at low sim count.**
+
+| match | players | result |
+|---|---|---|
+| v0a e6 | MCTS+GNN(v0a) at sims=100 vs 3 random | 0/4 wins (4 finished, 4 timed out) |
+| v0b e6 | MCTS+GNN(v0b) at sims=100 vs 3 random | 0/4 wins (same) |
+| v1 e7 1-game | GnnMcts vs PureGnn vs LookaheadMcts vs Random at sims=50 | Random=10 (winner), Lookahead=9, **PureGnn=4, GnnMcts=2** |
+
+The single-game tournament (n=1) is noisy on the *ranking among non-MCTS players* (random winning is partly seat-luck), but the structural finding is robust: **PureGnn (no search) outperformed GnnMcts (MCTS-augmented) on the same model.** Adding MCTS to a noisy evaluator amplifies the noise — the model's value/policy heads are poor enough that they pull search toward bad subtrees. Same pattern v0 e6 showed (0 wins) at higher sims=100.
+
+**LookaheadMcts is the strongest player we have**, by a wide margin. The greedy-VP lookahead evaluator built earlier already captures most of what a "decent Catan player" needs at much less compute. Beating it should be the v2 target, not "beat random."
+
+### Performance gotchas (cost engineering)
+
+**1. Cache key hashing was the dominant MCTS+GNN wall-clock cost.** Original `tuple(state._engine.action_history())` was O(N) where N is the action_history length (~5000+ at endgame). Hashing per call × 100 sims × 200 moves = billions of ops. Fixed by switching to `id(state)` (Python object identity) — O(1). This alone took GnnMcts per-move time from 6-10 sec to ~700-900 ms.
+
+**2. PyG Batch overhead is not amortized by batch size at our scale.** Bumping batch from 64 to 256 saved ~1 min/epoch (out of 6 min) — much less than the 4× theoretical improvement. The per-batch graph-concat cost in `Batch.from_data_list` is meaningful even at small batches. **Pre-batched cache** (Option A from the GPU discussion) would help; we deferred it.
+
+**3. Cache load on `/mnt/c` (Windows filesystem from WSL) is ~40% slower than native ext4.** 250s for `/mnt/c` vs 145s for `~/`. For training sessions you'd run multiple times, **copy the cache to native WSL fs first.** For one-off training, doesn't matter.
+
+**4. CachedDataset memory uses ~4× the disk size.** Measured: 938 MB on disk → 3.91 GB RAM peak. Python overhead on tensor dicts. Linear scaling — projects 7.5 GB disk → 30 GB RAM for 400-game dataset.
+
+**5. `Batch.from_data_list` is sequential Python.** ~210ms/batch at b=256 on 67k-param model is dominated by graph batching, not GPU. GPU utilization stayed at ~3% during training.
+
+**6. e6 and e7 timeouts are evaluator-specific.** 360s/game cap (set during e5 development) was way too tight for sims=100 GNN inference. v0 e6 hit 4/8 timeouts at 1200s. Per-evaluator wall-clock budgets must be re-tuned, not inherited.
+
+### Engineering / process lessons
+
+**1. Branch isolation is silent.** Two worktrees on different branches can run for hours without either knowing they have divergent code. The schema-v2 bump landed only on `gnn-v0`; the `mcts-study` worktree on `mcts-v2-hardening` never got it, so the 1500-game e5 v2 sweep wrote schema-v1 parquets and was unusable for GNN training. **Lesson: schema bumps and persistent-format changes need to land on every active branch *before* a long sweep starts.**
+
+**2. `0 * -inf = NaN` in PyTorch masked-CE.** Found in Task 7. Without explicit `log_probs.masked_fill(~mask, 0.0)` before the multiply, every training step produces NaN gradients while the test suite (which checks artifact existence, not loss values) still passes green. **Add a finite-loss assertion to the training loop, not just artifact tests.**
+
+**3. Replay determinism needs a per-player counter.** The dataset's `__getitem__` must mirror `play_one_game`'s exact `move_index` accounting (only increment for `current_player == recorded_player`), not a global counter. Caught in Task 6 review; would have produced silently wrong training positions otherwise.
+
+**4. Trivial-skip turns are not in the recorded `moves.parquet`.** When `len(legal) == 1`, `play_one_game` applies the action without invoking the bot, and the recorder doesn't write a row. Replay code (in dataset, in benchmark, in renderer) must auto-apply the unique legal action whenever it encounters this state — the action_history doesn't carry an explicit entry for it.
+
+**5. The cache key must include all stochastic elements that distinguish states.** action_history correctly includes both decisions and chance outcomes (chance-bit encoding). Using just decision IDs would collide states that differ only in dice/steal results.
+
+**6. CLI argparse forwarding patterns silently drop flags.** The top-level `--out-root` was consumed but never re-injected into the experiment's `cli_main()` argv. Result: every multi-worker sweep landed at worktree-root `runs/`, not the user's specified path. **Add a regression test for any `parse_known_args + sys.argv` rewrite.**
+
+**7. WSL git can't always resolve worktree gitfiles** with `/mnt/c/...` paths. Inline `git commit` calls in shell scripts inside WSL fail with "fatal: not a git repository". Workaround: do git ops from the Windows side (via `Bash` tool) or skip auto-commit entirely.
+
+**8. Editable-install venvs shared across worktrees couple long-running processes.** `pip install -e` from one worktree rebinds the package's source path. Running processes are unaffected (they already have modules in memory) but newly-spawned workers in another sweep may re-import from the wrong worktree's source. **For long sweeps, either separate venvs or note which worktree the venv currently points at.**
+
+### Pipeline limitations (known, deferred)
+
+**A. Single-graph batching is the throughput floor.** OpenSpiel's `MCTSBot.evaluate()` is called one leaf at a time. At sims=400 with ~150 decision moves per game, that's ~60k sequential single-graph forward passes per game. **A `BatchedGnnEvaluator`** (collect leaves across MCTS sims, run one batched forward) would be ~50× faster on GPU. Out of scope for v0; flagged in Task 8 code as TODO.
+
+**B. The renderer/viewer reveals only the current player's resource hand.** `engine.observation()` perspective-rotates and only exposes the viewer's hand breakdown; opponent hands are exposed as totals only. To show all four players' resource breakdowns simultaneously would require either:
+   - A new engine API (`engine.observation_for(viewer)` taking an explicit viewer argument), OR
+   - Calling `observation()` 4 times in the replay capture loop (slower but doesn't require Rust changes — actually not possible with current PyO3 binding; engine.observation() always uses state.current_player as viewer).
+   This is a real Rust API gap if we want full visibility in tooling.
+
+**C. The renderer's VP count uses live building counts (settlement=1, city=2).** It does NOT count longest road, largest army, or victory-point dev cards. For Tier-1 (no dev cards) games it matches `final_vp` only at terminal because VPs from longest road / 2VP-from-buildings-bonus etc. aren't yet implemented in our v1 engine. Worth knowing when comparing the viewer's VP to a possible future engine that adds them.
+
+**D. The per-step cache is in-RAM only.** Larger datasets (the user's overnight 400-game sweep at depth ∈ {15,25,35} would yield ~1.1M positions) project to ~30 GB RAM peak — right at WSL's 31 GB cap. Either bump WSL memory (one-time `.wslconfig` change + `wsl --shutdown`) or shard the cache to disk.
+
+**E. We have no opponent-modeling.** All trained data was generated against random opponents (lookahead-VP at depth=25 vs 3 random). The model has never seen what a competent opponent does. v0/v1 may overfit to "play recklessly because random opponents won't punish you." A Catan-grade greedy bot in the training rotation would teach defensive play.
+
+**F. Value head learns from final outcomes only.** AlphaZero in chess has clean ±1 returns. Our recorder uses `+1`/`-1`/`0(draw)` which is correct, but the *signal density* is ~1 outcome per ~150 positions per game. With only 200 games (40k effective positions per game-outcome), the value head is starved for variety in terminal outcomes. **Number of distinct game outcomes is the load-bearing variable, not number of positions.**
+
+**G. PureGnnBot uses pure argmax**, no temperature, no exploration. For evaluation that's fine; for self-play data generation it'd produce highly correlated games. Worth a temperature parameter when we use PureGnn as a self-play opponent.
+
+**H. e7 tournament is single-worker by design.** Multi-worker would let us run many games in parallel, but the user has a 4-worker e5 sweep occupying CPU. Once that's done, e7 should support `--workers 4`.
+
+**I. We don't have head-to-head numbers at scale.** The e7 tournament finding (PureGnn beats GnnMcts) is from a single game. Need 12+ games minimum to have any confidence in the ordering. The 12-game tournament was queued but not yet completed at write time.
+
+### Non-obvious things future-iteration should know
+
+**1. The 50-game v2 cache (`~/cache_full.pt`, 938 MB) is the only training dataset that's both schema-v2 AND completely processed.** The 200-game subset cache (`~/cache_d15_subset.pt`, 2.94 GB) covers depth=15/sims=400 from worker0+worker1 of the user's overnight sweep. Anything else would need a fresh cache build.
+
+**2. The 1500-game e5 v2 sweep parquets exist on disk but are SCHEMA V1.** Useful for understanding lookahead-VP performance characteristics; **not** useful for GNN training without re-recording.
+
+**3. e5_lookahead_depth.py from `mcts-v2-hardening` has been merged into main.** All branches share the schema v2 recorder + lookahead evaluator now.
+
+**4. `~/cache_*.pt` files persist on the WSL ext4 home directory, NOT on the Windows-side worktree.** They survive across worktree changes but die if WSL is reset. Worth backing up if we want to keep them long-term — the build cost is non-trivial (~40 min for the 50-game one, ~2.5 hours for the d15 200-game subset).
+
+**5. The cache doesn't store the model's outputs at the time of recording.** It stores the (state → MCTS visit count target) labels. So caches are model-agnostic and reusable across all GNN architecture variants. **Don't rebuild the cache when changing model size or hyperparameters** — that's wasted compute.
+
+**6. The replay viewer tooling is "lite":** static board PNG + JS overlays. Updating the visualizer to support new things (showing dev cards, longest road, ports, larger boards) needs only HTML/JS edits, not a re-render. The Python side just emits states; the JS draws.
+
+**7. Hand visibility in the replay viewer is per-step current-player only.** This is an engine-API limitation, not a viewer limitation.
+
+### Recommended next steps for v2/iteration
+
+1. **Larger training set.** Wait for the user's overnight 400-game sweep to finish, then build a v2 cache from all 4 workers (needs WSL bump to ~56 GB) or stick to the 2-worker subset and accept reduced data variance.
+2. **Train v2 on ≥1000 distinct game outcomes** (currently we have 200). The number that matters is unique-game-count, not unique-positions. To get there: re-run e5 with `--num-games 250` per cell × 4 cells = 1000+ unique outcomes.
+3. **Add an engine API for `engine.observation_for(viewer: int)`** — small Rust + PyO3 change. Unlocks all-hands visibility in tooling AND opens the door to true multi-perspective training (viewer-agnostic GNN).
+4. **Add Catan-grade opponents to the data-generation rotation.** The existing `GreedyBaselineBot` is a start but weak. A Catanatron-grade greedy player would expose the model to defensive play.
+5. **Implement `BatchedGnnEvaluator`.** The 50× speedup on MCTS+GNN inference makes higher-sim-count tournaments feasible.
+6. **Pre-batched cache.** Save HeteroData as already-batched chunks (e.g., 256-position batches) to remove per-batch Python overhead.
+7. **Fix the e6 / e7 wall-clock budget** to be evaluator-aware: lookahead-VP wants ~300-600 sec/game, GNN wants ~600-1800 sec/game at sims=100, GNN at sims=400 may want even more.
+8. **Decide: is "beat lookahead-VP" the v2 target?** That's a much higher bar than "beat random". May require multi-iteration AlphaZero (train v1 → self-play v1 → train v2 → ...) instead of one-shot supervised learning.
+
+### Artifacts you can resume from
+
+```
+gnn-v0 worktree:
+  ~/cache_full.pt                       — 50-game v2 cache (RAM 3.9 GB, disk 938 MB)
+  ~/cache_d15_subset.pt                 — 200-game depth=15 cache (disk 2.94 GB)
+  mcts_study/runs/gnn_v0_overnight/
+    v0a/checkpoint.pt                   — v0a model (lr=1e-3, 20 ep)
+    v0b/checkpoint.pt                   — v0b model (lr=1e-4, 40 ep)
+  mcts_study/runs/gnn_v1_d15/
+    v1_d15_subset/checkpoint.pt         — v1 model (200-game training)
+    one_game_save/action_history.json   — full game record for replay
+    one_game_save/replay_lite/          — HTML viewer (open index.html)
+    one_game_live.log                   — narrated log of the same game
+  mcts_study/runs/2026-04-29T20-49-e5_lookahead_depth/   — 50-game v2 sweep
+  runs/gnn-data-2026-04-29-evening/
+    2026-04-29T22-41-e5_lookahead_depth/ — user's 400-game sweep (in flight)
+```
+
+### Open questions for the v2 iteration spec
+
+1. Is one-shot supervised learning enough, or do we need the AlphaZero iteration loop?
+2. How do we measure "did the model learn anything useful?" without an obvious benchmark — is "beat lookahead-VP at sims=100" the right target?
+3. Should we collect data with multiple evaluator depths (mix d=15, 25, 35 in training) to teach the model robustness, or stick to one depth for cleanliness?
+4. How important is Tier-2 game support (dev cards, longest road, largest army) for v2? Tier-1 may be a local maximum.
