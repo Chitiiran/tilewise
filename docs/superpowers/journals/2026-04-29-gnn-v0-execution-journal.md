@@ -324,13 +324,20 @@ Watches for the first depth=15-sims=400 parquet to appear in the user's e5 sweep
 
 **Pivot at 04:24 UTC:** killed the 4-worker build mid-run. Restarted with a **2-worker subset** (worker0 + worker1, ~408k positions). Projected: ~12 GB RAM peak, ~2.3 hr build, ~70 min train after.
 
-### 04:24–ongoing — v1_d15_subset (autonomous side-pipeline, 2-worker subset)
+### 04:35–ongoing — v1_d15_subset (autonomous side-pipeline, 2-worker subset)
 
 - **Goal:** train v1 GNN on a tractable subset of the depth=15 sweep (worker0 + worker1).
-- **Cache target:** ~408k positions, ~2-3 GB on disk, ~12 GB RAM peak.
-- **Status:** cache build running concurrently with v0b train (running at epoch ~38/40 at this point).
 
-(Will be filled in with cache + train + bench-2 results.)
+**Cache build (04:35–07:09 UTC = 2h 34min):** done.
+- 420,021 positions from 2 workers (~200 games of depth=15/sims=400).
+- 44.7 pos/s sustained (slower than 50-game cache's 57 pos/s; CPU contention with v0b e6 + user's e5 sweep workers).
+- 2.94 GB on disk.
+
+**v1_d15_subset TRAIN (07:09 UTC–ongoing, b=256, lr=1e-3, 20 epochs):** in progress.
+- Cache load: 7.5 min (3 GB native ext4 file).
+- Epoch 1: train=303 sec, val=39 sec, **train=1.162, val=1.297, val_top1=0.38** — slightly better than v0a epoch 1 (train=1.202, val=1.343, top1=0.34).
+- Per-batch ~209 ms (matches 50-game cache).
+- **Projected: 20 × 5.7 min = ~114 min remaining**, finish ~09:00 UTC.
 
 ---
 
