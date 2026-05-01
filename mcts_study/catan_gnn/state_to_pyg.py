@@ -7,7 +7,7 @@ The observation dict (from `engine.observation()`) carries:
 - vertex_features: np.ndarray [54, 7]  float32
 - edge_features:   np.ndarray [72, 6]  float32
 - scalars:         np.ndarray [22]     float32
-- legal_mask:      np.ndarray [206]    uint8 (engine returns 0/1 bytes)
+- legal_mask:      np.ndarray [ACTION_SPACE_SIZE] uint8 (engine returns 0/1 bytes)
 """
 from __future__ import annotations
 

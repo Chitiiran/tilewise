@@ -22,7 +22,8 @@ def test_forward_shapes_batch_1():
     batch = Batch.from_data_list([data])
     value, policy = model(batch)
     assert value.shape == (1, 4)
-    assert policy.shape == (1, 206)
+    from catan_mcts import ACTION_SPACE_SIZE
+    assert policy.shape == (1, ACTION_SPACE_SIZE)
 
 
 def test_forward_shapes_batch_4():
@@ -30,7 +31,8 @@ def test_forward_shapes_batch_4():
     batch = Batch.from_data_list([_make_data(s) for s in [1, 2, 3, 4]])
     value, policy = model(batch)
     assert value.shape == (4, 4)
-    assert policy.shape == (4, 206)
+    from catan_mcts import ACTION_SPACE_SIZE
+    assert policy.shape == (4, ACTION_SPACE_SIZE)
 
 
 def test_value_head_in_unit_range():
@@ -91,4 +93,5 @@ def test_scalars_collated_correctly_for_various_batch_sizes():
         # Forward should not raise.
         value, policy = model(batch)
         assert value.shape == (B, 4)
-        assert policy.shape == (B, 206)
+        from catan_mcts import ACTION_SPACE_SIZE
+        assert policy.shape == (B, ACTION_SPACE_SIZE)

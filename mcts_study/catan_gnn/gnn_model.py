@@ -6,9 +6,9 @@ Spec §2-3 architecture:
   -> per-type mean-pool over nodes (3 x [B, hidden_dim])
   -> concat with scalars (22) -> final linear -> embedding [128]
   -> ValueHead(128 -> 64 -> 4, tanh)
-  -> PolicyHead(128 -> 206) -- caller masks illegals + softmaxes
+  -> PolicyHead(128 -> ACTION_SPACE_SIZE) -- caller masks illegals + softmaxes
 
-The policy head outputs raw logits over the full 206 action space. Masking
+The policy head outputs raw logits over the full ACTION_SPACE_SIZE. Masking
 and softmax happen outside this module (in GnnEvaluator and the dataset
 loss). This keeps the model itself loss-agnostic and easy to test.
 """

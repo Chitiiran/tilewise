@@ -72,7 +72,8 @@ def test_legal_mask_passed_through():
     it through as an aux field for downstream policy masking. Spec section 3
     says legal_mask is applied to logits externally, but the dataset/evaluator
     needs it. Store it as `data.legal_mask` (graph-level)."""
+    from catan_mcts import ACTION_SPACE_SIZE
     obs = _fresh_observation()
     data = state_to_pyg(obs)
-    assert data.legal_mask.shape == (206,)
+    assert data.legal_mask.shape == (ACTION_SPACE_SIZE,)
     assert data.legal_mask.dtype == torch.bool

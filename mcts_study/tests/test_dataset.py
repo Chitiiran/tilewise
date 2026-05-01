@@ -35,12 +35,13 @@ def test_dataset_item_shapes(minimal_run_dir):
     # value: [4] in [-1, +1] U {0}
     assert value.shape == (4,)
     assert torch.all((value == 1.0) | (value == -1.0) | (value == 0.0))
-    # policy: [206], a probability distribution (sums to 1 +/- eps OR all-zeros if no MCTS visits -- for completed games every recorded move has visits)
-    assert policy.shape == (206,)
+    # policy: [ACTION_SPACE_SIZE], a probability distribution (sums to 1 +/- eps OR all-zeros if no MCTS visits)
+    from catan_mcts import ACTION_SPACE_SIZE
+    assert policy.shape == (ACTION_SPACE_SIZE,)
     s = float(policy.sum())
     assert abs(s - 1.0) < 1e-5, f"policy sums to {s}, expected 1.0"
-    # legal mask: [206], bool, action_taken must be legal
-    assert legal.shape == (206,)
+    # legal mask: [ACTION_SPACE_SIZE], bool, action_taken must be legal
+    assert legal.shape == (ACTION_SPACE_SIZE,)
     assert legal.dtype == torch.bool
 
 

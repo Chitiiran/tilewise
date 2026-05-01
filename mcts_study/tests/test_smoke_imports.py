@@ -12,4 +12,5 @@ def test_can_import_dependencies():
 
 def test_engine_module_available():
     from catan_bot import _engine
-    assert _engine.engine_version() == "0.1.0"
+    v = _engine.engine_version()
+    assert v.startswith("2."), f"expected v2 engine, got {v!r}"

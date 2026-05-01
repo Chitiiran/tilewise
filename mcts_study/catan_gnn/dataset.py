@@ -7,7 +7,7 @@ For each MCTS-decided move row in moves.parquet, we:
   3. Build features via state_to_pyg(engine.observation()).
   4. Build value target from games.winner (perspective-rotated).
   5. Build policy target from mcts_visit_counts (normalized to a distribution).
-  6. Return (HeteroData, value [4], policy [206], legal_mask [206]).
+  6. Return (HeteroData, value [4], policy [ACTION_SPACE_SIZE], legal_mask [ACTION_SPACE_SIZE]).
 
 Skips any row whose game has schema_version != 2 -- those games don't have
 action_history and would require expensive replay-from-scratch.
@@ -28,6 +28,7 @@ import torch
 from torch.utils.data import Dataset
 
 from catan_bot import _engine
+from catan_mcts import ACTION_SPACE_SIZE
 
 from .state_to_pyg import state_to_pyg
 
@@ -132,7 +133,7 @@ class CatanReplayDataset(Dataset):
         else:
             # Degenerate fallback: uniform over legal actions.
             mask_arr = np.array(row["legal_action_mask"], dtype=bool)
-            policy = torch.zeros(206, dtype=torch.float32)
+            policy = torch.zeros(ACTION_SPACE_SIZE, dtype=torch.float32)
             n_legal = int(mask_arr.sum())
             if n_legal > 0:
                 policy[mask_arr] = 1.0 / n_legal
@@ -156,7 +157,7 @@ class CachedDataset(Dataset):
     item is a dict of tensors (no Python objects).
 
     Memory footprint: ~10-12 KB per position (3 small float matrices + scalars
-    + legal_mask + 4-vector value + 206-vector policy). 100k positions ~= 1 GB.
+    + legal_mask + 4-vector value + ACTION_SPACE_SIZE-vector policy). 100k positions ~= 1 GB.
     Fits comfortably in 16 GB RAM for any v0 dataset size.
     """
 
