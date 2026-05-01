@@ -525,6 +525,7 @@ INDEX_HTML = r"""<!doctype html>
 
 <script>
 const PLAYER_COLORS = ["#cc3333", "#3366cc", "#33aa55", "#cc8833"];
+const PLAYER_COLORS_DARK = ["#5a1414", "#1a3370", "#1a5a2c", "#5a3a14"];
 const SEAT_NAMES = {{SEAT_NAMES}};
 const RESOURCES = ['🪵', '🧱', '🐑', '🌾', '⛰️'];
 const DEV_NAMES = ['Knight', 'Road Building', 'Monopoly', 'Year of Plenty', 'Victory Point'];
@@ -583,16 +584,15 @@ function renderState() {
   if (st.rh >= 0) {
     const [hx, hy] = layout.hex_centers[st.rh];
     const [px, py] = dataToPx(hx, hy);
-    const w = 18, h = 22;
     body += `<g style="filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6))">`;
-    body += `<path d="M ${px - w/2} ${py + h/2} ` +
-            `L ${px - w/2} ${py - h/4} ` +
-            `Q ${px - w/2} ${py - h/2 - 2} ${px} ${py - h/2 - 2} ` +
-            `Q ${px + w/2} ${py - h/2 - 2} ${px + w/2} ${py - h/4} ` +
-            `L ${px + w/2} ${py + h/2} Z" ` +
-            `fill="#2a2a2a" stroke="white" stroke-width="2"/>`;
-    body += `<circle cx="${px - 3.5}" cy="${py - 3}" r="1.4" fill="white"/>`;
-    body += `<circle cx="${px + 3.5}" cy="${py - 3}" r="1.4" fill="white"/>`;
+    body += `<ellipse cx="${px}" cy="${py + 8}" rx="9" ry="2.5" fill="rgba(0,0,0,0.4)"/>`;
+    body += `<path d="M ${px - 7} ${py + 5} ` +
+            `L ${px - 7} ${py - 3} ` +
+            `Q ${px - 7} ${py - 9} ${px} ${py - 11} ` +
+            `Q ${px + 7} ${py - 9} ${px + 7} ${py - 3} ` +
+            `L ${px + 7} ${py + 5} Z" ` +
+            `fill="#222" stroke="white" stroke-width="1"/>`;
+    body += `<circle cx="${px}" cy="${py - 7}" r="3.5" fill="#222" stroke="white" stroke-width="1"/>`;
     body += `</g>`;
   }
 
@@ -600,8 +600,8 @@ function renderState() {
     const e = layout.edges[eid];
     const [x1, y1] = dataToPx(e[0], e[1]);
     const [x2, y2] = dataToPx(e[2], e[3]);
-    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="black" stroke-width="7" stroke-linecap="round"/>`;
-    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${PLAYER_COLORS[owner]}" stroke-width="5" stroke-linecap="round"/>`;
+    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="white" stroke-width="7" stroke-linecap="round"/>`;
+    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${PLAYER_COLORS[owner]}" stroke-width="4.5" stroke-linecap="round"/>`;
   }
 
   for (const [vid, owner] of st.s) {
@@ -609,17 +609,20 @@ function renderState() {
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 7;
     const path = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/3} L ${px} ${py - sz} L ${px - sz} ${py - sz/3} Z`;
-    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="black" stroke-width="1.4" stroke-linejoin="round"/>`;
+    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="${PLAYER_COLORS_DARK[owner]}" stroke-width="1.4" stroke-linejoin="round"/>`;
+    body += `<rect x="${px - 1.5}" y="${py + sz/3}" width="3" height="${sz - sz/3 - 1}" fill="${PLAYER_COLORS_DARK[owner]}"/>`;
   }
 
   for (const [vid, owner] of st.c) {
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 10;
+    const dark = PLAYER_COLORS_DARK[owner];
     const base = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/2} L ${px} ${py - sz - 2} L ${px - sz} ${py - sz/2} Z`;
-    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="black" stroke-width="1.5" stroke-linejoin="round"/>`;
-    body += `<rect x="${px + sz/2}" y="${py - sz - 1}" width="3" height="5" fill="${PLAYER_COLORS[owner]}" stroke="black" stroke-width="1"/>`;
-    body += `<rect x="${px - 2}" y="${py + sz/3}" width="4" height="${sz - sz/3}" fill="black" opacity="0.5"/>`;
+    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.5" stroke-linejoin="round"/>`;
+    body += `<rect x="${px + sz/2}" y="${py - sz - 1}" width="3" height="5" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1"/>`;
+    body += `<rect x="${px - sz + 2}" y="${py - 1}" width="${sz * 2 - 4}" height="2.5" fill="${dark}" opacity="0.55"/>`;
+    body += `<rect x="${px - 2}" y="${py + sz/3}" width="4" height="${sz - sz/3}" fill="${dark}" opacity="0.7"/>`;
   }
 
   svg.innerHTML = body;
