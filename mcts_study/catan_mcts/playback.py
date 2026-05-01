@@ -143,12 +143,21 @@ def _render_static_board_png(seed: int, out_path: Path):
             ax.text(cx, cy + 0.42, RESOURCE_EMOJI[ridx], ha="center", va="center", fontsize=14)
         if dice_str is not None:
             num = int(dice_str)
-            num_color = "red" if num in (6, 8) else "black"
-            ax.text(cx, cy, dice_str, ha="center", va="center",
-                    fontsize=14, fontweight="bold", color=num_color)
+            is_hot = num in (6, 8)
+            ring_color = "#cc2222" if is_hot else "#444444"
+            text_color = "#cc2222" if is_hot else "#222222"
+            shadow = plt.Circle((cx + 0.02, cy - 0.06), 0.30,
+                                facecolor="black", edgecolor="none", alpha=0.25)
+            ax.add_patch(shadow)
+            disk = plt.Circle((cx, cy - 0.05), 0.30,
+                              facecolor="#fdf2c8", edgecolor=ring_color,
+                              linewidth=2.0 if is_hot else 1.4)
+            ax.add_patch(disk)
+            ax.text(cx, cy - 0.02, dice_str, ha="center", va="center",
+                    fontsize=12, fontweight="bold", color=text_color)
             pips = 6 - abs(7 - num)
-            ax.text(cx, cy - 0.3, "·" * pips, ha="center", va="center",
-                    fontsize=10, color=num_color)
+            ax.text(cx, cy - 0.18, "·" * pips, ha="center", va="center",
+                    fontsize=8, color=text_color)
 
     ax.set_xlim(*XLIM)
     ax.set_ylim(*YLIM)
