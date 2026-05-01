@@ -85,6 +85,17 @@ FIG_DPI = 100
 RESOURCE_COLORS = {0: "#3d8b37", 1: "#a04020", 2: "#90c060", 3: "#e6c243", 4: "#7a7a7a"}
 DESERT_COLOR = "#d4b483"
 RESOURCE_LABEL = {0: "Wood", 1: "Brick", 2: "Sheep", 3: "Wheat", 4: "Ore"}
+RESOURCE_EMOJI = {0: "🌲", 1: "🧱", 2: "🐑", 3: "🌾", 4: "⛰️"}
+
+
+def _shade(hex_color: str, factor: float) -> str:
+    """Multiply each RGB channel by `factor` (0..1 darken, >1 lighten clamped)."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    r = max(0, min(255, int(r * factor)))
+    g = max(0, min(255, int(g * factor)))
+    b = max(0, min(255, int(b * factor)))
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def _render_static_board_png(seed: int, out_path: Path):
@@ -115,10 +126,21 @@ def _render_static_board_png(seed: int, out_path: Path):
             else:
                 dice_str = None
         angles = [math.pi / 6 + i * math.pi / 3 for i in range(6)]
-        pts = [(cx + HEX_RADIUS * math.cos(a), cy + HEX_RADIUS * math.sin(a)) for a in angles]
-        poly = plt.Polygon(pts, facecolor=color, edgecolor="black", linewidth=1.0)
-        ax.add_patch(poly)
-        ax.text(cx, cy + 0.35, label, ha="center", va="center", fontsize=8, fontweight="bold")
+        outer_pts = [(cx + HEX_RADIUS * math.cos(a), cy + HEX_RADIUS * math.sin(a)) for a in angles]
+        inner_pts = [(cx + 0.85 * HEX_RADIUS * math.cos(a), cy + 0.85 * HEX_RADIUS * math.sin(a)) for a in angles]
+        outer_color = _shade(color, 0.78)
+        inner_color = _shade(color, 1.12)
+        stroke = _shade(color, 0.45)
+        outer_poly = plt.Polygon(outer_pts, facecolor=outer_color, edgecolor=stroke, linewidth=1.4)
+        inner_poly = plt.Polygon(inner_pts, facecolor=inner_color, edgecolor="none")
+        ax.add_patch(outer_poly)
+        ax.add_patch(inner_poly)
+        if res.sum() < 0.5:
+            ax.text(cx, cy, "Desert", ha="center", va="center",
+                    fontsize=10, color=_shade(DESERT_COLOR, 0.5), fontstyle="italic")
+        else:
+            ridx = int(np.argmax(res))
+            ax.text(cx, cy + 0.42, RESOURCE_EMOJI[ridx], ha="center", va="center", fontsize=14)
         if dice_str is not None:
             num = int(dice_str)
             num_color = "red" if num in (6, 8) else "black"
