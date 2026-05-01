@@ -111,11 +111,80 @@ Numbered for easy reference. Some are necessary for v2; others are "while we're 
 7. **Development cards** — purchase action (1S/1G/1O), 5 types: knight (move robber + steal), road building (2 free roads), monopoly (claim all of one resource from all opponents), year of plenty (2 free resources from bank), VP card (silent +1 VP, revealed at win). Each has its own action encoding.
 8. **Win condition expansion** — VP sources: settlements, cities, longest road, largest army, dev-card VPs. Game ends when total ≥ 10 on the active player's turn.
 
+### A-bis. Engine — rules simplifications (deliberate v2 scope cuts)
+
+These are choices to **make the v2 engine faster while still being playable**. We can revisit any of them later if the simplification turns out to hurt model quality.
+
+8a. **Robber-7 discard: instant random discard, not turn-by-turn.** Today's engine has a multi-step Discard phase where each player owing a discard picks one card at a time, in turn order. For v2: when a 7 is rolled, **automatically discard `floor(hand/2)` random cards from each player owing one**, in a single step. No discard phase, no per-card decisions. **Rationale:** in real Catan the discarder picks which cards to dump, but at our depth=25 lookahead nobody is meaningfully optimizing this — the lookahead's greedy heuristic was just dumping cards in fixed priority order anyway. A random discard preserves the "lose half your cards" pressure without the per-card overhead. Saves ~5-15 moves per 7-roll game (and we average 3-5 sevens per game).
+
+   **Impact on action space:** removes the `Discard(r)` actions (199-203) entirely, freeing 5 action slots and eliminating an entire game phase. Engine becomes simpler.
+
+   **Future revisit:** if v3 wants strategic discard decisions, add it back as an explicit phase.
+
 ### B. Engine — state representation
 
 9. **Bit-packed observation tensor** — design and ship the bit-layout above; verify size reduction empirically (target 50–80 bytes/state vs ~3 KB today).
 10. **Static board cache** — board topology (vertex/edge/hex adjacency, resource types, number tokens, port types) doesn't change per game. Store ONCE per seed, not per state. Big cache size win.
 11. **Per-state delta encoding (optional)** — many actions change one or two fields of the state; could store states as deltas from a base. Defer unless §9+§10 don't get us under target.
+
+### B-bis. Engine — fast legality and pruned action space
+
+The v1 engine recomputes `legal_actions()` from scratch on every call — linear scan of all 206 action IDs, each running its own rule check. At sims=400 × ~150 moves/game = 60,000 calls/game, this is **the dominant CPU cost in MCTS leaf exploration**. Adding dev cards + trades + ports would push action space past 250 and break this.
+
+The fix is structural: **store legality as part of state, update incrementally, expose as a bitmap.**
+
+11a. **`state.legal_mask: [u64; N]` updated incrementally on every state transition.** Each action's legality is a single bit; total mask is ~512 bits = 64 bytes. After a state mutation, only update the bits whose legality could have changed — typically a few dozen, not all 256.
+
+11b. **Decompose action legality into affordability × position flags, AND at lookup.** For build actions, "is this legal?" factors into:
+   - Can the current player afford the cost? (1 bit per build type)
+   - Is this position structurally valid? (1 bit per vertex/edge for that build type)
+
+   ```rust
+   struct LegalCache {
+       can_afford_settlement: bool,      // 1 bit, recomputed when hand changes
+       can_afford_city: bool,
+       can_afford_road: bool,
+       can_afford_dev_card: bool,
+
+       // Per-position flags, recomputed only when board topology changes:
+       settlement_valid_pos: u64,        // 54 bits, distance rule + own roads
+       city_valid_pos: u64,              // 54 bits, my settlement at v
+       road_valid_pos: [u64; 2],         // 72 bits, connected to my network
+   }
+
+   fn legal_mask(&self) -> [u64; N] {
+       let mut m = [0u64; N];
+       if self.can_afford_settlement { m |= settlement_valid_pos; }
+       if self.can_afford_city { m |= city_valid_pos << 54; }
+       // ...
+       m
+   }
+   ```
+
+   **Power of this:** when the player buys a dev card (hand changes), we flip 4 affordability bits; the position flags don't move at all. When a settlement is built (board changes), only the affected position bits update; affordability is a single re-check.
+
+11c. **Property test: `incremental_legal_mask == brute_force_legal_mask` after every state mutation.** The incremental updates are easy to forget; the test catches missed bits. Run on a random sequence of 1000+ actions.
+
+11d. **PyO3 surface: `engine.legal_mask() -> np.ndarray[bool, N]`.** Replace `engine.legal_actions()` with the bitmap directly — Python uses `np.flatnonzero(mask)` to get the action ID list. The GNN's policy mask becomes a memcpy from this bitmap.
+
+11e. **Action space layout: group by mutation-blast-radius.** New layout for v2 (with all rules):
+   ```
+   0–53:    BuildSettlement(v)            (54)
+   54–107:  BuildCity(v)                  (54)
+   108–179: BuildRoad(e)                  (72)
+   180–198: MoveRobber(h)                 (19)
+   199–203: BuyDevCard, EndTurn, Roll     (~5)
+   204–223: PlayKnight(h), PlayRoadBuild, (20)
+            PlayMonopoly(r), PlayYoP
+   224–248: TradeBank(give×get)           (25)   ← maritime + ports
+   249–...: TradeOffer(give[5], get[5])   (?)    ← player trade, deferred to phase 2
+   ```
+
+   Grouping by mutation type makes incremental updates cleaner: "hand changed → recheck affordability for build group" rather than "hand changed → scan all 256 actions."
+
+11f. **Estimated speedup: 30–100× on `legal_mask()` lookup, ~30–40% reduction in MCTS leaf-eval wall-clock at sims=400.** Bigger payoff at higher sim counts. Single biggest engine perf win in v2.
+
+11g. **Stable bit positions for future-proofing.** Reserve action ranges with gaps so adding new actions (e.g. v3 player trades) doesn't require renumbering existing bits. The cost is a few unused slots; the benefit is forward compatibility for trained models loaded with newer engine versions.
 
 ### C. Engine — APIs we already wishlisted (carry over from §2 of `2026-04-30-engine-v2-wishlist.md`)
 
@@ -157,6 +226,84 @@ Numbered for easy reference. Some are necessary for v2; others are "while we're 
 32. **Show longest road, largest army, dev cards in replay viewer** — once those exist in the engine. Currently the viewer just shows raw VP and buildings, which won't reflect new VP sources without an update.
 33. **Show trade history in replay** — when player-to-player trades happen, show "P0 gave P2: 2 wheat for 1 sheep" in the narration column.
 
+### J. Other engine performance wins (beyond legality)
+
+37. **Eliminate `state.clone()` on the search hot path.** OpenSpiel's MCTSBot clones state on every node expansion via `state.clone()`; with chance steps the engine often clones tens of thousands of times per leaf. Investigate whether clone can be replaced with **explicit unmake-move** (push action to undo stack, pop to revert). Common technique in chess engines (Stockfish, etc.). Could 5–10× MCTS throughput.
+
+38. **Avoid Python ↔ Rust boundary churn.** The journal already noted `tuple(action_history)` was O(N) per cache key call (fixed via `id(state)`). Same pattern likely lurks elsewhere — the GNN evaluator currently does one PyO3 call per leaf eval, plus separate calls for `observation()`, `legal_actions()`, etc. Consolidate into a single `engine.observe_and_evaluate()` PyO3 call returning a struct with everything the evaluator needs.
+
+39. **Move `LookaheadVpEvaluator`'s greedy rollout entirely into Rust.** Currently `evaluate()` calls `engine.lookahead_vp_value()` from Python, which is a Rust function — but the evaluator class itself is Python. Eliminate the wrapper class; expose `engine.lookahead_value(depth, seed)` directly. Saves a Python frame per leaf.
+
+40. **Rust-native chance sampling in MCTS.** OpenSpiel samples chance outcomes in Python (`state.chance_outcomes()` → list → weighted sample). Each sample is a list build + a random.choice. Could be a single Rust call: `engine.sample_chance(rng_seed) -> u32`.
+
+### K. GNN architecture improvements
+
+41. **Action-conditioned policy head.** Today the policy head outputs a length-N logit vector and we mask. With dev card actions and trade actions added, many positions will have only 1–3 legal actions out of 250+, and the policy head wastes most of its capacity. Investigate a **two-stage policy:** (1) head A outputs a coarse "what action category" (build / trade / play dev / end turn), (2) head B conditions on category and outputs the specific action. Could substantially improve sample efficiency.
+
+42. **Dynamic mask within the GNN's loss.** Today the model computes 250 logits and we mask after softmax. Compute logits **only for legal actions** (using indexed gather). At ~5 legal actions per position avg, this is a 50× reduction in policy-head compute. Especially valuable once trades + dev cards inflate action space.
+
+43. **Edge-features for trade actions.** Dev card / trade actions don't fit the current hex/vertex/edge graph — they're "global" moves. Either add a "global action token" node type to the heterogeneous graph, or encode trade actions via an auxiliary feature vector concatenated to the GNN body output. Defer until phase 2 (when trades are in scope).
+
+44. **Auxiliary loss heads for stronger learning signal.** Beyond value + policy, add cheap auxiliary targets that are well-defined per state:
+   - **Predict opponent's hand totals** (regression target, 3 floats per state) — uses already-recorded info; trains the body to attend to opponent state.
+   - **Predict who'll get longest road eventually** (binary classification, 4 logits) — captures strategic positioning beyond immediate VP.
+   - **Predict 5-step value lookahead** vs the current 25-step rollout — gives a denser, lower-variance signal to learn from.
+
+   Each aux head is ~5 lines; the regularization effect on the body is often substantial. AlphaStar / OpenAI Five used many of these.
+
+### L. Search algorithm improvements
+
+45. **Replace OpenSpiel's MCTSBot with a Rust-native MCTS.** OpenSpiel is general-purpose and ports a Python implementation; for a single game we control fully, a Rust MCTS could be 5–20× faster. Especially if combined with §37 (unmake-move), §41 (action-conditioned), §42 (mask-aware policy), and §27 (batched evaluator).
+
+46. **Dirichlet exploration noise at the root** (AlphaZero standard). Currently MCTS has c=sqrt(2) deterministically; AlphaZero injects Dirichlet noise into root priors so self-play games explore more openings. Without this, self-play data diversity is too narrow. Single most important "AlphaZero training trick" we're missing.
+
+47. **Temperature-scheduled root selection.** Today we pick action by argmax of root visit counts. AlphaZero uses temperature τ=1 for the first ~30 moves of self-play (sample proportional to visits) then switches to argmax. **More opening diversity in training data without changing the model.**
+
+48. **Progressive widening for chance nodes.** Today MCTS treats chance nodes as having 11 children (dice 2-12). Most plays only exercise 4-5 of those (the high-probability ones); the low-prob ones get ~1 sim each in a 50-sim budget. **Progressive widening expands chance children only as visits accumulate** — better sim budget allocation.
+
+49. **PUCT instead of UCB1.** AlphaZero uses PUCT (Predictor + UCT) which incorporates the policy network's prior into the exploration term: `PUCT(child) = mean_value + c · prior(child) · sqrt(parent_visits) / (1 + child_visits)`. UCB1 ignores the policy. Switching to PUCT lets a strong policy steer search more aggressively. Big sample efficiency win once the policy is learning.
+
+### M. Self-play data generation
+
+50. **Self-play with diverse opponents in the same game.** Today's self-play has all 4 seats playing the same player kind. This creates a narrow strategic distribution. Mix opponents per seat: e.g. seat 0 = LookaheadMcts(d25,s100), seat 1 = Random, seat 2 = GreedyBaseline, seat 3 = LookaheadMcts(d10,s50). Each game produces training data from 4 different strategic regimes. Likely as valuable as 2-4× more games.
+
+51. **Auto-curriculum: train on positions where the current model is most wrong.** After training, evaluate val_top1 per game; the games where the model is most surprised (lowest top1) are the ones that contain the strongest learning signal. Re-weight the next training run to oversample those games. AlphaZero used this implicitly via tree search; we'd do it explicitly.
+
+52. **Online dataset augmentation: random board rotations.** The Catan board has 6-fold rotational symmetry around the center hex. Today's training set sees each game with one canonical orientation; we can augment to 6× by rotating the board (and remapping vertex/edge IDs) when materializing positions from action_history. **6× data, free.** Pairs naturally with §52's perspective rotation: 6 board-rotations × 4 player-perspectives = 24× effective data.
+
+### N. Tooling and observability
+
+53. **Live GNN-vs-LookaheadMcts benchmark inside training.** Every N epochs, run a 10-game tournament against LookaheadMcts at sims=50 and report winrate alongside loss. Today bench-2 is just policy-KL/value-MAE on static positions; nothing connects training metrics to actual play strength until you stop training and run e8. **Add the in-loop tournament so we know if epoch 7 is genuinely playing better than epoch 4 in real time.**
+
+54. **Loss decomposition by game phase.** Track val_loss separately for setup-phase positions, early-main-phase, mid-main-phase, late-main-phase. Today we know "loss is X"; after this we'd know "model is great at setup but bad at endgame" or vice versa. Cheap to add (~30 lines), highly diagnostic.
+
+55. **Action-distribution histograms.** When v1 was diagnosed as "always picks the same settlement spot," we saw it manually. Should be automatic: log the policy entropy at each game phase (setup vs main vs endgame). Low entropy → policy collapse → flag.
+
+56. **Dataset health dashboard before training.** Every cache build should report:
+   - % timed-out games (today's 41% caught us off guard)
+   - Distribution of game lengths (very long games may be degenerate)
+   - Distribution of margin-of-victory (lots of margin=1 games means the teacher is barely winning)
+   - VP-source distribution (does the teacher ever build longest road / large army? in v1, never)
+   - Resource-collection histograms per resource (does the teacher accumulate ore? if not, no city training signal)
+
+   **Catches data-quality holes before we burn 7 hours training on bad data.**
+
+### O. Determinism and reproducibility
+
+57. **Single source of seed truth.** Currently we have `seed_base` (per-experiment), `seed` (per-game), `eval_seed` (per-leaf-eval), random.Random instances seeded from various things. Hard to reproduce exact behavior. Move all randomness through one `engine.rng_seed()` source so a saved seed exactly reproduces a played game.
+
+58. **Action-history hash as state ID.** Today's `id(state)` cache key works for one Python session but isn't durable. A canonical hash of `(seed, action_history)` would let caches share state IDs across sessions and machines.
+
+59. **Deterministic chance-action ordering.** When MCTS samples chance children, today we sample stochastically with weighted probability. For reproducibility in unit tests, support a `--deterministic-chance` mode that always picks outcomes in fixed order.
+
+### P. Code organization
+
+60. **Split `engine.rs` into per-phase files.** It's already 600+ lines and growing. With trades + dev cards added it'll be 1500+. Move main-phase, setup-phase, dev-card-phase, trade-phase into separate modules. Clear separation of concerns.
+
+61. **Canonical Action enum, not action IDs.** Today we encode/decode `u32 ↔ Action` via `actions.rs::encode/decode`. With dev cards and trades there's growing risk of off-by-one bugs. Internal Rust API should use the typed `Action` enum exclusively; `u32` is only for PyO3 boundary.
+
+62. **Extract a `RuleSet` trait.** Today's rules are baked into `apply()`. With v2 wanting selective rule subsets (e.g. "tier-1 lite" for fast unit tests, "tier-2 full" for production), parameterize rules behind a trait. Lets us test the v1 game alongside v2 for regression. Defer if it's premature abstraction.
+
 ### I. Process / engineering
 
 34. **Branch hygiene** — v2 should land on a fresh branch off main, not gnn-v0. The two are diverging structurally and will eventually need to be merged once v2 stabilizes; cleaner if they don't share commits.
@@ -171,19 +318,52 @@ Don't do everything at once. Three phases:
 
 ### Phase 1: Engine v2 minimum-viable (1–2 weeks of focused work)
 
-- §A1 (steal verification fix), §A2 (inventory caps), §A3 (longest road), §A8 (full win condition with longest road), §A5 (maritime trades only — defer player-to-player), §B9 (bit-packed obs), §B10 (static board cache), §C12-13 (bank, all_hands), §D16 (ABC map gen), §G29 (timeout investigation), §G25 (filter timeouts before caching).
+**Rules + perf foundation that makes everything else faster:**
 
-**Why this set:** these unlock the most strategy at the lowest implementation risk. Trades-to-bank gives the resource-starved-player escape valve. Longest road gives the road-spammer a payoff. Inventory caps prevent infinite road blockades. Bit-packed obs lets us train on 4× more games per same RAM. ABC map gen makes the boards fair.
+- §A1 (steal verification fix), §A2 (inventory caps), §A3 (longest road), §A8 (full win condition with longest road)
+- §A5 (maritime trades only — defer player-to-player)
+- §A-bis 8a (instant random discard — kill the discard phase, big simplification)
+- §B9 (bit-packed obs), §B10 (static board cache)
+- §B-bis 11a-11g (fast legality bitmap — **the biggest perf win in v2**)
+- §C12-13 (bank, all_hands APIs)
+- §D16 (ABC map gen)
+- §G29 (timeout investigation), §G25 (filter timeouts before caching)
+- §J37 (eliminate state.clone on hot path), §J39 (Rust-native lookahead evaluator)
+- §N56 (dataset health dashboard — catches the kind of "41% timeouts" hole we missed in v1)
 
-**Skip in Phase 1:** dev cards, largest army, player-to-player trades. They add a lot of complexity. Phase 1 is "is the game playable?" not "is the game complete?"
+**Why this set:** these unlock the most strategy at the lowest implementation risk, plus the perf foundation (fast legality + bit-pack + clone elimination) that makes phases 2 and 3 actually fast. Trades-to-bank gives the resource-starved-player escape valve. Longest road gives the road-spammer a payoff. Inventory caps prevent infinite road blockades. Bit-packed obs + fast legality lets us train on 10× more games per same wall-clock.
+
+**Skip in Phase 1:** dev cards, largest army, player-to-player trades. They add a lot of complexity. Phase 1 is "is the game playable, fast?" not "is the game complete?"
 
 ### Phase 2: Strategy completeness (1–2 weeks)
 
-- §A4 (largest army), §A6 (player trades), §A7 (dev cards). All three together because they're highly intercoupled (knight uses a dev card and contributes to largest army; trade is a standalone phase but shares VPCard tracking with dev cards).
+**The remaining real-Catan rules:**
+
+- §A4 (largest army), §A7 (dev cards), §A6 (player-to-player trades)
+- §K43 (edge-features for trade actions in the GNN)
+
+These are highly intercoupled (knight uses a dev card and contributes to largest army; trade is a standalone phase but shares VPCard tracking with dev cards). Once §A6+A7 land, the action space stabilizes for v2 and the model architecture (§K43) needs a small extension.
 
 ### Phase 3: Training at scale
 
-- §F26 (AlphaZero loop), §F27 (batched evaluator), §F28 (multi-perspective data), §G30 (opponent diversity). With a complete game and 40× cache compression, the question becomes "can iterative self-play actually improve the model" — the original AlphaZero question.
+**The AlphaZero loop becomes feasible:**
+
+- §F26 (AlphaZero iteration loop), §F27 (batched GNN evaluator), §F28 (multi-perspective data)
+- §G30 (opponent diversity in self-play), §M50-52 (diverse opponents per game, auto-curriculum, board rotation augmentation)
+- §L46-49 (Dirichlet noise, temperature schedule, progressive widening, PUCT)
+- §K41-42, §K44 (action-conditioned policy head, dynamic mask in loss, auxiliary loss heads)
+- §N53-55 (live in-training tournaments, loss decomposition by phase, action-distribution histograms)
+- §J38, §J40 (consolidated PyO3 boundary, Rust-native chance sampling), §L45 (Rust-native MCTS)
+
+**Why all of these here:** Phase 3 is where we stop tweaking individual ideas and try to do the AlphaZero thing properly. Self-play loop, batched inference, search algorithm improvements, augmentation, observability. The earlier phases are about "make the game right and the engine fast"; Phase 3 is about "make the training process strong enough to actually beat the teacher."
+
+### Phase 4: Polish (any time)
+
+- §J38 (PyO3 boundary cleanup), §K41 (action-conditioned policy)
+- §O57-59 (determinism polish — single seed source, durable state hash, deterministic chance)
+- §P60-62 (split engine.rs, Action-enum-internally, RuleSet trait)
+
+These are quality-of-life improvements that don't unlock new capability but make the codebase pleasanter to work with. Pull in opportunistically when working in the affected files anyway.
 
 ---
 
