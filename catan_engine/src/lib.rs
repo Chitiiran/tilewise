@@ -30,10 +30,11 @@ impl PyEngine {
         self.inner.legal_actions().into_pyarray_bound(py)
     }
 
-    /// Legal-action bitmap as a length-256 bool array. Bit i ⇔ action i legal.
+    /// Legal-action bitmap as a bool array. Bit i ⇔ action i legal.
     /// Faster than legal_actions() for "is this specific action legal?" queries
     /// and the natural input shape for GNN policy masks.
-    fn legal_mask<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
+    /// Phase 2.5: cached, recomputed only when state mutates.
+    fn legal_mask<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
         let m = self.inner.legal_mask();
         let bits: Vec<bool> = (0..crate::actions::LEGAL_MASK_BITS)
             .map(|i| m.get(i))

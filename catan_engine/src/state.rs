@@ -184,6 +184,14 @@ pub struct GameState {
     /// Player ID who currently holds the +2 VP for largest army.
     /// Some(p) iff p has the strict max knights_played AND that count >= 3.
     pub largest_army_holder: Option<u8>,
+
+    // ---- v2 perf: cached legal mask (Phase 2.5) ----
+    /// Cached legal-action bitmap. Kept in sync with state via `legal_mask_dirty`.
+    /// When dirty, the next call to `Engine::legal_mask()` recomputes and clears.
+    /// This caches the slow path — Phase 3+ may move to fully incremental updates
+    /// where each state mutation flips only the affected bits directly.
+    pub legal_mask_cached: crate::actions::LegalMask,
+    pub legal_mask_dirty: bool,
 }
 
 pub const N_DEV_CARDS: usize = 5;
@@ -277,6 +285,8 @@ impl GameState {
             dev_card_deck_remaining: DEV_CARD_DECK_STANDARD,
             knights_played: [0; N_PLAYERS],
             largest_army_holder: None,
+            legal_mask_cached: crate::actions::LegalMask::new(),
+            legal_mask_dirty: true,
         }
     }
 
