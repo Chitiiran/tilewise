@@ -33,7 +33,7 @@ impl PyEngine {
         Self { inner: Engine::with_standard_board(seed) }
     }
 
-    fn legal_actions<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+    fn legal_actions<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
         self.inner.legal_actions().into_pyarray_bound(py)
     }
 

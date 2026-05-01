@@ -57,7 +57,20 @@ impl Engine {
         }
     }
 
-    pub fn legal_actions(&self) -> Vec<u32> {
+    pub fn legal_actions(&mut self) -> Vec<u32> {
+        // Cached path: when the legal_mask cache is fresh, materialize the Vec
+        // from set bits — much faster than re-running legal_actions() through
+        // the rules layer (which re-iterates every vertex/edge/dev-card
+        // branch). MCTS hits this path heavily because it queries the same
+        // state many times between mutations.
+        if !self.state.legal_mask_dirty {
+            return self.state.legal_mask_cached.iter_ids().collect();
+        }
+        // Cache miss: recompute via rules. Don't populate the cache here —
+        // pure-bench profiles show the cache-populate (LegalMask::from_action_ids
+        // is ~600 ns) costs more than it saves for single-pass callers (random
+        // self-play). Callers that want the cache populated (MCTS) call
+        // legal_mask() instead, which has its own populate path.
         legal_actions(&self.state)
             .into_iter()
             .map(crate::actions::encode)
@@ -70,7 +83,10 @@ impl Engine {
     /// state is queried multiple times (typical MCTS pattern).
     pub fn legal_mask(&mut self) -> crate::actions::LegalMask {
         if self.state.legal_mask_dirty {
-            let ids = self.legal_actions();
+            let ids: Vec<u32> = legal_actions(&self.state)
+                .into_iter()
+                .map(crate::actions::encode)
+                .collect();
             self.state.legal_mask_cached = crate::actions::LegalMask::from_action_ids(&ids);
             self.state.legal_mask_dirty = false;
         }
