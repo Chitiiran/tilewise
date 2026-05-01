@@ -30,7 +30,23 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Construct an engine with the **balanced (ABC) board layout** seeded by `seed`.
+    /// Phase 2.6: ABC is the v2 default. Use `Engine::with_standard_board(seed)` for
+    /// the canonical fixed layout (only used by older tests).
     pub fn new(seed: u64) -> Self {
+        let board = Arc::new(Board::generate_abc(seed));
+        Self {
+            state: GameState::new(board),
+            rng: Rng::from_seed(seed),
+            events: EventLog::new(),
+            stats: GameStats::new(),
+            history: Vec::new(),
+        }
+    }
+
+    /// Construct an engine with the **fixed canonical board** (Catan beginner setup).
+    /// Useful for v1 regression testing or strict reproducibility against v1 hashes.
+    pub fn with_standard_board(seed: u64) -> Self {
         let board = Arc::new(Board::standard());
         Self {
             state: GameState::new(board),

@@ -26,6 +26,13 @@ impl PyEngine {
         Self { inner: Engine::new(seed) }
     }
 
+    /// Construct an engine with the fixed canonical board (no ABC randomization).
+    /// Useful for v1-style reproducibility / regression tests.
+    #[staticmethod]
+    fn with_standard_board(seed: u64) -> Self {
+        Self { inner: Engine::with_standard_board(seed) }
+    }
+
     fn legal_actions<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
         self.inner.legal_actions().into_pyarray_bound(py)
     }
@@ -183,7 +190,7 @@ fn chunks(flat: &[f32], width: usize) -> Vec<Vec<f32>> {
 }
 
 #[pyfunction]
-fn engine_version() -> &'static str { "0.1.0" }
+fn engine_version() -> &'static str { "2.0.0-phase2" }
 
 #[pyfunction]
 fn action_space_size() -> usize { actions::ACTION_SPACE_SIZE }

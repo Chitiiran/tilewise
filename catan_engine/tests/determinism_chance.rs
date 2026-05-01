@@ -7,7 +7,7 @@ use catan_engine::Engine;
 use std::hash::{Hash, Hasher};
 
 fn play_one(seed: u64) -> u64 {
-    let mut e = Engine::new(seed);
+    let mut e = Engine::with_standard_board(seed);
     let mut steps = 0;
     while !e.is_terminal() && steps < 5000 {
         if e.is_chance_pending() {
@@ -63,7 +63,7 @@ fn fixed_seeds_produce_stable_hashes() {
 /// that catches accidental rng routing changes (e.g. someone replacing SmallRng or
 /// reordering RNG draws inside apply_dice_roll).
 fn play_one_rng_driven(seed: u64) -> u64 {
-    let mut e = Engine::new(seed);
+    let mut e = Engine::with_standard_board(seed);
     let mut steps = 0;
     while !e.is_terminal() && steps < 5000 {
         if e.is_chance_pending() {

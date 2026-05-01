@@ -3,7 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 fn game_hash(seed: u64) -> u64 {
-    let mut engine = Engine::new(seed);
+    let mut engine = Engine::with_standard_board(seed);
     let mut h = DefaultHasher::new();
     let mut steps = 0;
     while !engine.is_terminal() {
