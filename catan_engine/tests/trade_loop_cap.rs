@@ -92,10 +92,13 @@ fn end_turn_resets_trade_counter() {
 }
 
 #[test]
-fn cap_constant_is_at_least_3() {
-    // Sanity: ensure the cap is generous enough to allow real Catan strategy
-    // (a typical turn might have 1-3 trades). Don't go below 3.
-    assert!(MAX_TRADES_PER_TURN >= 3);
-    // And not so high it lets old-style infinite loops slip through.
+fn cap_constant_in_sane_range() {
+    // Sanity: cap must be >= 1 (otherwise trades are entirely disabled, which
+    // changes legal_actions semantics) and small enough to prevent the
+    // infinite-loop pathology we saw at unbounded.
+    // Phase 3.4 data showed ProposeTrade was 47% of all actions even at cap=4;
+    // dropping to 1 trims pure trade-loop noise without losing the
+    // "trade then build" pattern.
+    assert!(MAX_TRADES_PER_TURN >= 1);
     assert!(MAX_TRADES_PER_TURN <= 8);
 }

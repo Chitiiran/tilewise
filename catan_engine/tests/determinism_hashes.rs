@@ -34,11 +34,12 @@ fn regression_hashes_are_stable() {
     // setup-phase placement value, which the deterministic legal[0] policy
     // reacts to — different seeds now produce 3 distinct hashes (better
     // diversity than the pre-trade-cap single-attractor regime).
+    // Post-fix-138 (terminal check + trade cap=1).
     let expected = [
-        (0u64,     4159352959760986152u64),
-        (1u64,     9485599967954966871u64),
-        (42u64,    4158781906329660473u64),
-        (12345u64, 4158781906329660473u64),
+        (0u64,     13510722627221345023u64),
+        (1u64,     4550780657234542719u64),
+        (42u64,    16159416546797469512u64),
+        (12345u64, 16159416546797469512u64),
     ];
     for (seed, expected_hash) in expected {
         let actual = game_hash(seed);

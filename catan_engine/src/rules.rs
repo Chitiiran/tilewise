@@ -431,6 +431,15 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             let _ = rng;
         }
     }
+    // End-of-apply terminal check: any action that mutates VP (build, dev card,
+    // OR a longest-road / largest-army bonus flip via update_*) must trigger
+    // termination if VP >= WIN_VP. The per-action check_win calls are now
+    // redundant but kept for early termination in long branches.
+    // Found via seed=1100021: P0 reached 11 VP at step 642 because the LA flip
+    // happened in a knight play whose handler didn't call check_win.
+    if !matches!(state.phase, GamePhase::Done { .. }) {
+        check_win(state, &mut events);
+    }
     events
 }
 

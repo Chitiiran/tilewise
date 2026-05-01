@@ -50,9 +50,14 @@ pub const MAX_ROADS: u8 = 15;
 /// Without a cap MCTS can loop A→B then B→A forever — total resources are
 /// conserved so no progress is made and no terminal reward arrives, so the
 /// search picks an arbitrary trade direction at the root and the same
-/// pathology happens on the next ply. Cap at 4 (generous for real play
-/// where 1-3 trades per turn is typical).
-pub const MAX_TRADES_PER_TURN: u8 = 4;
+/// pathology happens on the next ply.
+///
+/// **Cap chosen as 1**: in real play a turn rarely needs more than one trade
+/// to set up the desired build, and the Phase 3.4 sweep showed ProposeTrade
+/// was 47% of all actions even with a 4-cap. Reducing to 1 trims pure
+/// trade-loop noise from the recorded data without removing the core
+/// "trade then build" pattern the policy needs to learn.
+pub const MAX_TRADES_PER_TURN: u8 = 1;
 
 // Port bit positions in state.ports_owned[p].
 pub const PORT_BIT_GENERIC: u8 = 1 << 0;
