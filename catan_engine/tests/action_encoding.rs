@@ -2,9 +2,13 @@ use catan_engine::actions::{Action, ACTION_SPACE_SIZE, decode, encode};
 use catan_engine::board::Resource;
 
 #[test]
-fn action_space_size_is_226_for_v2() {
-    // v2 added 20 TradeBank actions (5 give × 4 valid get) at 206-225.
-    assert_eq!(ACTION_SPACE_SIZE, 226);
+fn action_space_size_is_260_for_v2_3() {
+    // v2.1 added 20 TradeBank actions (206-225).
+    // v2.3 added 34 dev card actions (226-259):
+    //   226 BuyDevCard, 227 PlayKnight, 228 PlayRoadBuilding,
+    //   229-233 PlayMonopoly, 234-258 PlayYearOfPlenty (5×5),
+    //   259 PlayVpCard.
+    assert_eq!(ACTION_SPACE_SIZE, 260);
 }
 
 #[test]
@@ -41,8 +45,8 @@ fn id_layout_matches_spec() {
 
 #[test]
 fn out_of_range_ids_return_none() {
-    // v2: TradeBank actions occupy 206..226, so the first invalid ID is 226.
-    assert!(decode(226).is_none());
+    // v2.3: dev card actions occupy 226..260, so the first invalid ID is 260.
+    assert!(decode(260).is_none());
     assert!(decode(u32::MAX).is_none());
 }
 
@@ -55,8 +59,8 @@ fn roll_dice_action_round_trips() {
 }
 
 #[test]
-fn action_space_size_is_226_after_v2() {
-    assert_eq!(catan_engine::actions::ACTION_SPACE_SIZE, 226);
+fn action_space_size_is_260_after_v2_3() {
+    assert_eq!(catan_engine::actions::ACTION_SPACE_SIZE, 260);
 }
 
 #[test]
@@ -81,4 +85,28 @@ fn trade_bank_action_count_is_20() {
         if decode(id).is_some() { count += 1; }
     }
     assert_eq!(count, 20, "must have exactly 20 valid TradeBank actions (5 give × 4 valid get)");
+}
+
+#[test]
+fn dev_card_actions_round_trip() {
+    let mut count = 0;
+    for id in 226..260 {
+        let action = decode(id).expect("dev card ID should decode");
+        let re = encode(action);
+        assert_eq!(re, id, "round-trip failed for dev card ID {}", id);
+        count += 1;
+    }
+    assert_eq!(count, 34, "34 dev card actions: 1 buy + 1 knight + 1 rb + 5 mono + 25 yop + 1 vp");
+}
+
+#[test]
+fn dev_card_specific_ids_match_layout() {
+    assert_eq!(encode(Action::BuyDevCard), 226);
+    assert_eq!(encode(Action::PlayKnight), 227);
+    assert_eq!(encode(Action::PlayRoadBuilding), 228);
+    assert_eq!(encode(Action::PlayMonopoly(Resource::Wood)), 229);
+    assert_eq!(encode(Action::PlayMonopoly(Resource::Ore)), 233);
+    assert_eq!(encode(Action::PlayYearOfPlenty(Resource::Wood, Resource::Wood)), 234);
+    assert_eq!(encode(Action::PlayYearOfPlenty(Resource::Ore, Resource::Ore)), 258);
+    assert_eq!(encode(Action::PlayVpCard), 259);
 }

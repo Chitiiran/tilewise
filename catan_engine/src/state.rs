@@ -157,7 +157,43 @@ pub struct GameState {
     /// Players own a port iff they have a settlement or city on one of its
     /// two vertices. Updated alongside settlement/city placement.
     pub ports_owned: [u8; N_PLAYERS],
+
+    // ---- v2 dev cards (§A7) + largest army (§A4) ----
+    /// Per-player counts of currently held dev cards by type:
+    ///   index 0: Knight
+    ///   index 1: RoadBuilding
+    ///   index 2: Monopoly
+    ///   index 3: YearOfPlenty
+    ///   index 4: VictoryPoint
+    pub dev_cards_held: [[u8; N_DEV_CARDS]; N_PLAYERS],
+    /// Per-player counts of dev cards already played (purely diagnostic;
+    /// knights_played derives largest_army_size).
+    pub dev_cards_played: [[u8; N_DEV_CARDS]; N_PLAYERS],
+    /// Cards drawn this turn — Catan rule: can't play a card the turn
+    /// you bought it. Reset on EndTurn.
+    pub dev_cards_just_bought: [bool; N_PLAYERS],
+    /// True if the current player has played a dev card this turn already
+    /// (only one dev card per turn, except VP cards). Reset on EndTurn.
+    pub dev_card_played_this_turn: [bool; N_PLAYERS],
+    /// Remaining cards in the deck, by type. Standard: 14K, 2RB, 2M, 2YOP, 5VP.
+    pub dev_card_deck_remaining: [u8; N_DEV_CARDS],
+
+    /// Knights played per player (also tracked in dev_cards_played[p][0],
+    /// but this is the cached number for largest-army comparisons).
+    pub knights_played: [u8; N_PLAYERS],
+    /// Player ID who currently holds the +2 VP for largest army.
+    /// Some(p) iff p has the strict max knights_played AND that count >= 3.
+    pub largest_army_holder: Option<u8>,
 }
+
+pub const N_DEV_CARDS: usize = 5;
+/// Standard Catan deck composition: 14 Knight, 2 RoadBuilding, 2 Monopoly, 2 YearOfPlenty, 5 VP.
+pub const DEV_CARD_DECK_STANDARD: [u8; N_DEV_CARDS] = [14, 2, 2, 2, 5];
+pub const DEV_CARD_KNIGHT: usize = 0;
+pub const DEV_CARD_ROAD_BUILDING: usize = 1;
+pub const DEV_CARD_MONOPOLY: usize = 2;
+pub const DEV_CARD_YOP: usize = 3;
+pub const DEV_CARD_VP: usize = 4;
 
 /// 54 vertices × 3 bits each = 162 bits.
 /// Use a u128 for low 42 vertices + u64 for high 12 vertices (3 bits per slot, with padding).
@@ -234,6 +270,13 @@ impl GameState {
             longest_road_length: [0; N_PLAYERS],
             longest_road_holder: None,
             ports_owned: [0; N_PLAYERS],
+            dev_cards_held: [[0; N_DEV_CARDS]; N_PLAYERS],
+            dev_cards_played: [[0; N_DEV_CARDS]; N_PLAYERS],
+            dev_cards_just_bought: [false; N_PLAYERS],
+            dev_card_played_this_turn: [false; N_PLAYERS],
+            dev_card_deck_remaining: DEV_CARD_DECK_STANDARD,
+            knights_played: [0; N_PLAYERS],
+            largest_army_holder: None,
         }
     }
 

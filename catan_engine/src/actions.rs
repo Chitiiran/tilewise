@@ -15,18 +15,45 @@ pub enum Action {
     /// N is 4:1 if no port; 3:1 with generic port; 2:1 with the specific resource port.
     /// Same-for-same is excluded.
     TradeBank { give: Resource, get: Resource },
+    /// v2.3 Buy dev card: pay 1 sheep + 1 wheat + 1 ore, draw random card.
+    BuyDevCard,
+    /// Play a Knight: behaves like a free MoveRobber (and contributes to largest army).
+    /// Subsequent step is normal robber-move + steal sequence.
+    PlayKnight,
+    /// Road Building: gain 2 wood + 2 brick from bank (free roads — player builds with these).
+    /// Simplification of the strict "place 2 free roads now" rule that keeps action count low.
+    PlayRoadBuilding,
+    /// Monopoly: claim ALL of one resource from all opponents.
+    PlayMonopoly(Resource),
+    /// Year of Plenty: take 1 each of two resources from the bank (same resource allowed).
+    PlayYearOfPlenty(Resource, Resource),
+    /// VP card: silently grants +1 VP. We treat it as immediate (no hidden info).
+    PlayVpCard,
 }
 
 /// v1: 206 (settlements + cities + roads + robber + discard + end + roll).
-/// v2: 226 (adds 20 TradeBank actions at 206-225). Same-for-same trades are illegal.
-pub const ACTION_SPACE_SIZE: usize = 226;
+/// v2.1: 226 (adds 20 TradeBank actions at 206-225).
+/// v2.3: 260 (adds dev card actions at 226-259):
+///   226: BuyDevCard
+///   227: PlayKnight
+///   228: PlayRoadBuilding
+///   229-233: PlayMonopoly(r)
+///   234-258: PlayYearOfPlenty(r1, r2) — 25 combos including same-for-same
+///   259: PlayVpCard
+pub const ACTION_SPACE_SIZE: usize = 260;
 pub const TRADE_BANK_BASE: u32 = 206;
 pub const N_TRADE_BANK_ACTIONS: u32 = 20; // 5 give × 4 valid get
+pub const DEV_BUY: u32 = 226;
+pub const DEV_PLAY_KNIGHT: u32 = 227;
+pub const DEV_PLAY_ROAD_BUILDING: u32 = 228;
+pub const DEV_PLAY_MONOPOLY_BASE: u32 = 229;     // 229-233 (one per resource)
+pub const DEV_PLAY_YOP_BASE: u32 = 234;          // 234-258 (5×5 = 25 combos)
+pub const DEV_PLAY_VP: u32 = 259;
 
 /// Number of u64 words needed to hold the legal-action bitmap.
-/// Sized to support v2's expanded action space (dev cards + trades) without
-/// changing the API. 4 × 64 = 256 bits, room for ~50 more actions beyond v1's 206.
-pub const LEGAL_MASK_WORDS: usize = 4;
+/// Sized to support v2's full action space: 226 v1+trades + dev cards (~34)
+/// + headroom for player trades and v3 additions. 5 × 64 = 320 bits.
+pub const LEGAL_MASK_WORDS: usize = 5;
 pub const LEGAL_MASK_BITS: usize = LEGAL_MASK_WORDS * 64;
 
 /// Legal-action bitmap. Bit i set ⇔ action i is legal in the current state.
@@ -99,6 +126,16 @@ pub fn encode(action: Action) -> u32 {
             let get_compact = if r < g { r } else { r - 1 };
             TRADE_BANK_BASE + g * 4 + get_compact
         }
+        Action::BuyDevCard => DEV_BUY,
+        Action::PlayKnight => DEV_PLAY_KNIGHT,
+        Action::PlayRoadBuilding => DEV_PLAY_ROAD_BUILDING,
+        Action::PlayMonopoly(r) => DEV_PLAY_MONOPOLY_BASE + resource_index(r) as u32,
+        Action::PlayYearOfPlenty(r1, r2) => {
+            let i = resource_index(r1) as u32;
+            let j = resource_index(r2) as u32;
+            DEV_PLAY_YOP_BASE + i * 5 + j
+        }
+        Action::PlayVpCard => DEV_PLAY_VP,
     }
 }
 
@@ -122,6 +159,17 @@ pub fn decode(id: u32) -> Option<Action> {
                 get: resource_from_index(r),
             })
         }
+        226 => Some(Action::BuyDevCard),
+        227 => Some(Action::PlayKnight),
+        228 => Some(Action::PlayRoadBuilding),
+        229..=233 => Some(Action::PlayMonopoly(resource_from_index((id - DEV_PLAY_MONOPOLY_BASE) as u8))),
+        234..=258 => {
+            let off = id - DEV_PLAY_YOP_BASE;
+            let i = (off / 5) as u8;
+            let j = (off % 5) as u8;
+            Some(Action::PlayYearOfPlenty(resource_from_index(i), resource_from_index(j)))
+        }
+        259 => Some(Action::PlayVpCard),
         _ => None,
     }
 }

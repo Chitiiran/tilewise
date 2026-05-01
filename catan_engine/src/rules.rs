@@ -241,7 +241,115 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.bank[get_idx] -= 1;
             // No event type for trades yet — could add GameEvent::TradeBank later.
         }
+        (GamePhase::Main, Action::BuyDevCard) => {
+            use crate::state::{DEV_CARD_VP, N_DEV_CARDS};
+            let p = state.current_player;
+            let pi = p as usize;
+            let mut bank = state.bank;
+            let mut hand = state.hands[pi];
+            pay(&mut hand, &mut bank, &DEV_CARD_COST);
+            state.hands[pi] = hand;
+            state.bank = bank;
+            // Random draw from the deck weighted by remaining counts.
+            use rand::Rng as _;
+            let total_remaining: u32 = state.dev_card_deck_remaining.iter().map(|&x| x as u32).sum();
+            assert!(total_remaining > 0, "BuyDevCard with empty deck");
+            let pick = rng.inner().gen_range(0u32..total_remaining);
+            let mut acc = 0u32;
+            for ct in 0..N_DEV_CARDS {
+                let count = state.dev_card_deck_remaining[ct] as u32;
+                if pick < acc + count {
+                    state.dev_card_deck_remaining[ct] -= 1;
+                    if ct == DEV_CARD_VP {
+                        // VP card: apply immediately (no hidden info in our engine).
+                        state.dev_cards_played[pi][DEV_CARD_VP] += 1;
+                        state.vp[pi] += 1;
+                        check_win(state, &mut events);
+                    } else {
+                        state.dev_cards_held[pi][ct] += 1;
+                        state.dev_cards_just_bought[pi] = true;
+                    }
+                    break;
+                }
+                acc += count;
+            }
+        }
+        (GamePhase::Main, Action::PlayKnight) => {
+            use crate::state::DEV_CARD_KNIGHT;
+            let p = state.current_player;
+            let pi = p as usize;
+            assert!(state.dev_cards_held[pi][DEV_CARD_KNIGHT] > 0, "PlayKnight with no knight");
+            state.dev_cards_held[pi][DEV_CARD_KNIGHT] -= 1;
+            state.dev_cards_played[pi][DEV_CARD_KNIGHT] += 1;
+            state.knights_played[pi] += 1;
+            state.dev_card_played_this_turn[pi] = true;
+            update_largest_army(state);
+            // Transition to MoveRobber, like a 7 was rolled (without the discard).
+            state.phase = GamePhase::MoveRobber;
+        }
+        (GamePhase::Main, Action::PlayRoadBuilding) => {
+            use crate::state::DEV_CARD_ROAD_BUILDING;
+            let p = state.current_player;
+            let pi = p as usize;
+            assert!(state.dev_cards_held[pi][DEV_CARD_ROAD_BUILDING] > 0);
+            state.dev_cards_held[pi][DEV_CARD_ROAD_BUILDING] -= 1;
+            state.dev_cards_played[pi][DEV_CARD_ROAD_BUILDING] += 1;
+            state.dev_card_played_this_turn[pi] = true;
+            // Simplification: grant 2 wood + 2 brick from bank (player builds with these).
+            // Strict rule would let them place 2 free roads; this is rule-equivalent.
+            let take_wood = 2u8.min(state.bank[0]);
+            let take_brick = 2u8.min(state.bank[1]);
+            state.hands[pi][0] += take_wood;
+            state.hands[pi][1] += take_brick;
+            state.bank[0] -= take_wood;
+            state.bank[1] -= take_brick;
+        }
+        (GamePhase::Main, Action::PlayMonopoly(r)) => {
+            use crate::state::DEV_CARD_MONOPOLY;
+            let p = state.current_player;
+            let pi = p as usize;
+            assert!(state.dev_cards_held[pi][DEV_CARD_MONOPOLY] > 0);
+            state.dev_cards_held[pi][DEV_CARD_MONOPOLY] -= 1;
+            state.dev_cards_played[pi][DEV_CARD_MONOPOLY] += 1;
+            state.dev_card_played_this_turn[pi] = true;
+            let ri = r as usize;
+            // Take all of `r` from every other player.
+            let mut taken = 0u8;
+            for opp in 0..4usize {
+                if opp != pi {
+                    taken += state.hands[opp][ri];
+                    state.hands[opp][ri] = 0;
+                }
+            }
+            state.hands[pi][ri] += taken;
+        }
+        (GamePhase::Main, Action::PlayYearOfPlenty(r1, r2)) => {
+            use crate::state::DEV_CARD_YOP;
+            let p = state.current_player;
+            let pi = p as usize;
+            assert!(state.dev_cards_held[pi][DEV_CARD_YOP] > 0);
+            state.dev_cards_held[pi][DEV_CARD_YOP] -= 1;
+            state.dev_cards_played[pi][DEV_CARD_YOP] += 1;
+            state.dev_card_played_this_turn[pi] = true;
+            // Take 1 each from bank (skip if bank empty).
+            for r in [r1, r2] {
+                let ri = r as usize;
+                if state.bank[ri] > 0 {
+                    state.bank[ri] -= 1;
+                    state.hands[pi][ri] += 1;
+                }
+            }
+        }
+        (GamePhase::Main, Action::PlayVpCard) => {
+            // VP cards are applied immediately at buy. PlayVpCard is a no-op
+            // for compatibility with action-list iteration.
+        }
         (GamePhase::Main, Action::EndTurn) => {
+            // Reset per-turn flags.
+            for p in 0..4 {
+                state.dev_cards_just_bought[p] = false;
+                state.dev_card_played_this_turn[p] = false;
+            }
             events.push(GameEvent::TurnEnded { player: state.current_player });
             state.current_player = (state.current_player + 1) % 4;
             state.turn += 1;
@@ -335,6 +443,7 @@ fn produce_resources(state: &mut GameState, roll: u8, events: &mut Vec<GameEvent
 const SETTLEMENT_COST: [u8; 5] = [1, 1, 1, 1, 0]; // wood,brick,sheep,wheat,ore
 const CITY_COST: [u8; 5] =       [0, 0, 0, 2, 3];
 const ROAD_COST: [u8; 5] =       [1, 1, 0, 0, 0];
+const DEV_CARD_COST: [u8; 5] =   [0, 0, 1, 1, 1]; // 1 sheep + 1 wheat + 1 ore
 
 fn can_afford(hand: &[u8; 5], cost: &[u8; 5]) -> bool {
     hand.iter().zip(cost).all(|(h, c)| h >= c)
@@ -394,6 +503,41 @@ fn legal_actions_main(state: &GameState) -> Vec<Action> {
             }
         }
     }
+    // Buy dev card: need 1 sheep + 1 wheat + 1 ore AND deck non-empty.
+    if can_afford(hand, &DEV_CARD_COST)
+        && state.dev_card_deck_remaining.iter().any(|&n| n > 0)
+    {
+        out.push(Action::BuyDevCard);
+    }
+
+    // Play dev card: only one per turn (except VP, which we apply immediately on buy).
+    // Can't play a card the turn you bought it.
+    if !state.dev_card_played_this_turn[pi] && !state.dev_cards_just_bought[pi] {
+        use crate::state::*;
+        if state.dev_cards_held[pi][DEV_CARD_KNIGHT] > 0 {
+            out.push(Action::PlayKnight);
+        }
+        if state.dev_cards_held[pi][DEV_CARD_ROAD_BUILDING] > 0 {
+            out.push(Action::PlayRoadBuilding);
+        }
+        if state.dev_cards_held[pi][DEV_CARD_MONOPOLY] > 0 {
+            for r in 0..5u8 {
+                out.push(Action::PlayMonopoly(idx_to_resource(r)));
+            }
+        }
+        if state.dev_cards_held[pi][DEV_CARD_YOP] > 0 {
+            for r1 in 0..5u8 {
+                for r2 in 0..5u8 {
+                    out.push(Action::PlayYearOfPlenty(idx_to_resource(r1), idx_to_resource(r2)));
+                }
+            }
+        }
+        // VP card: applied at buy time; PlayVpCard exists for explicit reveal but is no-op.
+        if state.dev_cards_held[pi][DEV_CARD_VP] > 0 {
+            out.push(Action::PlayVpCard);
+        }
+    }
+
     if can_afford(hand, &ROAD_COST) && state.roads_built[pi] < MAX_ROADS {
         for e in 0u8..72 {
             if is_legal_road_for_player(state, e, p) {
@@ -583,6 +727,38 @@ pub fn update_longest_road(state: &mut GameState) {
             state.vp[new as usize] += 2;
         }
         state.longest_road_holder = new_holder;
+    }
+}
+
+/// Recompute largest_army_holder + transferable +2 VP, just like longest road.
+/// Holder is the strict-max-knights-played owner with knights >= 3.
+pub fn update_largest_army(state: &mut GameState) {
+    let max_k = state.knights_played.iter().copied().max().unwrap_or(0);
+    if max_k < 3 {
+        if let Some(prev) = state.largest_army_holder.take() {
+            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+        }
+        return;
+    }
+    let candidates: Vec<u8> = (0..4u8)
+        .filter(|&p| state.knights_played[p as usize] == max_k)
+        .collect();
+    let new_holder = if candidates.len() == 1 {
+        Some(candidates[0])
+    } else {
+        match state.largest_army_holder {
+            Some(prev) if candidates.contains(&prev) => Some(prev),
+            _ => None,
+        }
+    };
+    if new_holder != state.largest_army_holder {
+        if let Some(prev) = state.largest_army_holder {
+            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+        }
+        if let Some(new) = new_holder {
+            state.vp[new as usize] += 2;
+        }
+        state.largest_army_holder = new_holder;
     }
 }
 
