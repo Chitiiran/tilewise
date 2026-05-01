@@ -99,11 +99,15 @@ class CatanState(pyspiel.State):
         return self._engine.is_terminal()
 
     def current_player(self) -> int:
-        if self.is_terminal():
+        # M1 fast path: one PyO3 call returns (is_terminal, is_chance_pending,
+        # cp). MCTSBot calls current_player() before every node visit, so this
+        # collapses 3 FFI hops into 1.
+        is_term, is_chance, cp = self._engine.query_status()
+        if is_term:
             return pyspiel.PlayerId.TERMINAL
-        if self._engine.is_chance_pending():
+        if is_chance:
             return pyspiel.PlayerId.CHANCE
-        return int(self._engine.current_player())
+        return int(cp)
 
     def is_chance_node(self) -> bool:
         return self._engine.is_chance_pending()
@@ -129,11 +133,12 @@ class CatanState(pyspiel.State):
         return [int(a) for a in self._engine.legal_actions()]
 
     def _apply_action(self, action) -> None:
-        action = int(action)
-        if self._engine.is_chance_pending():
-            self._engine.apply_chance_outcome(action)
-        else:
-            self._engine.step(action)
+        # M1 fast path: Rust dispatches step() vs apply_chance_outcome() based
+        # on its own state, eliminating the is_chance_pending() round-trip.
+        # Returns post-status but we discard it here because the OpenSpiel
+        # protocol queries current_player() right after; that path is already
+        # the one-call query_status fast path above.
+        self._engine.apply_action_smart(int(action))
 
     def _action_to_string(self, player, action) -> str:
         return f"a{int(action)}"

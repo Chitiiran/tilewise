@@ -95,6 +95,7 @@ def main() -> int:
     ok, _, err = run(
         [sys.executable, "-m", "pytest",
          "tests/test_engine_regression.py",
+         "tests/test_engine_combined_calls.py",  # M1 fast-path tests
          "tests/test_recorder.py", "tests/test_recorder_schema_v2.py",
          "tests/test_dataset.py", "tests/test_state_to_pyg.py",
          "tests/test_gnn_model.py", "tests/test_gnn_evaluator.py",

@@ -69,6 +69,37 @@ impl PyEngine {
         self.inner.apply_chance_outcome(value);
     }
 
+    /// M1 combined call: returns (is_terminal, is_chance_pending, current_player)
+    /// in one PyO3 round-trip. The OpenSpiel adapter's `current_player()`
+    /// previously made 3 separate FFI calls per query; this collapses them.
+    fn query_status(&self) -> (bool, bool, u8) {
+        (
+            self.inner.is_terminal(),
+            self.inner.is_chance_pending(),
+            self.inner.state.current_player,
+        )
+    }
+
+    /// M1 combined call: dispatches `step()` or `apply_chance_outcome()`
+    /// based on the engine's current phase, then returns the post-action
+    /// status tuple. Replaces the adapter's
+    ///     if engine.is_chance_pending(): engine.apply_chance_outcome(a)
+    ///     else: engine.step(a)
+    /// pattern + the immediate-next status read MCTS does after every step.
+    /// One PyO3 call instead of 4-5.
+    fn apply_action_smart(&mut self, action_id: u32) -> (bool, bool, u8) {
+        if self.inner.is_chance_pending() {
+            self.inner.apply_chance_outcome(action_id);
+        } else {
+            self.inner.step(action_id);
+        }
+        (
+            self.inner.is_terminal(),
+            self.inner.is_chance_pending(),
+            self.inner.state.current_player,
+        )
+    }
+
     fn random_rollout_to_terminal(&mut self, rollout_seed: u64) -> [f32; 4] {
         self.inner.random_rollout_to_terminal(rollout_seed)
     }
