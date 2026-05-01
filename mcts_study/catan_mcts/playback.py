@@ -496,7 +496,8 @@ INDEX_HTML = r"""<!doctype html>
 const PLAYER_COLORS = ["#cc3333", "#3366cc", "#33aa55", "#cc8833"];
 const SEAT_NAMES = {{SEAT_NAMES}};
 const RESOURCES = ['🪵', '🧱', '🐑', '🌾', '⛰️'];
-const DEV_NAMES = ['Knight', 'RoadBldg', 'Mono', 'YOP', 'VP'];
+const DEV_NAMES = ['Knight', 'Road Building', 'Monopoly', 'Year of Plenty', 'Victory Point'];
+const DEV_EMOJI = ['⚔️', '🛣️', '📜', '🌽', '⭐'];
 const PORT_NAMES = ['3:1', 'Wd 2:1', 'Bk 2:1', 'Sh 2:1', 'Wh 2:1', 'Or 2:1'];
 let layout = null, overlays = null, cur = 0, playing = false, playTimer = null;
 
@@ -525,7 +526,11 @@ function fmtBreakdown(arr) {
 
 function fmtDev(arr) {
   const parts = [];
-  for (let k = 0; k < 5; k++) if (arr[k] > 0) parts.push(`${DEV_NAMES[k]}×${arr[k]}`);
+  for (let k = 0; k < 5; k++) {
+    if (arr[k] > 0) {
+      parts.push(`<span title="${DEV_NAMES[k]}">${DEV_EMOJI[k]}×${arr[k]}</span>`);
+    }
+  }
   return parts.length ? parts.join(' ') : '<span class="dim">none</span>';
 }
 
