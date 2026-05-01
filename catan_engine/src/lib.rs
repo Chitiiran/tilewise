@@ -79,26 +79,31 @@ impl PyEngine {
 
     fn observation<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let viewer = self.inner.state.current_player;
-        let obs = observation::build_observation(&self.inner.state, viewer);
-        let d = PyDict::new_bound(py);
-        d.set_item(
-            "hex_features",
-            PyArray2::from_vec2_bound(py, &chunks(&obs.hex_features, observation::F_HEX))?,
-        )?;
-        d.set_item(
-            "vertex_features",
-            PyArray2::from_vec2_bound(py, &chunks(&obs.vertex_features, observation::F_VERT))?,
-        )?;
-        d.set_item(
-            "edge_features",
-            PyArray2::from_vec2_bound(py, &chunks(&obs.edge_features, observation::F_EDGE))?,
-        )?;
-        d.set_item("scalars", obs.scalars.into_pyarray_bound(py))?;
-        d.set_item(
-            "legal_mask",
-            obs.legal_mask.iter().map(|&b| b as u8).collect::<Vec<u8>>().into_pyarray_bound(py),
-        )?;
-        Ok(d)
+        self.observation_inner(py, viewer)
+    }
+
+    /// Observation tensors with explicit viewer (Phase 1.4 / wishlist §2c).
+    /// Unlocks 4× perspective-rotated training data per game.
+    fn observation_for<'py>(&self, py: Python<'py>, viewer: u8) -> PyResult<Bound<'py, PyDict>> {
+        if viewer >= 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("viewer must be 0..3, got {}", viewer)
+            ));
+        }
+        self.observation_inner(py, viewer)
+    }
+
+    /// Bank's remaining resources, [wood, brick, sheep, wheat, ore].
+    /// Wishlist §2a — replaces Python-side reconstruction in scratch_card_tracker.py.
+    fn bank<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u8>> {
+        self.inner.state.bank.to_vec().into_pyarray_bound(py)
+    }
+
+    /// All 4 players' hands in absolute seat order (no perspective rotation).
+    /// Returns a 4×5 numpy array. Wishlist §2b.
+    fn all_hands<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<u8>>> {
+        let v: Vec<Vec<u8>> = self.inner.state.hands.iter().map(|h| h.to_vec()).collect();
+        Ok(PyArray2::from_vec2_bound(py, &v)?)
     }
 
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -122,9 +127,52 @@ impl PyEngine {
             pd.set_item("times_robbed", s.players[p].times_robbed)?;
             pd.set_item("robber_moves", s.players[p].robber_moves)?;
             pd.set_item("discards_triggered", s.players[p].discards_triggered)?;
+            // Wishlist §2d: previously-tracked-but-not-surfaced fields.
+            pd.set_item(
+                "resources_gained",
+                s.players[p].resources_gained.to_vec().into_pyarray_bound(py),
+            )?;
+            pd.set_item(
+                "resources_gained_from_robber",
+                s.players[p].resources_gained_from_robber.to_vec().into_pyarray_bound(py),
+            )?;
+            pd.set_item(
+                "resources_lost_to_robber",
+                s.players[p].resources_lost_to_robber.to_vec().into_pyarray_bound(py),
+            )?;
+            pd.set_item(
+                "resources_lost_to_discard",
+                s.players[p].resources_lost_to_discard.to_vec().into_pyarray_bound(py),
+            )?;
             players.append(pd)?;
         }
         d.set_item("players", players)?;
+        Ok(d)
+    }
+}
+
+impl PyEngine {
+    /// Shared implementation for observation() and observation_for().
+    fn observation_inner<'py>(&self, py: Python<'py>, viewer: u8) -> PyResult<Bound<'py, PyDict>> {
+        let obs = observation::build_observation(&self.inner.state, viewer);
+        let d = PyDict::new_bound(py);
+        d.set_item(
+            "hex_features",
+            PyArray2::from_vec2_bound(py, &chunks(&obs.hex_features, observation::F_HEX))?,
+        )?;
+        d.set_item(
+            "vertex_features",
+            PyArray2::from_vec2_bound(py, &chunks(&obs.vertex_features, observation::F_VERT))?,
+        )?;
+        d.set_item(
+            "edge_features",
+            PyArray2::from_vec2_bound(py, &chunks(&obs.edge_features, observation::F_EDGE))?,
+        )?;
+        d.set_item("scalars", obs.scalars.into_pyarray_bound(py))?;
+        d.set_item(
+            "legal_mask",
+            obs.legal_mask.iter().map(|&b| b as u8).collect::<Vec<u8>>().into_pyarray_bound(py),
+        )?;
         Ok(d)
     }
 }
