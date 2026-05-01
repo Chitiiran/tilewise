@@ -436,6 +436,15 @@ INDEX_HTML = r"""<!doctype html>
            font-size: 11px; background: #f0f0f0; border: 1px solid #ccc; }
   .badge.lr { background: #d4f7d4; border-color: #6c6; }
   .badge.la { background: #f7d4d4; border-color: #c66; }
+  .seat-strip { display: flex; gap: 4px; margin: 0 0 6px 0; font-size: 11px; }
+  .seat-chip {
+    flex: 1; padding: 4px 6px; border-radius: 4px;
+    color: white; font-weight: 600; display: flex; justify-content: space-between;
+    align-items: center; min-width: 0;
+  }
+  .seat-chip.cp { outline: 2px solid #ffd633; outline-offset: 1px; }
+  .seat-chip .vp { background: rgba(255,255,255,0.25); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+  .seat-chip .ttl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dim { color: #999; }
 </style>
 </head>
@@ -472,6 +481,7 @@ INDEX_HTML = r"""<!doctype html>
   </div>
   <div class="players-col panel">
     <h3 style="margin:0 0 6px; font-size:14px;">Players</h3>
+    <div class="seat-strip" id="seatStrip"></div>
     <table class="vp" id="vpTable"></table>
     <p style="font-size:11px; color:#666; margin:8px 0 0;">
       v2: every value is read directly from the engine — hand breakdowns,
@@ -610,6 +620,24 @@ function renderState() {
     html += `<tr style="background:#f0f0f0;border-top:2px solid #aaa">` +
             `<td colspan="2" style="font-style:italic;color:#555">🏦 bank (${bankTotal})</td>` +
             `<td colspan="5">${fmtBreakdown(st.bank)}</td></tr>`;
+  }
+  let stripHtml = '';
+  for (let i = 0; i < 4; i++) {
+    const isCp = (st.cp === i);
+    let badges = '';
+    if (st.la_holder === i) badges += ' ⚔️';
+    if (st.lr_holder === i) badges += ' 🛣️';
+    // Emit literal `class="seat-chip"` so static-HTML scanners can match the
+    // base class; the `cp` modifier is added via classList below.
+    stripHtml += `<div class="seat-chip" style="background:${PLAYER_COLORS[i]}">` +
+                 `<span class="ttl">P${i}${badges}</span>` +
+                 `<span class="vp">${st.vp[i]} VP</span>` +
+                 `</div>`;
+  }
+  const seatStrip = document.getElementById('seatStrip');
+  seatStrip.innerHTML = stripHtml;
+  for (let i = 0; i < 4; i++) {
+    if (st.cp === i) seatStrip.children[i].classList.add('cp');
   }
   vpTable.innerHTML = html;
 }
