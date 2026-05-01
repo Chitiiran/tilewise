@@ -5,8 +5,7 @@ use crate::actions::Action;
 use crate::board::Resource;
 use crate::events::GameEvent;
 use crate::rng::Rng;
-use crate::state::GameState;
-use crate::state::GamePhase;
+use crate::state::{GameState, GamePhase, N_RESOURCES};
 
 pub fn legal_actions(state: &GameState) -> Vec<Action> {
     // Implemented incrementally across Phases 4–5, dispatching on state.phase.
@@ -153,7 +152,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             let d1 = rng.inner().gen_range(1u8..=6);
             let d2 = rng.inner().gen_range(1u8..=6);
             let roll = d1 + d2;
-            let mut sub = apply_dice_roll(state, roll);
+            let mut sub = apply_dice_roll(state, roll, rng);
             events.append(&mut sub);
         }
         (GamePhase::Main, Action::BuildSettlement(v)) => {
@@ -368,22 +367,58 @@ fn check_win(state: &mut GameState, events: &mut Vec<GameEvent>) {
 
 /// Apply a specific dice roll value (used by both the rng-driven Action::RollDice path
 /// and the env-driven apply_chance_outcome path, so behavior is single-sourced).
-pub(crate) fn apply_dice_roll(state: &mut GameState, roll: u8) -> Vec<GameEvent> {
+///
+/// **v2 simplification (§A-bis 8a):** when a 7 is rolled, each player owing a
+/// discard auto-discards floor(hand/2) random cards in this same step. No
+/// multi-step Discard phase. Uses the engine's RNG so the discards are
+/// deterministic given the dice seed.
+pub fn apply_dice_roll(
+    state: &mut GameState,
+    roll: u8,
+    rng: &mut Rng,
+) -> Vec<GameEvent> {
     let mut events = Vec::new();
     events.push(GameEvent::DiceRolled { roll });
     if roll == 7 {
-        let mut remaining = [0u8; 4];
+        // Collect (player, n_to_discard) for everyone owing.
+        let mut owe = [0u8; 4];
         for p in 0..4usize {
             let total: u8 = state.hands[p].iter().sum();
             if total > 7 {
-                remaining[p] = total / 2;
+                owe[p] = total / 2;
             }
         }
-        state.phase = if remaining.iter().any(|&n| n > 0) {
-            GamePhase::Discard { remaining }
-        } else {
-            GamePhase::MoveRobber
-        };
+        // Apply random discards inline.
+        for p in 0..4usize {
+            for _ in 0..owe[p] {
+                let total: u8 = state.hands[p].iter().sum();
+                if total == 0 { break; }
+                // Pick a random flat card index (0..total) and find which resource it lands on.
+                use rand::Rng as _;
+                let pick = rng.inner().gen_range(0u8..total);
+                let mut acc = 0u8;
+                for ri in 0..N_RESOURCES {
+                    let count = state.hands[p][ri];
+                    if pick < acc + count {
+                        state.hands[p][ri] -= 1;
+                        state.bank[ri] += 1;
+                        let res = match ri {
+                            0 => crate::board::Resource::Wood,
+                            1 => crate::board::Resource::Brick,
+                            2 => crate::board::Resource::Sheep,
+                            3 => crate::board::Resource::Wheat,
+                            4 => crate::board::Resource::Ore,
+                            _ => unreachable!(),
+                        };
+                        events.push(GameEvent::Discarded { player: p as u8, resource: res });
+                        break;
+                    }
+                    acc += count;
+                }
+            }
+        }
+        // Skip the multi-step Discard phase entirely.
+        state.phase = GamePhase::MoveRobber;
     } else {
         produce_resources(state, roll, &mut events);
         state.phase = GamePhase::Main;

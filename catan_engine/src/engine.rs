@@ -149,7 +149,7 @@ impl Engine {
                 let roll = u8::try_from(value).expect("dice roll out of u8 range");
                 assert!((2..=12).contains(&roll), "invalid dice sum {roll}");
                 self.history.push(0x8000_0000 | value);
-                crate::rules::apply_dice_roll(&mut self.state, roll)
+                crate::rules::apply_dice_roll(&mut self.state, roll, &mut self.rng)
             }
             GamePhase::Steal { from_options } => {
                 let victim = (value / 256) as u8;
