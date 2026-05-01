@@ -450,8 +450,15 @@ INDEX_HTML = r"""<!doctype html>
   button.active { background: #ffe97a; }
   input[type=range] { flex: 1; min-width: 200px; }
   #status { font-family: monospace; font-size: 13px; }
-  #narration { padding: 6px 10px; background: #fff; border: 1px solid #ddd; border-radius: 4px;
-               margin: 6px 0; font-family: monospace; font-size: 13px; min-height: 22px; }
+  #narration { padding: 6px 10px; background: #1f2a3a; color: #f0e8c8;
+               border: 1px solid #2c3a52; border-radius: 4px;
+               margin: 6px 0; font-family: ui-monospace, monospace; font-size: 13px; min-height: 22px; }
+  .dice-chip { background: #ffd633; color: #1f2a3a; padding: 0 6px;
+               border-radius: 3px; font-weight: 700; margin-right: 6px; }
+  .seat-tag-0 { color: #ff8c8c; font-weight: 700; }
+  .seat-tag-1 { color: #88a6e6; font-weight: 700; }
+  .seat-tag-2 { color: #88d4a0; font-weight: 700; }
+  .seat-tag-3 { color: #e6b07a; font-weight: 700; }
   #boardWrap { position: relative; display: block; width: 700px; max-width: 100%; }
   #board { display: block; width: 100%; height: auto; }
   svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -572,6 +579,21 @@ function fmtPorts(arr) {
   return parts.length ? parts.join(', ') : '<span class="dim">none</span>';
 }
 
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function formatNarration(s) {
+  let m = s.match(/^CHANCE: dice → (\d+)$/);
+  if (m) return `<span class="dice-chip">🎲 ${m[1]}</span>dice rolled`;
+  m = s.match(/^CHANCE: steal p(\d) card(\d+)$/);
+  if (m) return `<span class="dice-chip">🥷</span>steal from <span class="seat-tag-${m[1]}">P${m[1]}</span> (card ${m[2]})`;
+  m = s.match(/^P(\d) (.*)$/);
+  if (m) return `<span class="seat-tag-${m[1]}">P${m[1]}</span> ${escapeHtml(m[2])}`;
+  return escapeHtml(s);
+}
+
 function renderState() {
   if (!overlays || !layout) return;
   const st = overlays.states[cur];
@@ -626,7 +648,7 @@ function renderState() {
   }
 
   svg.innerHTML = body;
-  narr.textContent = st.n;
+  narr.innerHTML = formatNarration(st.n);
   let cpStr = st.cp >= 0 ? `cp=${st.cp} (${SEAT_NAMES[st.cp]})` : 'terminal';
   status.textContent = `step ${cur} / ${overlays.n_steps - 1}  |  ${cpStr}  |  phase=${st.phase}`;
   slider.value = cur;

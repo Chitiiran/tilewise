@@ -70,10 +70,13 @@ def test_render_includes_polish_markers(minimal_run_dir, tmp_path):
     for emoji in ['⚔️', '🛣️', '📜', '🌽', '⭐']:
         assert emoji in html, f"missing dev-card emoji {emoji!r}"
 
-    # Dark narration bar with dice chip (Task 7)
+    # Dark narration bar with dice chip (Task 7). seat-tag-N classes are
+    # emitted dynamically via JS template literals, so we assert the CSS
+    # selector text in the static <style> block rather than the rendered
+    # class="..." attribute.
     assert 'class="dice-chip"' in html
-    assert 'class="seat-tag-0"' in html
-    assert 'class="seat-tag-3"' in html
+    assert '.seat-tag-0' in html
+    assert '.seat-tag-3' in html
 
-    # Building / road glyph polish (Task 6) — settlement-door rect class hook
+    # Building / road glyph polish (Task 6) — darker palette identifier.
     assert 'PLAYER_COLORS_DARK' in html
