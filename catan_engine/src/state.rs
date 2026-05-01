@@ -46,6 +46,14 @@ pub const MAX_SETTLEMENTS: u8 = 5;
 pub const MAX_CITIES: u8 = 4;
 pub const MAX_ROADS: u8 = 15;
 
+/// Per-turn cap on player-to-player trade proposals (`Action::ProposeTrade`).
+/// Without a cap MCTS can loop A→B then B→A forever — total resources are
+/// conserved so no progress is made and no terminal reward arrives, so the
+/// search picks an arbitrary trade direction at the root and the same
+/// pathology happens on the next ply. Cap at 4 (generous for real play
+/// where 1-3 trades per turn is typical).
+pub const MAX_TRADES_PER_TURN: u8 = 4;
+
 // Port bit positions in state.ports_owned[p].
 pub const PORT_BIT_GENERIC: u8 = 1 << 0;
 pub const PORT_BIT_WOOD: u8 = 1 << 1;
@@ -181,6 +189,12 @@ pub struct GameState {
     /// Knights played per player (also tracked in dev_cards_played[p][0],
     /// but this is the cached number for largest-army comparisons).
     pub knights_played: [u8; N_PLAYERS],
+
+    /// Number of player-to-player trade proposals made by the current
+    /// player in the current turn. Capped at MAX_TRADES_PER_TURN. Reset on
+    /// EndTurn. Prevents the v2 stuck-game pathology where MCTS loops
+    /// trades A→B then B→A forever.
+    pub trades_this_turn: u8,
     /// Player ID who currently holds the +2 VP for largest army.
     /// Some(p) iff p has the strict max knights_played AND that count >= 3.
     pub largest_army_holder: Option<u8>,
@@ -285,6 +299,7 @@ impl GameState {
             dev_card_deck_remaining: DEV_CARD_DECK_STANDARD,
             knights_played: [0; N_PLAYERS],
             largest_army_holder: None,
+            trades_this_turn: 0,
             legal_mask_cached: crate::actions::LegalMask::new(),
             legal_mask_dirty: true,
         }

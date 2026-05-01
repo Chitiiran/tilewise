@@ -26,17 +26,19 @@ fn regression_hashes_are_stable() {
     // First-run mode: any expected hash of 0 is treated as "fill me in" and
     // the actual hash is printed so it can be copied into this array.
     // After that, any change that flips a hash is a flagged behavioral change.
-    // v2 hashes: with the deterministic legal[0] policy + new rules (caps,
-    // longest road, dev cards, trades), all seeds converge to the same hash
-    // because the game-state trajectory is fully determined by the policy +
-    // engine-RNG steam from the seed, and the v2 rule changes pulled different
-    // seeds into the same stable attractor. This is acceptable as a regression
-    // gate: any rule/encoding change still flips this hash.
+    // v2 hashes (post-trade-cap): the per-turn trade cap (MAX_TRADES_PER_TURN=4)
+    // broke the pathological convergence to a single attractor that earlier v2
+    // had — different seeds now produce different trajectories because the
+    // legal[0] policy can no longer get stuck in an infinite ProposeTrade loop.
+    // Post-P2 (real port positions). The new perimeter port layout shifted
+    // setup-phase placement value, which the deterministic legal[0] policy
+    // reacts to — different seeds now produce 3 distinct hashes (better
+    // diversity than the pre-trade-cap single-attractor regime).
     let expected = [
-        (0u64, 5737947618732640702u64),
-        (1u64, 5737947618732640702u64),
-        (42u64, 5737947618732640702u64),
-        (12345u64, 5737947618732640702u64),
+        (0u64,     4159352959760986152u64),
+        (1u64,     9485599967954966871u64),
+        (42u64,    4158781906329660473u64),
+        (12345u64, 4158781906329660473u64),
     ];
     for (seed, expected_hash) in expected {
         let actual = game_hash(seed);

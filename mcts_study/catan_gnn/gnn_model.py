@@ -1,7 +1,7 @@
 """GnnModel: heterogeneous PyG body + value head + policy head.
 
 Spec §2-3 architecture:
-  per-type linear input projection (hex 8->32, vertex 7->32, edge 6->32)
+  per-type linear input projection (hex 8->32, vertex 13->32, edge 6->32)
   -> N x HeteroConv(SAGEConv per edge type, hidden_dim)
   -> per-type mean-pool over nodes (3 x [B, hidden_dim])
   -> concat with scalars (N_SCALARS) -> final linear -> embedding [128]
@@ -24,7 +24,7 @@ from torch_geometric.utils import scatter
 from catan_mcts import ACTION_SPACE_SIZE
 
 
-F_HEX, F_VERT, F_EDGE = 8, 7, 6
+F_HEX, F_VERT, F_EDGE = 8, 13, 6  # F_VERT widened P3 (port kind one-hot)
 N_SCALARS = 59  # v2 expanded scalars (was 22 in v1)
 EMBED_DIM = 128
 

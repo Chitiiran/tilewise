@@ -367,6 +367,10 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             }
             // Silent if no one accepts. Could emit GameEvent::TradeRejected later.
             let _ = accepted;
+            // Per-turn cap: prevents the trade-loop pathology where MCTS
+            // alternates A→B then B→A forever (total resources conserved,
+            // no terminal reward, no progress). Reset on EndTurn.
+            state.trades_this_turn = state.trades_this_turn.saturating_add(1);
         }
         (GamePhase::Main, Action::EndTurn) => {
             // Reset per-turn flags.
@@ -374,6 +378,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
                 state.dev_cards_just_bought[p] = false;
                 state.dev_card_played_this_turn[p] = false;
             }
+            state.trades_this_turn = 0;
             events.push(GameEvent::TurnEnded { player: state.current_player });
             state.current_player = (state.current_player + 1) % 4;
             state.turn += 1;
@@ -563,19 +568,22 @@ fn legal_actions_main(state: &GameState) -> Vec<Action> {
     }
 
     // Player-to-player 1-for-1 trade (§A6 simplified).
-    // Proposer must have ≥1 of give, AND at least one opponent must have ≥1 of get.
-    for give_idx in 0..5u8 {
-        if hand[give_idx as usize] >= 1 {
-            for get_idx in 0..5u8 {
-                if get_idx == give_idx { continue; }
-                let any_opp_has = (0..4u8)
-                    .filter(|&opp| opp != p)
-                    .any(|opp| state.hands[opp as usize][get_idx as usize] >= 1);
-                if any_opp_has {
-                    out.push(Action::ProposeTrade {
-                        give: idx_to_resource(give_idx),
-                        get: idx_to_resource(get_idx),
-                    });
+    // Proposer must have ≥1 of give, AND at least one opponent must have ≥1 of get,
+    // AND the per-turn trade cap must not be reached (MAX_TRADES_PER_TURN).
+    if state.trades_this_turn < crate::state::MAX_TRADES_PER_TURN {
+        for give_idx in 0..5u8 {
+            if hand[give_idx as usize] >= 1 {
+                for get_idx in 0..5u8 {
+                    if get_idx == give_idx { continue; }
+                    let any_opp_has = (0..4u8)
+                        .filter(|&opp| opp != p)
+                        .any(|opp| state.hands[opp as usize][get_idx as usize] >= 1);
+                    if any_opp_has {
+                        out.push(Action::ProposeTrade {
+                            give: idx_to_resource(give_idx),
+                            get: idx_to_resource(get_idx),
+                        });
+                    }
                 }
             }
         }

@@ -23,7 +23,7 @@ def test_node_feature_shapes():
     obs = _fresh_observation()
     data = state_to_pyg(obs)
     assert data["hex"].x.shape == (19, 8)
-    assert data["vertex"].x.shape == (54, 7)
+    assert data["vertex"].x.shape == (54, 13)
     assert data["edge"].x.shape == (72, 6)
     # Scalars stored as graph-level attribute with leading batch dim [1, N_SCALARS]
     # so PyG Batch collation yields [B, N_SCALARS] across PyG versions.

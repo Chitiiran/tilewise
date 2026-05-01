@@ -1,4 +1,4 @@
-use catan_engine::observation::{build_observation, N_SCALARS};
+use catan_engine::observation::{build_observation, F_VERT, N_SCALARS};
 use catan_engine::Engine;
 
 #[test]
@@ -62,6 +62,42 @@ fn scalars_perspective_rotation_consistent() {
     // VP[viewer] is at index 8 in scalars. After Setup, all four are 0.
     assert_eq!(obs0.scalars[8], engine.state.vp[0] as f32);
     assert_eq!(obs1.scalars[8], engine.state.vp[1] as f32);
+}
+
+#[test]
+fn vertex_features_widened_to_13_for_port_kind() {
+    // P3: vertex_features now carries [empty, settle, city, owner0..3, port_generic,
+    // port_wood, port_brick, port_sheep, port_wheat, port_ore] = 13 dims.
+    assert_eq!(F_VERT, 13);
+    let engine = Engine::new(42);
+    let obs = build_observation(&engine.state, 0);
+    assert_eq!(obs.vertex_features.len(), 54 * F_VERT);
+}
+
+#[test]
+fn vertex_features_set_port_flags_for_port_vertices() {
+    // Each of the 9 ports occupies 2 vertices. After P2 the canonical layout
+    // is fixed; we pick port vertex 0 (generic 3:1) and port vertex 11 (sheep)
+    // and assert the right one-hot bit is set in their feature row.
+    let engine = Engine::new(42);
+    let obs = build_observation(&engine.state, 0);
+    // Port-kind one-hot starts at offset 7 within F_VERT.
+    // Layout: [generic, wood, brick, sheep, wheat, ore]
+    let port_kind_offset = 7;
+    // Vertex 0 is on the (0,4) generic 3:1 port.
+    let v0 = 0;
+    assert_eq!(obs.vertex_features[v0 * F_VERT + port_kind_offset + 0], 1.0,
+        "vertex 0 should have generic-port flag set");
+    // Vertex 11 is on the (11,16) sheep 2:1 port.
+    let v11 = 11;
+    assert_eq!(obs.vertex_features[v11 * F_VERT + port_kind_offset + 3], 1.0,
+        "vertex 11 should have sheep-port flag set (offset 7+3)");
+    // Vertex 8 is interior (no port).
+    let v8 = 8;
+    for k in 0..6 {
+        assert_eq!(obs.vertex_features[v8 * F_VERT + port_kind_offset + k], 0.0,
+            "interior vertex 8 should have no port flags set (k={})", k);
+    }
 }
 
 #[test]

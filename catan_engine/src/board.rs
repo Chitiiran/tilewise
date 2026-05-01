@@ -2,7 +2,7 @@
 //! Built once at engine startup; never mutated.
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Resource {
     Wood = 0,
     Brick = 1,
@@ -28,7 +28,7 @@ pub enum PortKind {
     Specific(Resource),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Port {
     pub kind: PortKind,
     pub vertices: [u8; 2],
@@ -154,24 +154,39 @@ impl Board {
 }
 
 /// Standard Catan port layout: 9 ports (4 generic 3:1 + 5 specific 2:1)
-/// placed on outer-perimeter vertex pairs.
+/// placed on outer-perimeter edges.
 ///
-/// Vertex pairs below are placeholder positions on the outer perimeter; they
-/// will be tuned in Phase 2.7 once we have a definitive port-position spec.
-/// What matters for the rules is that each port has 2 fixed vertices, and
-/// players own ports by occupying either vertex with a settlement/city.
+/// Vertex IDs match the engine's perimeter walk (clockwise from top-left
+/// corner of hex 0). The 30 perimeter edges are walked in order; ports
+/// occupy edges at indices [0, 3, 6, 9, 13, 16, 19, 22, 26] — spacing of
+/// mostly 3 edges with three 4-edge gaps, summing to 30. The kinds rotate
+/// in the published Settlers of Catan order: generic-brick-generic-wood-
+/// generic-wheat-ore-generic-sheep. This is canonical for the standard
+/// 4-3-4-3-4 board (4 generic + 5 specific = one per resource).
+///
+/// Players own a port iff they have a settlement or city on either of its
+/// two vertices.
 fn standard_ports() -> [Port; 9] {
     use Resource::*;
     [
-        Port { kind: PortKind::Generic, vertices: [0, 1] },
-        Port { kind: PortKind::Specific(Wheat), vertices: [3, 7] },
-        Port { kind: PortKind::Generic, vertices: [12, 16] },
-        Port { kind: PortKind::Specific(Ore), vertices: [21, 25] },
-        Port { kind: PortKind::Generic, vertices: [38, 41] },
-        Port { kind: PortKind::Specific(Sheep), vertices: [45, 48] },
-        Port { kind: PortKind::Generic, vertices: [50, 53] },
-        Port { kind: PortKind::Specific(Brick), vertices: [33, 37] },
-        Port { kind: PortKind::Specific(Wood), vertices: [11, 15] },
+        // Index 0  -> edge ( 0,  4) — top-left
+        Port { kind: PortKind::Generic, vertices: [0, 4] },
+        // Index 3  -> edge ( 2,  5) — top-right area
+        Port { kind: PortKind::Specific(Brick), vertices: [2, 5] },
+        // Index 6  -> edge (10, 15) — right side upper
+        Port { kind: PortKind::Generic, vertices: [10, 15] },
+        // Index 9  -> edge (26, 32) — right side
+        Port { kind: PortKind::Specific(Wood), vertices: [26, 32] },
+        // Index 13 -> edge (46, 50) — bottom-right
+        Port { kind: PortKind::Generic, vertices: [46, 50] },
+        // Index 16 -> edge (49, 52) — bottom
+        Port { kind: PortKind::Specific(Wheat), vertices: [49, 52] },
+        // Index 19 -> edge (47, 51) — bottom-left lower
+        Port { kind: PortKind::Specific(Ore), vertices: [47, 51] },
+        // Index 22 -> edge (33, 38) — left side
+        Port { kind: PortKind::Generic, vertices: [33, 38] },
+        // Index 26 -> edge (11, 16) — left side upper
+        Port { kind: PortKind::Specific(Sheep), vertices: [11, 16] },
     ]
 }
 

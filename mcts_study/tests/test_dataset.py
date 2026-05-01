@@ -30,7 +30,7 @@ def test_dataset_item_shapes(minimal_run_dir):
     data, value, policy, legal = ds[0]
     # data is a HeteroData; check the embedded shapes
     assert data["hex"].x.shape == (19, 8)
-    assert data["vertex"].x.shape == (54, 7)
+    assert data["vertex"].x.shape == (54, 13)
     assert data["edge"].x.shape == (72, 6)
     # value: [4] in [-1, +1] U {0}
     assert value.shape == (4,)

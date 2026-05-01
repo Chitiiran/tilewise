@@ -35,7 +35,12 @@ use crate::state::{
 };
 
 pub const F_HEX: usize = 8;     // [Wood,Brick,Sheep,Wheat,Ore one-hot, dice-norm, robber, desert]
-pub const F_VERT: usize = 7;    // [empty, settle, city, owner-0..3 perspective]
+/// Per-vertex features (P3 widened):
+///   0..3   [empty, settle, city]
+///   3..7   owner one-hot (perspective-rotated by viewer)
+///   7..13  port one-hot [generic, wood, brick, sheep, wheat, ore]
+///          — all zeros if the vertex is not a port vertex.
+pub const F_VERT: usize = 13;
 pub const F_EDGE: usize = 6;    // [empty, road, owner-0..3 perspective]
 pub const N_SCALARS: usize = 59;
 
@@ -91,6 +96,21 @@ pub fn build_observation(state: &GameState, viewer: u8) -> Observation {
             vertex_features[v * F_VERT + 3 + perspective_idx(p, viewer)] = 1.0;
         } else {
             vertex_features[v * F_VERT] = 1.0;
+        }
+    }
+    // Port one-hot per vertex (offset 7..13). Fixed by board topology, not
+    // perspective-rotated. Layout: [generic, wood, brick, sheep, wheat, ore].
+    for port in state.board.ports.iter() {
+        let bit_offset: usize = match port.kind {
+            crate::board::PortKind::Generic => 0,
+            crate::board::PortKind::Specific(crate::board::Resource::Wood)  => 1,
+            crate::board::PortKind::Specific(crate::board::Resource::Brick) => 2,
+            crate::board::PortKind::Specific(crate::board::Resource::Sheep) => 3,
+            crate::board::PortKind::Specific(crate::board::Resource::Wheat) => 4,
+            crate::board::PortKind::Specific(crate::board::Resource::Ore)   => 5,
+        };
+        for &v in &port.vertices {
+            vertex_features[(v as usize) * F_VERT + 7 + bit_offset] = 1.0;
         }
     }
     let mut edge_features = vec![0.0f32; 72 * F_EDGE];

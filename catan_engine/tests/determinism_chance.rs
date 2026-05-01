@@ -45,15 +45,16 @@ fn fixed_seeds_produce_stable_hashes() {
     // + maritime + longest road + caps + instant discard). The v1 hash
     // (6756322959960289395) was for the simpler engine and is preserved in the
     // v1-archive worktree's test file.
-    let expected: [u64; 5] = [
-        16319886867818594720,
-        16319886867818594720,
-        16319886867818594720,
-        16319886867818594720,
-        16319886867818594720,
-    ];
+    // Post-P2 (real port positions) hash. Same constraint as before: all 5
+    // seeds converge under the deterministic policy + apply_chance_outcome
+    // overrides, but any rule/encoding drift flips this hash.
+    let expected: [u64; 5] = [11089910233266508416; 5];
     for (s, exp) in seeds.iter().zip(expected.iter()) {
-        assert_eq!(play_one(*s), *exp, "seed {s} hash drift");
+        let actual = play_one(*s);
+        println!("seed {s} -> {actual}");
+        if *exp != 0 {
+            assert_eq!(actual, *exp, "seed {s} hash drift");
+        }
     }
 }
 
