@@ -31,6 +31,86 @@ pub struct Board {
 impl Board {
     pub fn standard() -> Self {
         let hexes = standard_hexes();
+        Self::with_hexes(hexes)
+    }
+
+    /// Generate a balanced board using the official "ABC" method (§D16).
+    ///
+    /// Procedure (matches Klaus Teuber's published rule):
+    /// 1. Shuffle the 19 resource tiles (4 wood, 3 brick, 4 sheep, 4 wheat,
+    ///    3 ore, 1 desert) into the spiral positions.
+    /// 2. Place the number tokens A→R in their fixed sequence along the
+    ///    spiral, skipping the desert hex.
+    ///
+    /// **Spiral order:** the 19 hexes are laid out row-major in our internal
+    /// `Hex[19]` array (top-row first, etc.). The official ABC spiral starts
+    /// at the top-left corner and walks clockwise around the outer ring,
+    /// then the middle ring, then the center.
+    ///
+    /// In row-major hex indices:
+    /// - **Outer ring (12 hexes):** 0, 1, 2, 6, 11, 15, 18, 17, 16, 12, 7, 3
+    /// - **Middle ring (6 hexes):** 4, 5, 10, 14, 13, 8
+    /// - **Center:** 9
+    ///
+    /// Walking the spiral index 0..18 maps to row-major indices via SPIRAL_ORDER below.
+    pub fn generate_abc(rng_seed: u64) -> Self {
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+        use rand::rngs::SmallRng;
+
+        let mut rng = SmallRng::seed_from_u64(rng_seed);
+
+        // 1. Build the resource bag and shuffle.
+        let mut bag: Vec<Option<Resource>> = Vec::with_capacity(19);
+        for _ in 0..4 { bag.push(Some(Resource::Wood)); }
+        for _ in 0..3 { bag.push(Some(Resource::Brick)); }
+        for _ in 0..4 { bag.push(Some(Resource::Sheep)); }
+        for _ in 0..4 { bag.push(Some(Resource::Wheat)); }
+        for _ in 0..3 { bag.push(Some(Resource::Ore)); }
+        bag.push(None); // desert
+        bag.shuffle(&mut rng);
+
+        // 2. ABC token sequence (Klaus Teuber's published order, A→R).
+        const ABC_TOKENS: [u8; 18] = [
+            5, 2, 6, 3, 8, 10, 9, 12, 11, 4, 8, 10, 9, 4, 5, 6, 3, 11,
+        ];
+
+        // 3. Spiral order: which row-major hex index corresponds to spiral
+        //    position 0..18. This maps "ABC's first hex" (top-left corner)
+        //    through the outer ring, middle ring, and center.
+        const SPIRAL_ORDER: [usize; 19] = [
+            // Outer ring (clockwise from top-left).
+            0, 1, 2, 6, 11, 15, 18, 17, 16, 12, 7, 3,
+            // Middle ring (clockwise from top-left of middle).
+            4, 5, 10, 14, 13, 8,
+            // Center.
+            9,
+        ];
+
+        // 4. Place resources from the shuffled bag into spiral positions.
+        //    Then walk the spiral assigning ABC tokens (skipping desert).
+        let mut hexes = [Hex { resource: None, dice_number: None }; 19];
+
+        // Assign resources to row-major positions from spiral order.
+        for (spiral_idx, &row_major_idx) in SPIRAL_ORDER.iter().enumerate() {
+            hexes[row_major_idx].resource = bag[spiral_idx];
+        }
+
+        // Now walk the spiral and assign tokens, skipping desert.
+        let mut token_idx = 0usize;
+        for &row_major_idx in &SPIRAL_ORDER {
+            if hexes[row_major_idx].resource.is_some() {
+                hexes[row_major_idx].dice_number = Some(ABC_TOKENS[token_idx]);
+                token_idx += 1;
+            }
+        }
+        debug_assert_eq!(token_idx, 18, "ABC: should have placed exactly 18 tokens");
+
+        Self::with_hexes(hexes)
+    }
+
+    /// Shared constructor: takes a hex array, computes derived adjacency tables.
+    fn with_hexes(hexes: [Hex; 19]) -> Self {
         let hex_to_vertices = standard_hex_to_vertices();
         let edge_to_vertices = standard_edge_to_vertices();
 
