@@ -48,6 +48,13 @@ impl Engine {
             .collect()
     }
 
+    /// Legal-action bitmap. Bit i set ⇔ action i is legal in the current state.
+    /// See `actions::LegalMask`. Phase 1.2 ships the API; Phase 2+ adds incremental updates.
+    pub fn legal_mask(&self) -> crate::actions::LegalMask {
+        let ids = self.legal_actions();
+        crate::actions::LegalMask::from_action_ids(&ids)
+    }
+
     pub fn step(&mut self, action_id: u32) {
         let action = decode(action_id).expect("invalid action ID");
         self.history.push(action_id);

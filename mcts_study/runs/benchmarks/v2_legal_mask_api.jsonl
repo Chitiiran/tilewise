@@ -1,0 +1,8 @@
+[bench] running 5 workloads, version=v2_legal_mask_api, git_sha=da9926b585b8c4f3ff3ccbd390270647401a4dce
+{"workload":"bench-engine-step","version":"v2_legal_mask_api","git_sha":"da9926b585b8c4f3ff3ccbd390270647401a4dce","n_iters":5,"mean_us":0.358,"p50_us":0.351,"p99_us":0.389,"min_us":0.346,"max_us":0.389}
+{"workload":"bench-mcts-game","version":"v2_legal_mask_api","git_sha":"da9926b585b8c4f3ff3ccbd390270647401a4dce","n_iters":10,"mean_us":8304.260,"p50_us":8231.700,"p99_us":9014.000,"min_us":7977.400,"max_us":9014.000}
+{"workload":"bench-evaluator-leaf","version":"v2_legal_mask_api","git_sha":"da9926b585b8c4f3ff3ccbd390270647401a4dce","n_iters":200,"mean_us":46.720,"p50_us":44.700,"p99_us":80.800,"min_us":32.000,"max_us":89.000}
+{"workload":"bench-state-clone","version":"v2_legal_mask_api","git_sha":"da9926b585b8c4f3ff3ccbd390270647401a4dce","n_iters":5,"mean_us":0.223,"p50_us":0.223,"p99_us":0.223,"min_us":0.223,"max_us":0.223}
+[bench-legal-mask] sanity total_count=100000
+{"workload":"bench-legal-mask","version":"v2_legal_mask_api","git_sha":"da9926b585b8c4f3ff3ccbd390270647401a4dce","n_iters":5,"mean_us":0.166,"p50_us":0.166,"p99_us":0.166,"min_us":0.166,"max_us":0.166}
+[bench] done

@@ -182,6 +182,37 @@ fn bench_state_clone(version: &str, git_sha: &str) {
     print_result("bench-state-clone", version, git_sha, vec![per_clone; 5]);
 }
 
+/// bench-legal-mask: time engine.legal_mask() at a representative mid-game state.
+/// Phase 1.2: API parity baseline. Should converge to engine.legal_actions() cost
+/// today (it's just legal_actions + into-bitmap), and beat it once incremental
+/// updates land in Phase 2+.
+fn bench_legal_mask(version: &str, git_sha: &str) {
+    const N_CALLS: usize = 100_000;
+    let mut e = Engine::new(7);
+    for _ in 0..100 {
+        if e.is_terminal() { break; }
+        if e.is_chance_pending() {
+            let outcomes = e.chance_outcomes();
+            if outcomes.is_empty() { break; }
+            e.apply_chance_outcome(outcomes[0].0);
+        } else {
+            let legal = e.legal_actions();
+            if legal.is_empty() { break; }
+            e.step(pick_greedy(&legal));
+        }
+    }
+    let start = Instant::now();
+    let mut total_count = 0u32;
+    for _ in 0..N_CALLS {
+        let m = e.legal_mask();
+        total_count = total_count.wrapping_add(m.count());
+    }
+    let elapsed_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+    let per_call = elapsed_us / N_CALLS as f64;
+    eprintln!("[bench-legal-mask] sanity total_count={}", total_count); // prevent dead-code elim
+    print_result("bench-legal-mask", version, git_sha, vec![per_call; 5]);
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut version = "v1".to_string();
@@ -194,10 +225,11 @@ fn main() {
             _ => { i += 1; }
         }
     }
-    eprintln!("[bench] running 4 workloads, version={}, git_sha={}", version, git_sha);
+    eprintln!("[bench] running 5 workloads, version={}, git_sha={}", version, git_sha);
     bench_engine_step(&version, &git_sha);
     bench_mcts_game(&version, &git_sha);
     bench_evaluator_leaf(&version, &git_sha);
     bench_state_clone(&version, &git_sha);
+    bench_legal_mask(&version, &git_sha);
     eprintln!("[bench] done");
 }
