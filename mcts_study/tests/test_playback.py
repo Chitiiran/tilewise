@@ -53,3 +53,27 @@ def test_render_emits_html(minimal_run_dir, tmp_path):
     assert '"states"' in html
     # board.png artefact also produced as a side-effect of rendering.
     assert (tmp_path / "out" / "board.png").exists()
+
+
+def test_render_includes_polish_markers(minimal_run_dir, tmp_path):
+    """Polish-pass markers — see specs/2026-05-01-playback-ui-polish-design.md.
+    Each assertion corresponds to one visual region of the polish pass."""
+    seed = 4242 + 2 * 1_000
+    out = playback.render(minimal_run_dir, seed, tmp_path / "out_polish")
+    html = out.read_text(encoding="utf-8")
+
+    # Seat header strip (Task 2)
+    assert 'class="seat-chip"' in html
+    assert 'class="seat-strip"' in html
+
+    # Dev card emojis (Task 3) — codepoints embedded in the JS DEV_EMOJI literal
+    for emoji in ['⚔️', '🛣️', '📜', '🌽', '⭐']:
+        assert emoji in html, f"missing dev-card emoji {emoji!r}"
+
+    # Dark narration bar with dice chip (Task 7)
+    assert 'class="dice-chip"' in html
+    assert 'class="seat-tag-0"' in html
+    assert 'class="seat-tag-3"' in html
+
+    # Building / road glyph polish (Task 6) — settlement-door rect class hook
+    assert 'PLAYER_COLORS_DARK' in html
