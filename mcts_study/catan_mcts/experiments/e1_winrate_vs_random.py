@@ -55,11 +55,13 @@ def _run_cell(rec: SelfPlayRecorder, sims: int, seeds: list[int],
                 max_seconds=max_seconds,
             )
             if outcome.timed_out:
-                g_rec._moves.clear()
-                g_rec._finalized = True
+                # v2 salvage: keep the partial action_history + moves rows so
+                # we can replay/inspect the timed-out game later.
                 rec.skip_game(
                     seed=seed, reason="wall-clock-timeout",
                     length_in_moves=outcome.length_in_moves,
+                    action_history=outcome.action_history,
+                    moves_recorder=g_rec,
                 )
             else:
                 g_rec.finalize(

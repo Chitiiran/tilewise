@@ -39,7 +39,7 @@ def test_recorder_writes_expected_columns(tmp_path: Path):
     }
     assert set(games.columns) == {
         "seed", "winner", "final_vp", "length_in_moves", "mcts_config_id",
-        "action_history", "schema_version",
+        "action_history", "timed_out", "schema_version",
     }
     assert moves["schema_version"].iloc[0] == SCHEMA_VERSION
     assert games["schema_version"].iloc[0] == SCHEMA_VERSION
@@ -134,6 +134,95 @@ def test_recorder_skip_game_writes_csv_sidecar(tmp_path: Path):
     assert lines[0].startswith("seed,reason,length_in_moves")
     assert "1,wall-clock-timeout,15234" in lines[1]
     assert "7,rollout-cap-pathology,8401" in lines[2]
+
+
+def test_finalize_writes_per_seed_shard_immediately(tmp_path: Path):
+    """v2 salvage: finalize() must write a per-seed parquet shard on disk
+    BEFORE checkpoint/flush. Killing the process after finalize must not
+    lose data."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    with rec.game(seed=42) as g:
+        mask = np.zeros(ACTION_SPACE_SIZE, dtype=bool); mask[204] = True
+        g.record_move(
+            current_player=0, move_index=0,
+            legal_action_mask=mask,
+            mcts_visit_counts=np.zeros(ACTION_SPACE_SIZE, dtype=np.int32),
+            action_taken=204, mcts_root_value=0.0,
+        )
+        g.finalize(winner=0, final_vp=[10,5,4,3], length_in_moves=1, action_history=[100,101])
+
+    # Per-seed shards exist immediately, BEFORE any explicit flush/checkpoint.
+    games_shard = tmp_path / "games.seed=42.parquet"
+    moves_shard = tmp_path / "moves.seed=42.parquet"
+    assert games_shard.exists(), "finalize() must write per-seed games shard"
+    assert moves_shard.exists(), "finalize() must write per-seed moves shard"
+    games = pq.read_table(games_shard).to_pandas()
+    assert games["seed"].iloc[0] == 42
+    assert list(games["action_history"].iloc[0]) == [100, 101]
+
+
+def test_skip_game_keeps_action_history_and_moves(tmp_path: Path):
+    """v2 salvage: skip_game must persist whatever action_history + moves
+    rows the engine already produced, so timed-out games (often the most
+    interesting ones) are still inspectable."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    mask = np.zeros(ACTION_SPACE_SIZE, dtype=bool); mask[204] = True
+    with rec.game(seed=99) as g:
+        g.record_move(
+            current_player=0, move_index=0,
+            legal_action_mask=mask,
+            mcts_visit_counts=np.zeros(ACTION_SPACE_SIZE, dtype=np.int32),
+            action_taken=204, mcts_root_value=0.0,
+        )
+        # Caller hands the partial action_history + moves to skip_game.
+        rec.skip_game(
+            seed=99, reason="wall-clock-timeout", length_in_moves=12345,
+            action_history=[1, 2, 3, 4, 5],
+            moves_recorder=g,
+        )
+
+    # CSV row still appended for the skip log.
+    csv_path = tmp_path / "skipped.csv"
+    assert csv_path.exists()
+    assert "99,wall-clock-timeout,12345" in csv_path.read_text()
+
+    # Per-seed parquet shard written, with timed_out=True flag.
+    games_shard = tmp_path / "games.seed=99.parquet"
+    assert games_shard.exists()
+    games = pq.read_table(games_shard).to_pandas()
+    assert games["seed"].iloc[0] == 99
+    assert bool(games["timed_out"].iloc[0]) is True
+    assert list(games["action_history"].iloc[0]) == [1, 2, 3, 4, 5]
+    assert games["winner"].iloc[0] == -1
+    moves_shard = tmp_path / "moves.seed=99.parquet"
+    assert moves_shard.exists()
+    moves = pq.read_table(moves_shard).to_pandas()
+    assert len(moves) == 1
+
+
+def test_checkpoint_compacts_per_seed_shards(tmp_path: Path):
+    """v2: checkpoint(label) compacts per-seed shards into one labeled shard
+    and removes the per-seed files. Backwards-compatible API for callers."""
+    rec = SelfPlayRecorder(out_dir=tmp_path, config={})
+    for seed in [1, 2, 3]:
+        with rec.game(seed=seed) as g:
+            g.finalize(winner=0, final_vp=[10,5,4,3], length_in_moves=1,
+                       action_history=[seed * 10])
+
+    # Three per-seed shards on disk before checkpoint.
+    assert (tmp_path / "games.seed=1.parquet").exists()
+    assert (tmp_path / "games.seed=2.parquet").exists()
+    assert (tmp_path / "games.seed=3.parquet").exists()
+
+    rec.checkpoint("sims=5")
+
+    # Combined shard exists and contains all 3 games.
+    combined = pq.read_table(tmp_path / "games.sims=5.parquet").to_pandas()
+    assert sorted(combined["seed"].tolist()) == [1, 2, 3]
+    # Per-seed shards removed (compacted away).
+    assert not (tmp_path / "games.seed=1.parquet").exists()
+    assert not (tmp_path / "games.seed=2.parquet").exists()
+    assert not (tmp_path / "games.seed=3.parquet").exists()
 
 
 def test_recorder_done_seeds_round_trip(tmp_path: Path):

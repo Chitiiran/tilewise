@@ -109,11 +109,11 @@ def _run_cell(rec: SelfPlayRecorder, rot_idx: int, model: GnnModel, sims: int,
                 mcts_bot=gnn_mcts_bot, max_seconds=max_seconds,
             )
             if outcome.timed_out:
-                g_rec._moves.clear()
-                g_rec._finalized = True
                 rec.skip_game(
                     seed=seed, reason="wall-clock-timeout",
                     length_in_moves=outcome.length_in_moves,
+                    action_history=outcome.action_history,
+                    moves_recorder=g_rec,
                 )
             else:
                 g_rec.finalize(
