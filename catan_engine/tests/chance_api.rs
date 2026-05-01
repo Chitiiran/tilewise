@@ -92,10 +92,12 @@ fn chance_outcomes_for_steal_are_uniform_over_victim_hand() {
 fn clone_is_independent() {
     use catan_engine::Engine;
     let mut a = Engine::new(42);
-    a.step(a.legal_actions()[0]);
+    let action_a = a.legal_actions()[0];
+    a.step(action_a);
     let mut b = a.clone();
     let phase_before = format!("{:?}", a.state.phase);
-    b.step(b.legal_actions()[0]);
+    let action_b = b.legal_actions()[0];
+    b.step(action_b);
     let phase_after_a = format!("{:?}", a.state.phase);
     assert_eq!(phase_before, phase_after_a, "stepping the clone must not affect the original");
 }

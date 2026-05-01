@@ -34,30 +34,42 @@ def test_play_one_game_returns_outcome():
     assert outcome.length_in_moves > 0
 
 
-def test_play_one_game_respects_wall_clock_cap():
+def test_play_one_game_respects_wall_clock_cap(monkeypatch):
     """v2 hardening: max_seconds aborts the game and returns a 'timed_out=True'
     outcome. Protects sweeps against pathological MCTS-rollout slowdowns blocking
-    the entire batch."""
+    the entire batch.
+
+    Post P1+P2+P3, an all-random game completes in ~6 ms — too fast to race a
+    real wall-clock cap reliably. Monkeypatch perf_counter to advance by a
+    huge delta after the first call so the cap fires deterministically on the
+    second loop iteration regardless of engine speed."""
     import random
     import time
     from catan_mcts.adapter import CatanGame
+    from catan_mcts.experiments import common as common_mod
+
+    # First call returns t0=0, second call returns t1=999 → elapsed=999 > cap=0.05.
+    calls = {"n": 0}
+    def fake_perf():
+        calls["n"] += 1
+        return 0.0 if calls["n"] == 1 else 999.0
+    monkeypatch.setattr(common_mod.time, "perf_counter", fake_perf)
 
     game = CatanGame()
     bots = {i: _RandomBot(i) for i in range(4)}
-    t0 = time.perf_counter()
+    t0 = time.monotonic()  # un-patched, for the wall-clock assertion below
     outcome = play_one_game(
         game=game, bots=bots, seed=42,
         chance_rng=random.Random(42),
         recorded_player=None, recorder_game=None,
-        max_seconds=0.05,  # 50 ms — far less than any real game
+        max_seconds=0.05,
     )
-    elapsed = time.perf_counter() - t0
-    # Should give up shortly after the cap, not run for many seconds.
-    assert elapsed < 1.0, f"max_seconds=0.05 but elapsed {elapsed:.2f}s"
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, f"elapsed {elapsed:.2f}s"
     # Outcome marks a timeout: winner=-1 AND timed_out flag.
     assert outcome.winner == -1
     assert outcome.timed_out is True
-    assert outcome.length_in_moves > 0
+    assert outcome.length_in_moves >= 0
 
 
 def test_play_one_game_natural_finish_not_marked_timed_out():

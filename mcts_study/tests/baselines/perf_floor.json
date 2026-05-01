@@ -1,0 +1,25 @@
+{
+  "comment": "Pure-Rust microbench numbers from commit 7457f18 (post-C1). Used as the perf floor for M1/M2/M3 work — any regression > 1.5x triggers a review. Regenerate by running `cargo run --release --bin bench_random_game -- --n-games 100 --seed-base 800001 --max-steps 30000` and `cargo run --release --bin bench_v1`.",
+  "rand_game": {
+    "mean_us_per_game": 2793.029,
+    "mean_us_per_step": 1.893,
+    "mean_steps_per_game": 1475.16,
+    "tolerance_factor": 1.5
+  },
+  "rand_legal_actions_ns": {
+    "value": 969.144,
+    "tolerance_factor": 1.5
+  },
+  "rand_step_ns": {
+    "value": 480.032,
+    "tolerance_factor": 1.5
+  },
+  "bench_v1": {
+    "engine_step_us": 1.360,
+    "mcts_game_us": 17504.510,
+    "evaluator_leaf_us": 99.340,
+    "state_clone_us": 0.246,
+    "legal_mask_us": 0.011,
+    "tolerance_factor": 1.5
+  }
+}

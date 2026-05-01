@@ -13,7 +13,7 @@ fn observation_shapes_match_spec() {
 
 #[test]
 fn legal_mask_count_matches_legal_actions() {
-    let engine = Engine::new(42);
+    let mut engine = Engine::new(42);
     let obs = build_observation(&engine.state, engine.state.current_player);
     let mask_true = obs.legal_mask.iter().filter(|&&b| b).count();
     assert_eq!(mask_true, engine.legal_actions().len());
