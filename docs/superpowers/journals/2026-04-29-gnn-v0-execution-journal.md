@@ -582,6 +582,35 @@ After the 12-game tournaments, attempted a **24-permutation × 50-games = 1200-g
 
 4. **Future tournament design:** instead of `--num-games-per-seating N` × 24 perms, **iterate the OUTER loop over `i in range(N)` and the INNER loop over permutations.** That way every "round" of N×24 games covers all permutations once before starting the next round. A kill mid-run leaves a balanced subset, not a biased one. Add to wishlist as §4b.4 (renumber as needed).
 
+### End-of-day-2 pivot: full Catan + bit-packed state
+
+After watching three "best" d25 self-play replays (seeds 41400315, 41400279, 41400295), diagnosed why no GNN we've trained beats LookaheadMcts at any (sims, depth) combination:
+
+**The game we're training on isn't really Catan.** Specifically, the v1 engine has these structural gaps that strategy-degrade the play:
+
+1. **Wood/brick monopolies create permanent road blockades** (because road-cost is just W+B and roads have no inventory cap). Players who can't build roads can't expand. Stalls common.
+2. **No release valve for resource-starved players.** No 4:1 bank trade, no ports, no player-to-player trades. A player who lacks sheep tiles can never build a settlement.
+3. **No longest-road / largest-army / dev-card VP sources.** All VP comes from settlements + cities only. The "alternate paths to 10" that real Catan offers are missing — so games stall when one player can't reach a settlement spot.
+4. **41% of d25 self-play games time out at the 30k-step cap.** Per the journal, value targets are zeroed for these → 41% of training value-signal is null. Big data-quality hole we missed.
+5. **Steal mechanism may have a bug.** Worth a regression test on restart.
+
+These add up: the GNN learns from a game where stalling is rewarded and the value head is half-empty.
+
+**Pivot decision:** restart with a v2 engine that implements **full Catan rules** (trades, dev cards, longest road, largest army, inventory caps), but with **bit-packed observation tensors** to control state size. Most state values are tiny (resource counts 0-19 = 5 bits, VP 0-10 = 4 bits, building counts 0-15 = 4 bits) and the current f32 representation wastes ~32× per field. Bit-packing makes the cache **smaller** even with more rule features.
+
+Full design + 36-item improvement list at `docs/superpowers/specs/2026-04-30-v2-restart-full-game-design.md`.
+
+**What v1 work survives:**
+- All training-pipeline improvements (per-epoch saves, resume, best tracking, per-game val variance, live progress).
+- Two-GNN tournament infrastructure (e8 + permutations + per-chunk flush).
+- Card tracker plug-and-play interface (replay viewer just swaps backends when v2 engine ships `bank()` + `all_hands()`).
+- The GNN architecture itself (hetero PyG model with hex/vertex/edge nodes).
+- Replay viewer (will need updates for new VP sources but core logic stays).
+
+**What v1 work doesn't survive:**
+- All trained checkpoints (gnn_v1_d15_keep, gnn_v2_d25_keep, gnn_v2_d25_pw4_keep). Reference only.
+- All v1/v2 caches and parquets for training. Game changes → data invalidates.
+
 ### Net summary of v2 day
 
 - **Best v2 model: `gnn_v2_d25_keep/checkpoint_best.pt` (epoch 7, val_top1=0.642).** Used in tournaments, mean VP 3.58–3.83.
