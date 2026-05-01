@@ -96,6 +96,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.settlements_built[p as usize] += 1;
             state.vp[p as usize] += 1;
             state.setup_pending = Some(v);
+            update_ports_owned_for_player(state, p);
             events.push(GameEvent::BuildSettlement { player: p, vertex: v });
         }
         (GamePhase::Setup1Place, Action::BuildRoad(e)) => {
@@ -119,6 +120,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.settlements_built[p as usize] += 1;
             state.vp[p as usize] += 1;
             state.setup_pending = Some(v);
+            update_ports_owned_for_player(state, p);
             events.push(GameEvent::BuildSettlement { player: p, vertex: v });
             // Longest-road can change if a new settlement breaks an opponent's chain.
             update_longest_road(state);
@@ -177,6 +179,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.settlements.set(v as usize, Some(p));
             state.settlements_built[p as usize] += 1;
             state.vp[p as usize] += 1;
+            update_ports_owned_for_player(state, p);
             events.push(GameEvent::BuildSettlement { player: p, vertex: v });
             // A settlement on an opponent's road can break their longest-road chain.
             update_longest_road(state);
@@ -205,6 +208,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.settlements_built[p as usize] = state.settlements_built[p as usize].saturating_sub(1);
             state.cities_built[p as usize] += 1;
             state.vp[p as usize] += 1; // settlement was 1VP, city is 2VP, net +1
+            update_ports_owned_for_player(state, p);
             events.push(GameEvent::BuildCity { player: p, vertex: v });
             check_win(state, &mut events);
         }
@@ -222,22 +226,20 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             check_win(state, &mut events);
         }
         (GamePhase::Main, Action::TradeBank { give, get }) => {
-            let p = state.current_player as usize;
+            let p = state.current_player;
+            let pi = p as usize;
             let give_idx = give as usize;
             let get_idx = get as usize;
-            // 4:1 bank trade. Ports (3:1, 2:1) deferred; will be added when we
-            // track per-player port ownership.
-            const TRADE_RATIO: u8 = 4;
-            assert!(state.hands[p][give_idx] >= TRADE_RATIO,
-                "TradeBank legality bug: {} doesn't have {} {:?}", p, TRADE_RATIO, give);
+            let ratio = trade_ratio_for(state, p, give_idx as u8);
+            assert!(state.hands[pi][give_idx] >= ratio,
+                "TradeBank legality bug: P{} doesn't have {} {:?}", pi, ratio, give);
             assert!(state.bank[get_idx] >= 1,
                 "TradeBank legality bug: bank doesn't have {:?}", get);
-            state.hands[p][give_idx] -= TRADE_RATIO;
-            state.bank[give_idx] += TRADE_RATIO;
-            state.hands[p][get_idx] += 1;
+            state.hands[pi][give_idx] -= ratio;
+            state.bank[give_idx] += ratio;
+            state.hands[pi][get_idx] += 1;
             state.bank[get_idx] -= 1;
-            // No event type for trades yet — could add GameEvent::TradeBank later
-            // for stats tracking. For now silent.
+            // No event type for trades yet — could add GameEvent::TradeBank later.
         }
         (GamePhase::Main, Action::EndTurn) => {
             events.push(GameEvent::TurnEnded { player: state.current_player });
@@ -377,10 +379,12 @@ fn legal_actions_main(state: &GameState) -> Vec<Action> {
             }
         }
     }
-    // Maritime trade (4:1 bank, §A5): give 4 of one resource, get 1 of another
-    // (different) resource. Ports (3:1 generic, 2:1 specific) deferred.
+    // Maritime trade (§A5): give N of one resource, get 1 of another
+    // (different) resource. Ratio: 2 if specific port owned, 3 if any generic
+    // port owned, else 4.
     for give_idx in 0..5u8 {
-        if hand[give_idx as usize] >= 4 {
+        let ratio = trade_ratio_for(state, p, give_idx);
+        if hand[give_idx as usize] >= ratio {
             let give = idx_to_resource(give_idx);
             for get_idx in 0..5u8 {
                 if get_idx == give_idx { continue; }
@@ -493,6 +497,47 @@ fn dfs_road_length(
         visited_edges[e as usize] = false;
     }
     best
+}
+
+/// Recompute ports_owned for a single player from current settlement/city placements.
+/// Called whenever the player places a settlement or upgrades to a city
+/// (since a city replaces a settlement at the same vertex, port ownership
+/// is preserved but we recompute for safety).
+pub fn update_ports_owned_for_player(state: &mut GameState, player: u8) {
+    use crate::board::PortKind;
+    use crate::state::{
+        PORT_BIT_GENERIC, PORT_BIT_WOOD, PORT_BIT_BRICK, PORT_BIT_SHEEP, PORT_BIT_WHEAT, PORT_BIT_ORE,
+    };
+    let mut bits = 0u8;
+    for port in &state.board.ports {
+        let owned = port.vertices.iter().any(|&v| {
+            state.settlements.get(v as usize) == Some(player)
+                || state.cities.get(v as usize) == Some(player)
+        });
+        if owned {
+            match port.kind {
+                PortKind::Generic => bits |= PORT_BIT_GENERIC,
+                PortKind::Specific(r) => match r {
+                    crate::board::Resource::Wood => bits |= PORT_BIT_WOOD,
+                    crate::board::Resource::Brick => bits |= PORT_BIT_BRICK,
+                    crate::board::Resource::Sheep => bits |= PORT_BIT_SHEEP,
+                    crate::board::Resource::Wheat => bits |= PORT_BIT_WHEAT,
+                    crate::board::Resource::Ore => bits |= PORT_BIT_ORE,
+                },
+            }
+        }
+    }
+    state.ports_owned[player as usize] = bits;
+}
+
+/// Effective trade ratio for player giving `give_idx`: 2 if they have the
+/// specific port, else 3 if they have any generic port, else 4.
+pub fn trade_ratio_for(state: &GameState, player: u8, give_idx: u8) -> u8 {
+    let bits = state.ports_owned[player as usize];
+    let specific_bit = crate::state::resource_port_bit(give_idx);
+    if (bits & specific_bit) != 0 { 2 }
+    else if (bits & crate::state::PORT_BIT_GENERIC) != 0 { 3 }
+    else { 4 }
 }
 
 /// Recompute longest_road_length for all players and update the longest_road_holder.

@@ -46,6 +46,27 @@ pub const MAX_SETTLEMENTS: u8 = 5;
 pub const MAX_CITIES: u8 = 4;
 pub const MAX_ROADS: u8 = 15;
 
+// Port bit positions in state.ports_owned[p].
+pub const PORT_BIT_GENERIC: u8 = 1 << 0;
+pub const PORT_BIT_WOOD: u8 = 1 << 1;
+pub const PORT_BIT_BRICK: u8 = 1 << 2;
+pub const PORT_BIT_SHEEP: u8 = 1 << 3;
+pub const PORT_BIT_WHEAT: u8 = 1 << 4;
+pub const PORT_BIT_ORE: u8 = 1 << 5;
+
+/// Convert a `Resource` index to its port bit.
+#[inline]
+pub fn resource_port_bit(r: u8) -> u8 {
+    match r {
+        0 => PORT_BIT_WOOD,
+        1 => PORT_BIT_BRICK,
+        2 => PORT_BIT_SHEEP,
+        3 => PORT_BIT_WHEAT,
+        4 => PORT_BIT_ORE,
+        _ => 0,
+    }
+}
+
 /// 8 phase variants. Internal layout fits in 3-bit phase tag, but `Discard`/`Steal`
 /// retain their payloads for compatibility — payload is moved out of the bit-packed
 /// state into separate scalar fields once §A-bis 8a (instant discard) lands.
@@ -124,6 +145,18 @@ pub struct GameState {
     /// Player ID who currently holds the +2 VP for longest road.
     /// Some(p) iff player p has the strict max length AND that length >= 5.
     pub longest_road_holder: Option<u8>,
+
+    // ---- v2 ports (§A5 partial — port-aware ratios) ----
+    /// Bitmap of ports owned per player. 6 bits used per player:
+    ///   bit 0: any generic 3:1 port
+    ///   bit 1: 2:1 wood port
+    ///   bit 2: 2:1 brick port
+    ///   bit 3: 2:1 sheep port
+    ///   bit 4: 2:1 wheat port
+    ///   bit 5: 2:1 ore port
+    /// Players own a port iff they have a settlement or city on one of its
+    /// two vertices. Updated alongside settlement/city placement.
+    pub ports_owned: [u8; N_PLAYERS],
 }
 
 /// 54 vertices × 3 bits each = 162 bits.
@@ -200,6 +233,7 @@ impl GameState {
             roads_built: [0; N_PLAYERS],
             longest_road_length: [0; N_PLAYERS],
             longest_road_holder: None,
+            ports_owned: [0; N_PLAYERS],
         }
     }
 

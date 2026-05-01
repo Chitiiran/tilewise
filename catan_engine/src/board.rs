@@ -17,6 +17,23 @@ pub struct Hex {
     pub dice_number: Option<u8>,    // None = desert
 }
 
+/// A port is a 2-vertex token on the outer edge of the board that grants
+/// reduced trade ratios to whoever has a settlement/city on either of its
+/// two vertices. Standard Catan: 9 ports, 4 generic (3:1) + 5 specific (2:1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortKind {
+    /// 3:1 trade for any resource.
+    Generic,
+    /// 2:1 trade for the specific named resource.
+    Specific(Resource),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Port {
+    pub kind: PortKind,
+    pub vertices: [u8; 2],
+}
+
 #[derive(Debug)]
 pub struct Board {
     pub hexes: [Hex; 19],
@@ -26,6 +43,9 @@ pub struct Board {
     pub edge_to_vertices: [[u8; 2]; 72],
     pub hex_to_vertices: [[u8; 6]; 19],
     pub dice_to_hexes: [Vec<u8>; 13],     // index 0,1 unused; 2..=12 used
+    /// 9 ports: 4 generic + 5 specific. Each port sits at 2 outer-perimeter vertices.
+    /// A player owns a port iff they have a settlement/city on either vertex.
+    pub ports: [Port; 9],
 }
 
 impl Board {
@@ -118,6 +138,7 @@ impl Board {
         let vertex_to_edges = invert_edge_to_vertices(&edge_to_vertices);
         let vertex_to_vertices = compute_vertex_adjacency(&edge_to_vertices);
         let dice_to_hexes = compute_dice_to_hexes(&hexes);
+        let ports = standard_ports();
 
         Self {
             hexes,
@@ -127,8 +148,31 @@ impl Board {
             edge_to_vertices,
             hex_to_vertices,
             dice_to_hexes,
+            ports,
         }
     }
+}
+
+/// Standard Catan port layout: 9 ports (4 generic 3:1 + 5 specific 2:1)
+/// placed on outer-perimeter vertex pairs.
+///
+/// Vertex pairs below are placeholder positions on the outer perimeter; they
+/// will be tuned in Phase 2.7 once we have a definitive port-position spec.
+/// What matters for the rules is that each port has 2 fixed vertices, and
+/// players own ports by occupying either vertex with a settlement/city.
+fn standard_ports() -> [Port; 9] {
+    use Resource::*;
+    [
+        Port { kind: PortKind::Generic, vertices: [0, 1] },
+        Port { kind: PortKind::Specific(Wheat), vertices: [3, 7] },
+        Port { kind: PortKind::Generic, vertices: [12, 16] },
+        Port { kind: PortKind::Specific(Ore), vertices: [21, 25] },
+        Port { kind: PortKind::Generic, vertices: [38, 41] },
+        Port { kind: PortKind::Specific(Sheep), vertices: [45, 48] },
+        Port { kind: PortKind::Generic, vertices: [50, 53] },
+        Port { kind: PortKind::Specific(Brick), vertices: [33, 37] },
+        Port { kind: PortKind::Specific(Wood), vertices: [11, 15] },
+    ]
 }
 
 fn standard_hexes() -> [Hex; 19] {
