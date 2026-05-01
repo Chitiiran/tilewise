@@ -108,6 +108,22 @@ pub struct GameState {
 
     // ---- Counters ----
     pub turn: u32,
+
+    // ---- v2 building inventory caps (§A2) ----
+    /// Number of settlements each player has placed (including those upgraded to cities).
+    /// Capped at MAX_SETTLEMENTS = 5. Used in legal_mask to filter BuildSettlement.
+    pub settlements_built: [u8; N_PLAYERS],
+    /// Number of cities each player has placed. Capped at MAX_CITIES = 4.
+    pub cities_built: [u8; N_PLAYERS],
+    /// Number of roads each player has placed. Capped at MAX_ROADS = 15.
+    pub roads_built: [u8; N_PLAYERS],
+
+    // ---- v2 longest road (§A3) ----
+    /// Length of each player's longest connected road chain.
+    pub longest_road_length: [u8; N_PLAYERS],
+    /// Player ID who currently holds the +2 VP for longest road.
+    /// Some(p) iff player p has the strict max length AND that length >= 5.
+    pub longest_road_holder: Option<u8>,
 }
 
 /// 54 vertices × 3 bits each = 162 bits.
@@ -179,6 +195,11 @@ impl GameState {
             bank: [RESOURCE_SUPPLY; N_RESOURCES],
             vp: [0; N_PLAYERS],
             turn: 0,
+            settlements_built: [0; N_PLAYERS],
+            cities_built: [0; N_PLAYERS],
+            roads_built: [0; N_PLAYERS],
+            longest_road_length: [0; N_PLAYERS],
+            longest_road_holder: None,
         }
     }
 

@@ -91,15 +91,20 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
     let mut events = Vec::new();
     match (&state.phase, action) {
         (GamePhase::Setup1Place, Action::BuildSettlement(v)) => {
-            state.settlements.set(v as usize, Some(state.current_player));
-            state.vp[state.current_player as usize] += 1;
+            let p = state.current_player;
+            state.settlements.set(v as usize, Some(p));
+            state.settlements_built[p as usize] += 1;
+            state.vp[p as usize] += 1;
             state.setup_pending = Some(v);
-            events.push(GameEvent::BuildSettlement { player: state.current_player, vertex: v });
+            events.push(GameEvent::BuildSettlement { player: p, vertex: v });
         }
         (GamePhase::Setup1Place, Action::BuildRoad(e)) => {
-            state.roads.set(e as usize, Some(state.current_player));
+            let p = state.current_player;
+            state.roads.set(e as usize, Some(p));
+            state.roads_built[p as usize] += 1;
             state.setup_pending = None;
-            events.push(GameEvent::BuildRoad { player: state.current_player, edge: e });
+            events.push(GameEvent::BuildRoad { player: p, edge: e });
+            update_longest_road(state);
             // Advance player; if all 4 placed, enter Setup-2 (reverse order, player 3 first).
             if state.current_player < 3 {
                 state.current_player += 1;
@@ -109,10 +114,14 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             }
         }
         (GamePhase::Setup2Place, Action::BuildSettlement(v)) => {
-            state.settlements.set(v as usize, Some(state.current_player));
-            state.vp[state.current_player as usize] += 1;
+            let p = state.current_player;
+            state.settlements.set(v as usize, Some(p));
+            state.settlements_built[p as usize] += 1;
+            state.vp[p as usize] += 1;
             state.setup_pending = Some(v);
-            events.push(GameEvent::BuildSettlement { player: state.current_player, vertex: v });
+            events.push(GameEvent::BuildSettlement { player: p, vertex: v });
+            // Longest-road can change if a new settlement breaks an opponent's chain.
+            update_longest_road(state);
             // Yield starting resources: 1 card per non-desert hex adjacent.
             let board = state.board.clone();
             for &h in &board.vertex_to_hexes[v as usize] {
@@ -132,9 +141,12 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             }
         }
         (GamePhase::Setup2Place, Action::BuildRoad(e)) => {
-            state.roads.set(e as usize, Some(state.current_player));
+            let p = state.current_player;
+            state.roads.set(e as usize, Some(p));
+            state.roads_built[p as usize] += 1;
             state.setup_pending = None;
-            events.push(GameEvent::BuildRoad { player: state.current_player, edge: e });
+            events.push(GameEvent::BuildRoad { player: p, edge: e });
+            update_longest_road(state);
             // Reverse-order advance; when player 0 finishes, transition to Roll.
             if state.current_player > 0 {
                 state.current_player -= 1;
@@ -163,8 +175,11 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.hands[p as usize] = hand;
             state.bank = bank;
             state.settlements.set(v as usize, Some(p));
+            state.settlements_built[p as usize] += 1;
             state.vp[p as usize] += 1;
             events.push(GameEvent::BuildSettlement { player: p, vertex: v });
+            // A settlement on an opponent's road can break their longest-road chain.
+            update_longest_road(state);
             check_win(state, &mut events);
         }
         (GamePhase::Main, Action::BuildCity(v)) => {
@@ -176,6 +191,19 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.bank = bank;
             state.settlements.set(v as usize, None);
             state.cities.set(v as usize, Some(p));
+            // Note: settlements_built is the LIFETIME settlements placed.
+            // Upgrading to a city doesn't decrement settlements_built; the
+            // settlement no longer exists on the board but it counted toward
+            // the lifetime cap. (Real Catan: 5 settlement pieces total — once
+            // upgraded, the piece comes back to your supply, so the cap is
+            // really "settlements simultaneously on board". v1 used "lifetime
+            // built". Using "currently on board" matches Catan more accurately.)
+            //
+            // We use "currently on board" semantics: when a settlement
+            // upgrades to a city, it's no longer counted toward the
+            // settlements_built cap.
+            state.settlements_built[p as usize] = state.settlements_built[p as usize].saturating_sub(1);
+            state.cities_built[p as usize] += 1;
             state.vp[p as usize] += 1; // settlement was 1VP, city is 2VP, net +1
             events.push(GameEvent::BuildCity { player: p, vertex: v });
             check_win(state, &mut events);
@@ -188,7 +216,10 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             state.hands[p as usize] = hand;
             state.bank = bank;
             state.roads.set(e as usize, Some(p));
+            state.roads_built[p as usize] += 1;
             events.push(GameEvent::BuildRoad { player: p, edge: e });
+            update_longest_road(state);
+            check_win(state, &mut events);
         }
         (GamePhase::Main, Action::EndTurn) => {
             events.push(GameEvent::TurnEnded { player: state.current_player });
@@ -297,24 +328,27 @@ fn pay(hand: &mut [u8; 5], bank: &mut [u8; 5], cost: &[u8; 5]) {
 }
 
 fn legal_actions_main(state: &GameState) -> Vec<Action> {
+    use crate::state::{MAX_SETTLEMENTS, MAX_CITIES, MAX_ROADS};
     let mut out = Vec::new();
     let p = state.current_player;
     let hand = &state.hands[p as usize];
-    if can_afford(hand, &SETTLEMENT_COST) {
+    let pi = p as usize;
+    // Inventory caps (§A2): BuildSettlement only legal if currently <5 on board.
+    if can_afford(hand, &SETTLEMENT_COST) && state.settlements_built[pi] < MAX_SETTLEMENTS {
         for v in 0u8..54 {
             if is_legal_settlement_for_player(state, v, p) {
                 out.push(Action::BuildSettlement(v));
             }
         }
     }
-    if can_afford(hand, &CITY_COST) {
+    if can_afford(hand, &CITY_COST) && state.cities_built[pi] < MAX_CITIES {
         for v in 0u8..54 {
             if state.settlements.get(v as usize) == Some(p) {
                 out.push(Action::BuildCity(v));
             }
         }
     }
-    if can_afford(hand, &ROAD_COST) {
+    if can_afford(hand, &ROAD_COST) && state.roads_built[pi] < MAX_ROADS {
         for e in 0u8..72 {
             if is_legal_road_for_player(state, e, p) {
                 out.push(Action::BuildRoad(e));
@@ -353,6 +387,116 @@ fn is_legal_road_for_player(state: &GameState, e: u8, p: u8) -> bool {
         }
     }
     false
+}
+
+/// Compute the longest connected road chain owned by `player`, treating
+/// vertices with opponent settlements/cities as chain-breakers.
+///
+/// Algorithm: for each owned edge, DFS from each of its endpoints, tracking
+/// visited edges (not vertices — a single vertex can be revisited if multiple
+/// of the player's edges meet there, but each edge is used at most once in a
+/// simple path).
+///
+/// Catan's longest road = longest simple path through the player's roads,
+/// not including edges blocked by opponent buildings at the connecting vertex.
+fn longest_road_for_player(state: &GameState, player: u8) -> u8 {
+    let owned_edges: Vec<u8> = (0..72u8)
+        .filter(|&e| state.roads.get(e as usize) == Some(player))
+        .collect();
+    if owned_edges.is_empty() {
+        return 0;
+    }
+    // For each owned edge, try starting a DFS from each of its two vertices.
+    let mut best = 0u8;
+    let mut visited_edges = [false; 72];
+    for &start_edge in &owned_edges {
+        let [v0, v1] = state.board.edge_to_vertices[start_edge as usize];
+        for &start_v in &[v0, v1] {
+            visited_edges.fill(false);
+            visited_edges[start_edge as usize] = true;
+            let other_v = if start_v == v0 { v1 } else { v0 };
+            // DFS from other_v, knowing start_edge is used and contributes 1 to length.
+            let len = dfs_road_length(state, player, other_v, &mut visited_edges, 1);
+            if len > best { best = len; }
+        }
+    }
+    best
+}
+
+/// DFS helper: from vertex `at`, walk along owned edges (avoiding visited ones,
+/// avoiding vertices blocked by opponent buildings) and return max chain length.
+fn dfs_road_length(
+    state: &GameState,
+    player: u8,
+    at: u8,
+    visited_edges: &mut [bool; 72],
+    so_far: u8,
+) -> u8 {
+    // If `at` has an opponent settlement/city, the chain is blocked here.
+    let owner = state.settlements.get(at as usize).or(state.cities.get(at as usize));
+    if let Some(o) = owner {
+        if o != player {
+            return so_far;
+        }
+    }
+    let mut best = so_far;
+    for &e in &state.board.vertex_to_edges[at as usize] {
+        if visited_edges[e as usize] { continue; }
+        if state.roads.get(e as usize) != Some(player) { continue; }
+        let [v0, v1] = state.board.edge_to_vertices[e as usize];
+        let next = if v0 == at { v1 } else { v0 };
+        visited_edges[e as usize] = true;
+        let len = dfs_road_length(state, player, next, visited_edges, so_far + 1);
+        if len > best { best = len; }
+        visited_edges[e as usize] = false;
+    }
+    best
+}
+
+/// Recompute longest_road_length for all players and update the longest_road_holder.
+/// Called after any BuildRoad or BuildSettlement (settlements can break opponent chains).
+/// Holder is the strict max owner with length >= 5; ties = no holder change unless
+/// the previous holder no longer has the max.
+pub fn update_longest_road(state: &mut GameState) {
+    for p in 0..4u8 {
+        state.longest_road_length[p as usize] = longest_road_for_player(state, p);
+    }
+    // Find the player with the strict max length >= 5.
+    let max_len = state.longest_road_length.iter().copied().max().unwrap_or(0);
+    if max_len < 5 {
+        // No one qualifies; remove holder if any.
+        if let Some(prev) = state.longest_road_holder.take() {
+            // Subtract the +2 VP we previously granted.
+            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+        }
+        return;
+    }
+    let candidates: Vec<u8> = (0..4u8)
+        .filter(|&p| state.longest_road_length[p as usize] == max_len)
+        .collect();
+
+    // Determine new holder per Catan rules:
+    // - If exactly one player has the strict max → they become holder.
+    // - If multiple are tied at max → previous holder keeps if they're tied; otherwise no holder.
+    let new_holder = if candidates.len() == 1 {
+        Some(candidates[0])
+    } else {
+        match state.longest_road_holder {
+            Some(prev) if candidates.contains(&prev) => Some(prev),
+            _ => None,
+        }
+    };
+
+    if new_holder != state.longest_road_holder {
+        // Transfer +2 VP from old holder (if any) to new holder (if any).
+        if let Some(prev) = state.longest_road_holder {
+            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+        }
+        if let Some(new) = new_holder {
+            state.vp[new as usize] += 2;
+        }
+        state.longest_road_holder = new_holder;
+    }
 }
 
 fn check_win(state: &mut GameState, events: &mut Vec<GameEvent>) {
