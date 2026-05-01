@@ -2,13 +2,11 @@ use catan_engine::actions::{Action, ACTION_SPACE_SIZE, decode, encode};
 use catan_engine::board::Resource;
 
 #[test]
-fn action_space_size_is_260_for_v2_3() {
+fn action_space_size_is_280_for_v2_4() {
     // v2.1 added 20 TradeBank actions (206-225).
-    // v2.3 added 34 dev card actions (226-259):
-    //   226 BuyDevCard, 227 PlayKnight, 228 PlayRoadBuilding,
-    //   229-233 PlayMonopoly, 234-258 PlayYearOfPlenty (5×5),
-    //   259 PlayVpCard.
-    assert_eq!(ACTION_SPACE_SIZE, 260);
+    // v2.3 added 34 dev card actions (226-259).
+    // v2.4 added 20 ProposeTrade actions (260-279).
+    assert_eq!(ACTION_SPACE_SIZE, 280);
 }
 
 #[test]
@@ -45,8 +43,8 @@ fn id_layout_matches_spec() {
 
 #[test]
 fn out_of_range_ids_return_none() {
-    // v2.3: dev card actions occupy 226..260, so the first invalid ID is 260.
-    assert!(decode(260).is_none());
+    // v2.4: ProposeTrade actions occupy 260..280, so the first invalid ID is 280.
+    assert!(decode(280).is_none());
     assert!(decode(u32::MAX).is_none());
 }
 
@@ -59,8 +57,22 @@ fn roll_dice_action_round_trips() {
 }
 
 #[test]
-fn action_space_size_is_260_after_v2_3() {
-    assert_eq!(catan_engine::actions::ACTION_SPACE_SIZE, 260);
+fn action_space_size_is_280_after_v2_4() {
+    assert_eq!(catan_engine::actions::ACTION_SPACE_SIZE, 280);
+}
+
+#[test]
+fn propose_trade_action_round_trip_for_all_pairs() {
+    let resources = [Resource::Wood, Resource::Brick, Resource::Sheep, Resource::Wheat, Resource::Ore];
+    for give in resources {
+        for get in resources {
+            if give == get { continue; }
+            let id = encode(Action::ProposeTrade { give, get });
+            assert!((260..280).contains(&id), "ID {} out of range", id);
+            let back = decode(id).unwrap();
+            assert_eq!(back, Action::ProposeTrade { give, get });
+        }
+    }
 }
 
 #[test]

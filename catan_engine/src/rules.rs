@@ -344,6 +344,30 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             // VP cards are applied immediately at buy. PlayVpCard is a no-op
             // for compatibility with action-list iteration.
         }
+        (GamePhase::Main, Action::ProposeTrade { give, get }) => {
+            // 1-for-1 player trade. First opponent in seat order with ≥1 of `get`
+            // accepts. If none do, no resources move.
+            let p = state.current_player;
+            let pi = p as usize;
+            let give_idx = give as usize;
+            let get_idx = get as usize;
+            assert!(state.hands[pi][give_idx] >= 1);
+            // Find first opponent (in seat order) that can accept.
+            let mut accepted = false;
+            for offset in 1..4u8 {
+                let opp = ((p + offset) % 4) as usize;
+                if state.hands[opp][get_idx] >= 1 {
+                    state.hands[pi][give_idx] -= 1;
+                    state.hands[opp][give_idx] += 1;
+                    state.hands[opp][get_idx] -= 1;
+                    state.hands[pi][get_idx] += 1;
+                    accepted = true;
+                    break;
+                }
+            }
+            // Silent if no one accepts. Could emit GameEvent::TradeRejected later.
+            let _ = accepted;
+        }
         (GamePhase::Main, Action::EndTurn) => {
             // Reset per-turn flags.
             for p in 0..4 {
@@ -535,6 +559,25 @@ fn legal_actions_main(state: &GameState) -> Vec<Action> {
         // VP card: applied at buy time; PlayVpCard exists for explicit reveal but is no-op.
         if state.dev_cards_held[pi][DEV_CARD_VP] > 0 {
             out.push(Action::PlayVpCard);
+        }
+    }
+
+    // Player-to-player 1-for-1 trade (§A6 simplified).
+    // Proposer must have ≥1 of give, AND at least one opponent must have ≥1 of get.
+    for give_idx in 0..5u8 {
+        if hand[give_idx as usize] >= 1 {
+            for get_idx in 0..5u8 {
+                if get_idx == give_idx { continue; }
+                let any_opp_has = (0..4u8)
+                    .filter(|&opp| opp != p)
+                    .any(|opp| state.hands[opp as usize][get_idx as usize] >= 1);
+                if any_opp_has {
+                    out.push(Action::ProposeTrade {
+                        give: idx_to_resource(give_idx),
+                        get: idx_to_resource(get_idx),
+                    });
+                }
+            }
         }
     }
 

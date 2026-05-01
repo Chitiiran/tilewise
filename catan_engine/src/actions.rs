@@ -29,6 +29,11 @@ pub enum Action {
     PlayYearOfPlenty(Resource, Resource),
     /// VP card: silently grants +1 VP. We treat it as immediate (no hidden info).
     PlayVpCard,
+    /// v2.4 Player-to-player trade: 1-for-1 swap with another player.
+    /// Engine resolves by iterating opponents in seat order; first one who has
+    /// ≥1 of `get` accepts. If none, trade fails silently (no resources move).
+    /// Same-for-same is excluded.
+    ProposeTrade { give: Resource, get: Resource },
 }
 
 /// v1: 206 (settlements + cities + roads + robber + discard + end + roll).
@@ -40,7 +45,8 @@ pub enum Action {
 ///   229-233: PlayMonopoly(r)
 ///   234-258: PlayYearOfPlenty(r1, r2) — 25 combos including same-for-same
 ///   259: PlayVpCard
-pub const ACTION_SPACE_SIZE: usize = 260;
+/// v2.4: 280 (adds 20 ProposeTrade actions at 260-279, 1-for-1 player trades).
+pub const ACTION_SPACE_SIZE: usize = 280;
 pub const TRADE_BANK_BASE: u32 = 206;
 pub const N_TRADE_BANK_ACTIONS: u32 = 20; // 5 give × 4 valid get
 pub const DEV_BUY: u32 = 226;
@@ -49,6 +55,7 @@ pub const DEV_PLAY_ROAD_BUILDING: u32 = 228;
 pub const DEV_PLAY_MONOPOLY_BASE: u32 = 229;     // 229-233 (one per resource)
 pub const DEV_PLAY_YOP_BASE: u32 = 234;          // 234-258 (5×5 = 25 combos)
 pub const DEV_PLAY_VP: u32 = 259;
+pub const PROPOSE_TRADE_BASE: u32 = 260;         // 260-279 (5 give × 4 valid get)
 
 /// Number of u64 words needed to hold the legal-action bitmap.
 /// Sized to support v2's full action space: 226 v1+trades + dev cards (~34)
@@ -136,6 +143,13 @@ pub fn encode(action: Action) -> u32 {
             DEV_PLAY_YOP_BASE + i * 5 + j
         }
         Action::PlayVpCard => DEV_PLAY_VP,
+        Action::ProposeTrade { give, get } => {
+            let g = resource_index(give) as u32;
+            let r = resource_index(get) as u32;
+            assert!(g != r, "ProposeTrade give and get must differ");
+            let get_compact = if r < g { r } else { r - 1 };
+            PROPOSE_TRADE_BASE + g * 4 + get_compact
+        }
     }
 }
 
@@ -170,6 +184,16 @@ pub fn decode(id: u32) -> Option<Action> {
             Some(Action::PlayYearOfPlenty(resource_from_index(i), resource_from_index(j)))
         }
         259 => Some(Action::PlayVpCard),
+        260..=279 => {
+            let off = id - PROPOSE_TRADE_BASE;
+            let g = (off / 4) as u8;
+            let get_compact = (off % 4) as u8;
+            let r = if get_compact < g { get_compact } else { get_compact + 1 };
+            Some(Action::ProposeTrade {
+                give: resource_from_index(g),
+                get: resource_from_index(r),
+            })
+        }
         _ => None,
     }
 }
