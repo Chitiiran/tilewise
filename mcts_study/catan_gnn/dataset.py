@@ -248,3 +248,34 @@ class CachedDataset(Dataset):
         data.scalars = it["scalars"]
         data.legal_mask = it["legal_mask_attr"]
         return data, it["value"], it["policy"], it["legal"]
+
+
+class RotatedDataset(Dataset):
+    """Wraps a CachedDataset and applies a fixed 60° hex rotation to every item.
+
+    Same length as the source. Each `__getitem__` rotates the HeteroData
+    (hex/vertex/edge feature rows + edge_index entries), the policy target,
+    and the legal mask. Value targets are unchanged (rotation doesn't affect
+    who won).
+
+    Use case: train on a "rotated view" of the same dataset, testing whether
+    the model learns hex-symmetry-invariant features.
+    """
+
+    def __init__(self, source: Dataset) -> None:
+        self.source = source
+        # Forward the seeds attribute so train._split_by_seed can split by seed.
+        if hasattr(source, "seeds"):
+            self.seeds = source.seeds
+
+    def __len__(self) -> int:
+        return len(self.source)
+
+    def __getitem__(self, i: int):
+        # Lazy import — keeps tests that mock CachedDataset etc. from pulling
+        # in the rotation tables at unrelated import time.
+        from .rotation import rotate_hetero_data, rotate_legal_mask, rotate_policy
+
+        data, value, policy, legal = self.source[i]
+        rotated = rotate_hetero_data(data)
+        return rotated, value, rotate_policy(policy), rotate_legal_mask(legal)

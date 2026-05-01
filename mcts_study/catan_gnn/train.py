@@ -26,7 +26,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from torch_geometric.data import Batch
 
-from .dataset import CachedDataset, CatanReplayDataset
+from .dataset import CachedDataset, CatanReplayDataset, RotatedDataset
 from .gnn_model import GnnModel
 
 
@@ -191,6 +191,8 @@ def train_main(
     num_workers: int = 0,
     cache_path: Path | None = None,
     resume_from: Path | None = None,
+    init_from: Path | None = None,
+    rotate: bool = False,
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
@@ -226,6 +228,9 @@ def train_main(
         raise RuntimeError(f"Empty dataset under {run_dirs}")
     load_secs = _time.perf_counter() - t_load_start
     print(f"[timing] dataset load: {load_secs:.1f}s for {len(full_ds)} positions", flush=True)
+    if rotate:
+        full_ds = RotatedDataset(full_ds)
+        print(f"[rotate] wrapping dataset with one 60° hex rotation per item", flush=True)
     train_ds, val_ds = _split_by_seed(full_ds, val_frac=val_frac, seed=seed)
     if max_train_samples is not None and len(train_ds) > max_train_samples:
         rng = np.random.default_rng(seed)
@@ -279,6 +284,18 @@ def train_main(
             # optimizer, count starting epoch from current epochs already done.
             model.load_state_dict(ck)
             print(f"[resume] loaded weights from {resume_path} (no optimizer state)", flush=True)
+
+    # init_from: load only model weights, leave optimizer/log fresh, start_epoch=1.
+    # Used for fine-tuning from a prior checkpoint without inheriting its
+    # epoch counter or training history.
+    if init_from is not None and resume_from is None:
+        init_path = Path(init_from)
+        ck = torch.load(init_path, map_location=dev)
+        if "model_state" in ck:
+            model.load_state_dict(ck["model_state"])
+        else:
+            model.load_state_dict(ck)
+        print(f"[init_from] loaded model weights from {init_path} (fresh optimizer + log)", flush=True)
 
     for epoch in range(start_epoch, epochs + 1):
         # Train.
@@ -462,6 +479,15 @@ def cli_main() -> None:
                    help="Path to a checkpoint_epochNN.pt bundle to resume from. "
                         "Loads model + optimizer state and continues from the saved next_epoch. "
                         "Use this with --epochs > saved_epoch to extend training.")
+    p.add_argument("--init-from", type=Path, default=None, dest="init_from",
+                   help="Path to a checkpoint to load MODEL WEIGHTS from. Unlike --resume, "
+                        "this starts a fresh training run (fresh optimizer, fresh log, "
+                        "epoch counter starts at 1). Use for fine-tuning a prior model "
+                        "on new data or augmented data.")
+    p.add_argument("--rotate", action="store_true",
+                   help="Wrap the dataset in RotatedDataset, applying one 60° hex rotation "
+                        "to every position. Same dataset size, but every sample is the "
+                        "rotated view. Tests whether the model learns hex-symmetry features.")
     args = p.parse_args()
     train_main(
         run_dirs=args.run_dirs, out_dir=args.out_dir,
@@ -471,6 +497,8 @@ def cli_main() -> None:
         device=args.device, max_train_samples=args.max_train_samples,
         num_workers=args.num_workers, cache_path=args.cache_path,
         resume_from=args.resume_from,
+        init_from=args.init_from,
+        rotate=args.rotate,
     )
 
 
