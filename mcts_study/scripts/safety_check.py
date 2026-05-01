@@ -181,19 +181,28 @@ def main() -> int:
             if not ok_b:
                 failures.append(f"{key} perf")
 
-    # 5. Playback smoke render
+    # 5. Playback smoke render — use the versioned baseline parquet so this
+    # works regardless of whether runs/ has been cleaned. The baseline mimics
+    # a sweep run_dir layout: tests/baselines/{games,moves}.<label>.parquet.
+    # Playback expects games.<sims>=N.parquet; the baseline has the right
+    # filename pattern (games.sims=25.parquet via a copy step).
     print("== 5. Playback smoke ==")
-    out_dir = HERE / "runs" / "v2_smoke_postfix"
-    candidates = list(out_dir.glob("*/games.sims=25.parquet"))
-    if not candidates:
-        check("playback smoke", False, f"no parquet under {out_dir}")
-        failures.append("playback smoke (no parquet)")
+    import shutil
+    baseline_games = BASELINES / "postfix_smoke_games.parquet"
+    baseline_moves = BASELINES / "postfix_smoke_moves.parquet"
+    if not baseline_games.exists():
+        check("playback smoke", False, f"no baseline parquet at {baseline_games}")
+        failures.append("playback smoke (no baseline parquet)")
     else:
-        run_dir = candidates[0].parent
+        # Build a temp run_dir layout the playback expects.
+        smoke_run_dir = HERE / "runs" / "_safety_check" / "v2_smoke_postfix" / "run"
+        smoke_run_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(baseline_games, smoke_run_dir / "games.sims=25.parquet")
+        shutil.copy(baseline_moves, smoke_run_dir / "moves.sims=25.parquet")
         seed = 725001
         ok_pb, _, err = run(
-            [sys.executable, "-m", "catan_mcts.playback", str(run_dir), str(seed),
-             "--out-dir", str(HERE / "runs" / "v2_smoke_postfix" / "_safety_render")],
+            [sys.executable, "-m", "catan_mcts.playback", str(smoke_run_dir), str(seed),
+             "--out-dir", str(smoke_run_dir / "_safety_render")],
             cwd=HERE, timeout=120,
         )
         check("playback render", ok_pb,

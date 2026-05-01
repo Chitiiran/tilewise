@@ -251,8 +251,24 @@ impl Engine {
         }
 
         if let crate::state::GamePhase::Done { winner } = self.state.phase {
-            let mut returns = [-1.0f32; 4];
-            returns[winner as usize] = 1.0;
+            // Discount by rollout length so MCTS prefers fast wins.
+            // Without this, "BuildCity now → win in 1 step" and "EndTurn →
+            // random play wins in 50 steps" both return ±1.0 and MCTS has no
+            // signal to pick the fast path. Decay 0.999^steps gives:
+            //   1 step  -> 0.999
+            //   17 steps -> 0.983
+            //   100 steps -> 0.905
+            //   1000 steps -> 0.368
+            // That spread is enough for UCB1 to differentiate but doesn't
+            // collapse a +1 win to ~0 like aggressive discounts would.
+            // Found via seed=1600011 step 2061 trace: P0 was 9 VP and could
+            // BuildCity to win in 1 step, but MCTS picked EndTurn because
+            // both branches returned the same +1 (rollouts win in median
+            // 51 steps via random BuildSettlement on the next P0 turn).
+            const DECAY: f32 = 0.999;
+            let factor = DECAY.powi(steps as i32);
+            let mut returns = [-factor; 4];
+            returns[winner as usize] = factor;
             returns
         } else {
             // Capped or stuck — no winner.

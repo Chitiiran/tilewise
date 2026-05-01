@@ -32,11 +32,18 @@ def test_returns_shape_matches_player_count():
     evaluator = RustRolloutEvaluator(n_rollouts=1, base_seed=0)
     result = evaluator.evaluate(state)
     assert result.shape == (4,)
-    # Single rollout: result is exactly the terminal returns of that rollout.
-    plus = int(np.sum(result == 1.0))
-    minus = int(np.sum(result == -1.0))
+    # Returns are length-discounted (DECAY^steps from engine.rs); magnitudes
+    # land in (0, 1] not exactly 1.0. Contract: 1 positive (winner),
+    # 3 negatives (losers), all same magnitude.
+    plus = int(np.sum(result > 0.0))
+    minus = int(np.sum(result < 0.0))
     assert plus == 1, f"expected 1 winner, got {result}"
     assert minus == 3, f"expected 3 losers, got {result}"
+    pos_val = float(result[result > 0.0][0])
+    neg_val = float(result[result < 0.0][0])
+    assert abs(pos_val + neg_val) < 1e-6, (
+        f"winner/loser magnitudes don't match: {result}")
+    assert 0.0 < pos_val <= 1.0, f"winner return out of (0, 1]: {pos_val}"
 
 
 def test_does_not_mutate_input_state():

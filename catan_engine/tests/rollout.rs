@@ -8,11 +8,20 @@ fn rollout_from_initial_state_terminates() {
     let mut e = Engine::new(42);
     let returns = e.random_rollout_to_terminal(123);
     assert!(e.is_terminal(), "rollout did not reach terminal state");
-    // One winner: exactly one +1.0, three -1.0.
-    let plus = returns.iter().filter(|&&r| r == 1.0).count();
-    let minus = returns.iter().filter(|&&r| r == -1.0).count();
+    // One winner: exactly one positive return, three matching negatives. Returns
+    // are length-discounted (DECAY^steps), so the magnitudes are in (0, 1] not
+    // exactly 1.0. The structure {1 positive, 3 negatives, all same magnitude}
+    // is what the contract guarantees.
+    let plus = returns.iter().filter(|&&r| r > 0.0).count();
+    let minus = returns.iter().filter(|&&r| r < 0.0).count();
     assert_eq!(plus, 1, "expected 1 winner, got returns {:?}", returns);
     assert_eq!(minus, 3, "expected 3 losers, got returns {:?}", returns);
+    let pos_val = returns.iter().find(|&&r| r > 0.0).unwrap();
+    let neg_val = returns.iter().find(|&&r| r < 0.0).unwrap();
+    assert!((pos_val + neg_val).abs() < 1e-6,
+        "winner/loser magnitudes don't match: {:?}", returns);
+    assert!(*pos_val <= 1.0 && *pos_val > 0.0,
+        "winner return out of (0, 1]: {}", pos_val);
 }
 
 #[test]
@@ -54,7 +63,8 @@ fn rollout_does_not_consume_engine_rng_for_chance_decisions() {
         // "Terminate cleanly" = either reached terminal (winner/loser returns)
         // OR hit the safety cap (all-zero returns). Either way, no panic / no hang.
         if e.is_terminal() {
-            assert_eq!(returns.iter().filter(|&&r| r == 1.0).count(), 1);
+            // One positive (winner), discounted by length.
+            assert_eq!(returns.iter().filter(|&&r| r > 0.0).count(), 1);
         } else {
             assert_eq!(returns, [0.0f32; 4],
                 "rollout_seed={} non-terminal but returns != zeros: {:?}",
@@ -84,7 +94,7 @@ fn rollout_from_mid_game_state_terminates() {
         if e.is_terminal() { return; }
         let returns = e.random_rollout_to_terminal(seed);
         if e.is_terminal() {
-            assert_eq!(returns.iter().filter(|&&r| r == 1.0).count(), 1);
+            assert_eq!(returns.iter().filter(|&&r| r > 0.0).count(), 1);
             return; // success — at least one seed converges
         }
     }
