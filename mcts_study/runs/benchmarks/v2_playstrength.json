@@ -1,1 +1,1 @@
-{"version":"v2_phase1","n_games":100,"timeouts":100,"timeout_rate":1.0000,"length_p25":30000,"length_median":30000,"length_p75":30000,"length_max":30000,"wins_by_seat":[0,0,0,0],"games_with_longest_road":0,"mean_winner_vp":0.00,"elapsed_sec":0.8}
+{"version":"v2_phase1","n_games":100,"timeouts":100,"timeout_rate":1.0000,"length_p25":30000,"length_median":30000,"length_p75":30000,"length_max":30000,"wins_by_seat":[0,0,0,0],"games_with_longest_road":100,"mean_winner_vp":0.00,"elapsed_sec":1.1}

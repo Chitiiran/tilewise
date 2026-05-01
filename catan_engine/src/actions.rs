@@ -8,12 +8,20 @@ pub enum Action {
     BuildCity(u8),       // vertex 0..54
     BuildRoad(u8),       // edge 0..72
     MoveRobber(u8),      // hex 0..19
-    Discard(Resource),
+    Discard(Resource),   // dead in v2 (instant random discard) — kept for back-compat
     EndTurn,
     RollDice,
+    /// v2 maritime trade: give N of `give` to bank, receive 1 of `get`.
+    /// N is 4:1 if no port; 3:1 with generic port; 2:1 with the specific resource port.
+    /// Same-for-same is excluded.
+    TradeBank { give: Resource, get: Resource },
 }
 
-pub const ACTION_SPACE_SIZE: usize = 206;
+/// v1: 206 (settlements + cities + roads + robber + discard + end + roll).
+/// v2: 226 (adds 20 TradeBank actions at 206-225). Same-for-same trades are illegal.
+pub const ACTION_SPACE_SIZE: usize = 226;
+pub const TRADE_BANK_BASE: u32 = 206;
+pub const N_TRADE_BANK_ACTIONS: u32 = 20; // 5 give × 4 valid get
 
 /// Number of u64 words needed to hold the legal-action bitmap.
 /// Sized to support v2's expanded action space (dev cards + trades) without
@@ -83,6 +91,14 @@ pub fn encode(action: Action) -> u32 {
         Action::Discard(r) => 199 + resource_index(r) as u32,
         Action::EndTurn => 204,
         Action::RollDice => 205,
+        Action::TradeBank { give, get } => {
+            let g = resource_index(give) as u32;
+            let r = resource_index(get) as u32;
+            assert!(g != r, "TradeBank give and get must differ");
+            // Compact "get index" within 0..4: skip the value equal to give.
+            let get_compact = if r < g { r } else { r - 1 };
+            TRADE_BANK_BASE + g * 4 + get_compact
+        }
     }
 }
 
@@ -95,6 +111,17 @@ pub fn decode(id: u32) -> Option<Action> {
         199..=203 => Some(Action::Discard(resource_from_index((id - 199) as u8))),
         204 => Some(Action::EndTurn),
         205 => Some(Action::RollDice),
+        206..=225 => {
+            let off = id - TRADE_BANK_BASE;
+            let g = (off / 4) as u8;
+            let get_compact = (off % 4) as u8;
+            // Re-expand: get is get_compact if get_compact < g, else get_compact + 1.
+            let r = if get_compact < g { get_compact } else { get_compact + 1 };
+            Some(Action::TradeBank {
+                give: resource_from_index(g),
+                get: resource_from_index(r),
+            })
+        }
         _ => None,
     }
 }

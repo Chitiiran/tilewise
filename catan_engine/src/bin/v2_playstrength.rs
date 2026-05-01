@@ -9,13 +9,14 @@ use std::time::Instant;
 fn pick_greedy(legal: &[u32]) -> u32 {
     fn priority(a: u32) -> i32 {
         match a {
-            54..=107 => 100, // city
-            0..=53 => 80,    // settlement
-            108..=179 => 50, // road
-            205 => 10,       // roll dice
-            204 => 1,        // end turn
-            180..=198 => 5,  // robber
-            199..=203 => 5,  // discard (deadcode)
+            54..=107 => 100,   // city
+            0..=53 => 80,      // settlement
+            108..=179 => 50,   // road
+            206..=225 => 30,   // trade-bank (use when can't build, beats EndTurn)
+            205 => 10,         // roll dice
+            180..=198 => 5,    // robber
+            199..=203 => 5,    // discard (deadcode)
+            204 => 1,          // end turn (last resort)
             _ => 0,
         }
     }

@@ -221,6 +221,24 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             update_longest_road(state);
             check_win(state, &mut events);
         }
+        (GamePhase::Main, Action::TradeBank { give, get }) => {
+            let p = state.current_player as usize;
+            let give_idx = give as usize;
+            let get_idx = get as usize;
+            // 4:1 bank trade. Ports (3:1, 2:1) deferred; will be added when we
+            // track per-player port ownership.
+            const TRADE_RATIO: u8 = 4;
+            assert!(state.hands[p][give_idx] >= TRADE_RATIO,
+                "TradeBank legality bug: {} doesn't have {} {:?}", p, TRADE_RATIO, give);
+            assert!(state.bank[get_idx] >= 1,
+                "TradeBank legality bug: bank doesn't have {:?}", get);
+            state.hands[p][give_idx] -= TRADE_RATIO;
+            state.bank[give_idx] += TRADE_RATIO;
+            state.hands[p][get_idx] += 1;
+            state.bank[get_idx] -= 1;
+            // No event type for trades yet — could add GameEvent::TradeBank later
+            // for stats tracking. For now silent.
+        }
         (GamePhase::Main, Action::EndTurn) => {
             events.push(GameEvent::TurnEnded { player: state.current_player });
             state.current_player = (state.current_player + 1) % 4;
@@ -320,6 +338,17 @@ fn can_afford(hand: &[u8; 5], cost: &[u8; 5]) -> bool {
     hand.iter().zip(cost).all(|(h, c)| h >= c)
 }
 
+fn idx_to_resource(i: u8) -> Resource {
+    match i {
+        0 => Resource::Wood,
+        1 => Resource::Brick,
+        2 => Resource::Sheep,
+        3 => Resource::Wheat,
+        4 => Resource::Ore,
+        _ => panic!("invalid resource index {i}"),
+    }
+}
+
 fn pay(hand: &mut [u8; 5], bank: &mut [u8; 5], cost: &[u8; 5]) {
     for i in 0..5 {
         hand[i] -= cost[i];
@@ -345,6 +374,19 @@ fn legal_actions_main(state: &GameState) -> Vec<Action> {
         for v in 0u8..54 {
             if state.settlements.get(v as usize) == Some(p) {
                 out.push(Action::BuildCity(v));
+            }
+        }
+    }
+    // Maritime trade (4:1 bank, §A5): give 4 of one resource, get 1 of another
+    // (different) resource. Ports (3:1 generic, 2:1 specific) deferred.
+    for give_idx in 0..5u8 {
+        if hand[give_idx as usize] >= 4 {
+            let give = idx_to_resource(give_idx);
+            for get_idx in 0..5u8 {
+                if get_idx == give_idx { continue; }
+                if state.bank[get_idx as usize] == 0 { continue; } // bank must have it
+                let get = idx_to_resource(get_idx);
+                out.push(Action::TradeBank { give, get });
             }
         }
     }
