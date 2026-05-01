@@ -186,6 +186,20 @@ The fix is structural: **store legality as part of state, update incrementally, 
 
 11g. **Stable bit positions for future-proofing.** Reserve action ranges with gaps so adding new actions (e.g. v3 player trades) doesn't require renumbering existing bits. The cost is a few unused slots; the benefit is forward compatibility for trained models loaded with newer engine versions.
 
+11h. **State serialize / deserialize for bit-packed state.** With §B9's bit-packed `GameState`, we need a stable byte format for:
+   - **Tests** — write a state to a file, load it later, verify behavior is identical.
+   - **Crash recovery** — checkpoint mid-search/training so a kill-midway doesn't lose state.
+   - **Debugging** — capture a "weird" state from production, replay it locally.
+   - **Future cross-version analysis** — load v2 states in a v3 engine.
+
+   Implementation: `engine.state_to_bytes() -> Vec<u8>` and `Engine::from_bytes(bytes: &[u8]) -> Result<Engine>`. Format includes a 4-byte schema version header so future versions can detect-and-reject (or detect-and-migrate).
+
+11i. **Action-space schema versioning.** A v2 GNN model is trained on a specific action-bit layout (the 256-bit ordering from §11e). If v3 adds 50 new actions in the middle of the layout, all v2 model weights' policy-head outputs become misaligned. Two-part fix:
+   - Reserve gap slots in v2's action layout (per §11g) so v3 additions land in unused positions, not by shifting existing bits.
+   - Add `action_space_version: u32` to GnnModel checkpoints and engine. Engine + model must agree at load time; mismatch = explicit error.
+
+   Without this, mixing engine and model versions silently produces nonsense predictions.
+
 ### C. Engine — APIs we already wishlisted (carry over from §2 of `2026-04-30-engine-v2-wishlist.md`)
 
 12. **`engine.bank() -> [u8; 5]`** — expose bank resources directly. Replay tooling needs this.
@@ -279,6 +293,37 @@ The fix is structural: **store legality as part of state, update incrementally, 
 
 55. **Action-distribution histograms.** When v1 was diagnosed as "always picks the same settlement spot," we saw it manually. Should be automatic: log the policy entropy at each game phase (setup vs main vs endgame). Low entropy → policy collapse → flag.
 
+55a. **Microbench harness + v1↔v2 comparison framework.** Every perf claim in this doc (§J37 "5-10× MCTS speedup," §B-bis 11f "30-100× legal-action lookup," §F27 "50× GPU speedup") needs to be **measured**, not assumed. Build a benchmark harness that runs identical workloads through v1 and v2 engines and reports the speedup empirically.
+
+   **What to measure (named workloads):**
+   - **bench-engine-step:** apply 10k random legal actions, time per step (legal_mask lookup + apply + state mutation).
+   - **bench-mcts-game:** play one full game with `LookaheadMcts(d=10, s=50)` against random, time total wall-clock + per-move avg.
+   - **bench-cache-build:** materialize 100 positions from action_history into HeteroData tensors, time cache size + build rate.
+   - **bench-evaluator-leaf:** time one `LookaheadVpEvaluator.evaluate()` call at depth=10. Sub-bench the Python↔Rust boundary specifically.
+   - **bench-state-clone:** time `state.clone()` per call (today's bottleneck per §J37). Compare to unmake-move once that lands.
+
+   **Harness design:**
+   - Parametrize by `engine_version: ['v1', 'v2', 'v2_no_legality_cache', ...]` so any single optimization can be measured in isolation.
+   - Each bench produces a JSON line: `{workload, version, mean_us, p99_us, n_iters, git_sha, timestamp}`.
+   - Append-only log at `mcts_study/runs/benchmarks/results.jsonl` so we never lose comparison data.
+   - A summary script reads the log and prints "v1 vs v2: bench-mcts-game 8400ms → 320ms (26×)."
+
+   **v1 archival for comparison data:**
+   - The v1 engine code lives at branch `gnn-v0` (current). When v2 starts on a fresh branch, the v1 engine is preserved in git history.
+   - Use a separate worktree (`worktrees/v1-comparison`) that stays on the v1 codebase indefinitely so we can re-run benchmarks even after v2 lands.
+   - Capture **baseline numbers immediately** before v2 work begins: run all 5 named workloads on v1 and commit the results. Otherwise we lose the apples-to-apples reference.
+
+   **Why this matters more than usual:** the "30× speedup" estimates in this doc are rough order-of-magnitude. If reality is 3× and we built on top of an assumed 30×, the entire phasing might be wrong. Measuring forces the architecture to make good on its claims, and forces us to fix it where it doesn't.
+
+55b. **v1 engine snapshot for cross-version playstrength comparison.** Beyond perf, we want to know if v2 (full Catan) actually plays better. Since v1 and v2 are different *games*, you can't compare GNN-vs-GNN directly. But you can:
+   - Have a v2-engine LookaheadMcts play 100 games (recorded). Note final VPs.
+   - Have a v1-engine LookaheadMcts play 100 games on **the same seeds** (matched-pairs comparison). Note final VPs.
+   - Compare distributions of game length, VP-source diversity, timeout rate, etc. v2 should show:
+     - Lower timeout rate (no road blockades)
+     - More diverse VP sources (longest road, dev cards, not just settlements)
+     - Tighter game-length distribution (no 17,000-move stalls)
+   These metrics tell us "did the rule additions fix the strategic degeneracies we identified?" — independent of whether the GNN learns from them.
+
 56. **Dataset health dashboard before training.** Every cache build should report:
    - % timed-out games (today's 41% caught us off guard)
    - Distribution of game lengths (very long games may be degenerate)
@@ -308,13 +353,48 @@ The fix is structural: **store legality as part of state, update incrementally, 
 
 34. **Branch hygiene** — v2 should land on a fresh branch off main, not gnn-v0. The two are diverging structurally and will eventually need to be merged once v2 stabilizes; cleaner if they don't share commits.
 35. **Schema v3 recorder** — v2 engine state is fundamentally different. Bump SCHEMA_VERSION = 3, and have CatanReplayDataset filter to schema_version >= 3 going forward. (V1 and v2 parquets become useless training data — that's OK, the game changed.)
+
+   **Explicit field list for v3 (per-game):**
+   - `seed`, `winner`, `final_vp[4]`, `length_in_moves`, `action_history`, `schema_version` (carry forward)
+   - `final_vp_breakdown[4]` — separate VP from settlements / cities / longest_road / largest_army / dev_card_vp (so we can analyze "did the teacher ever win via longest road?")
+   - `longest_road_holder`, `longest_road_length[4]`, `largest_army_holder`, `largest_army_size[4]`
+   - `dev_cards_purchased[4]` and `dev_cards_played[4][5]` (per-type counts: knight/yop/mono/rb/vp)
+   - `trades_completed[4]` (count of bank + port trades per player)
+   - `board_method`, `action_space_version`, `engine_version` (for reproducibility — see also §35a)
+   - `total_resources_traded[5]` (per-resource trade volume — diagnostic for "did the trade rules work?")
+
+   **Per-move:** keep `(seed, move_index, current_player, legal_action_mask, mcts_visit_counts, action_taken, mcts_root_value)`. The legal_action_mask is now sourced from `engine.legal_mask()` (§11d) instead of being constructed from the action list.
+
+35a. **Recorder config field: `board_method: "abc"`.** Captured per-game so downstream analysis can filter parquets by board generation method. Future tournaments comparing ABC vs. rejection-sampled boards will need this.
+
 36. **Test coverage on rule additions** — every new rule (trades, dev cards, longest road, largest army) needs a unit test. The v1 engine had reasonable test coverage; v2 should be stronger.
+
+36a. **Property-based tests on state invariants.** For each state-mutation type, after applying any action (or random sequence of actions), assert:
+   - **Resource conservation:** `sum(all_player_hands[r]) + bank[r] == 19` for every resource r at every state.
+   - **VP consistency:** `state.vp[p] == settlement_count[p] + 2*city_count[p] + longest_road_bonus[p] + largest_army_bonus[p] + dev_card_vp[p]` at every state.
+   - **Building inventory caps:** `settlement_count[p] <= 5`, `city_count[p] <= 4`, `road_count[p] <= 15`.
+   - **Legal mask correctness:** `incremental_legal_mask == brute_force_legal_mask` (already in §11c, generalize to other state-derived bitmaps).
+   - **Action history determinism:** replay `(seed, action_history)` from scratch produces a state hash equal to the live state's hash.
+
+   Implementation: a `proptest`-style fuzz harness that generates random legal action sequences and runs all assertions per step. Catches subtle bugs that unit tests miss. Use the `proptest` Rust crate or roll a simpler version.
 
 ---
 
 ## Suggested phasing
 
-Don't do everything at once. Three phases:
+Don't do everything at once. **Phase 0 first**, then three substantive phases.
+
+### Phase 0: Archive v1, capture baselines (1 day)
+
+Before v2 work begins, lock down v1 as a comparison reference:
+
+1. **v1 snapshot:** ensure `gnn-v0` branch is fully pushed to origin (✅ already done as of 2026-04-30, commit 3966fd3).
+2. **v1 baseline microbench data (§55a):** run all 5 named workloads on v1, commit results to `mcts_study/runs/benchmarks/v1_baseline.jsonl`. Without this we lose the speedup reference forever.
+3. **v1 playstrength baseline (§55b):** record 100 v1 LookaheadMcts games with full stats (length, VP, timeouts) on a fixed seed range. Commit summary to `mcts_study/runs/benchmarks/v1_playstrength.json`.
+4. **Separate worktree for v1 archival:** create `worktrees/v1-archive/` that stays on the v1 commit indefinitely. v2 work happens on a new branch off main; v1 is preserved as-is for re-runs.
+5. **Create v2 branch:** off main, with a clean repo state. v2 engine work starts here.
+
+**Output of phase 0:** v2 branch ready to start, v1 archived in a separate worktree with comparison data on disk.
 
 ### Phase 1: Engine v2 minimum-viable (1–2 weeks of focused work)
 
