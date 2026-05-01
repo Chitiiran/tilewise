@@ -50,17 +50,25 @@ class _RandomBot:
 _BASE_SEATING = ["GnnMcts", "PureGnn", "LookaheadMcts", "Random"]
 
 
-def _load_model(checkpoint: Path, hidden_dim: int, num_layers: int) -> GnnModel:
+def _resolve_device(spec: str) -> str:
+    """Resolve 'auto' to cuda if available else cpu. Pass-through for explicit specs."""
+    if spec == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return spec
+
+
+def _load_model(checkpoint: Path, hidden_dim: int, num_layers: int,
+                device: str = "cpu") -> GnnModel:
     model = GnnModel(hidden_dim=hidden_dim, num_layers=num_layers)
-    state = torch.load(checkpoint, map_location="cpu")
+    state = torch.load(checkpoint, map_location=device)
     model.load_state_dict(state)
     model.eval()
-    return model
+    return model.to(device)
 
 
-def _build_gnn_mcts(game, model: GnnModel, sims: int, seed: int):
+def _build_gnn_mcts(game, model: GnnModel, sims: int, seed: int, device: str = "cpu"):
     rng = np.random.default_rng(seed)
-    evaluator = GnnEvaluator(model=model)
+    evaluator = GnnEvaluator(model=model, device=device)
     return os_mcts.MCTSBot(
         game=game, uct_c=1.4, max_simulations=sims,
         evaluator=evaluator, solve=False, random_state=rng,
@@ -78,7 +86,8 @@ def _build_lookahead_mcts(game, sims: int, lookahead_depth: int, seed: int):
 
 def _run_cell(rec: SelfPlayRecorder, rot_idx: int, model: GnnModel, sims: int,
               lookahead_depth: int, seeds: list[int], done: set[int],
-              max_seconds: float, progress_desc_prefix: str = "") -> None:
+              max_seconds: float, progress_desc_prefix: str = "",
+              device: str = "cpu") -> None:
     game = CatanGame()
     seating = _BASE_SEATING[rot_idx:] + _BASE_SEATING[:rot_idx]
     desc = f"{progress_desc_prefix}rot={rot_idx} {'-'.join(seating)}"
@@ -86,7 +95,8 @@ def _run_cell(rec: SelfPlayRecorder, rot_idx: int, model: GnnModel, sims: int,
         if seed in done:
             continue
         chance_rng = random.Random(seed)
-        gnn_mcts_bot = _build_gnn_mcts(game, model=model, sims=sims, seed=seed)
+        gnn_mcts_bot = _build_gnn_mcts(game, model=model, sims=sims, seed=seed,
+                                       device=device)
         lookahead_mcts_bot = _build_lookahead_mcts(
             game, sims=sims, lookahead_depth=lookahead_depth, seed=seed,
         )
@@ -97,7 +107,7 @@ def _run_cell(rec: SelfPlayRecorder, rot_idx: int, model: GnnModel, sims: int,
                 bots[slot] = gnn_mcts_bot
                 gnn_mcts_slot = slot
             elif role == "PureGnn":
-                bots[slot] = PureGnnBot(model=model)
+                bots[slot] = PureGnnBot(model=model, device=device)
             elif role == "LookaheadMcts":
                 bots[slot] = lookahead_mcts_bot
             else:
@@ -127,16 +137,21 @@ def _run_cell(rec: SelfPlayRecorder, rot_idx: int, model: GnnModel, sims: int,
 
 def _worker(args) -> None:
     (worker_idx, parent_out, checkpoint, sims, lookahead_depth,
-     seeds_per_rot, max_seconds, base_config, hidden_dim, num_layers) = args
+     seeds_per_rot, max_seconds, base_config, hidden_dim, num_layers, device) = args
+    # Device resolution must happen INSIDE the worker — torch.cuda checks need
+    # the child's process context (CUDA initializes per-process, not shared).
+    resolved_device = _resolve_device(device)
     worker_dir = parent_out / f"worker{worker_idx}"
     worker_dir.mkdir(parents=True, exist_ok=True)
-    rec = SelfPlayRecorder(worker_dir, config={**base_config, "worker_idx": worker_idx})
+    rec = SelfPlayRecorder(worker_dir, config={**base_config, "worker_idx": worker_idx,
+                                                 "device": resolved_device})
     done = rec.done_seeds()
-    model = _load_model(checkpoint, hidden_dim, num_layers)
+    model = _load_model(checkpoint, hidden_dim, num_layers, device=resolved_device)
     for rot_idx in range(4):
         seeds = seeds_per_rot[rot_idx]
         _run_cell(rec, rot_idx, model, sims, lookahead_depth, seeds, done,
-                  max_seconds, progress_desc_prefix=f"w{worker_idx} ")
+                  max_seconds, progress_desc_prefix=f"w{worker_idx} ",
+                  device=resolved_device)
         rec.checkpoint(f"rot={rot_idx}")
     rec.flush()
 
@@ -154,6 +169,7 @@ def main(
     max_seconds: float = 600.0,
     resume: bool = True,
     workers: int = 1,
+    device: str = "auto",
 ) -> Path:
     """4 cyclic rotations of [GnnMcts, PureGnn, LookaheadMcts, Random]."""
     out = make_run_dir(out_root, "e7_gnn_tournament")
@@ -171,12 +187,14 @@ def main(
     }
 
     if workers <= 1:
-        rec = SelfPlayRecorder(out, config=base_config)
+        resolved_device = _resolve_device(device)
+        rec = SelfPlayRecorder(out, config={**base_config, "device": resolved_device})
         done = rec.done_seeds() if resume else set()
-        model = _load_model(checkpoint, hidden_dim, num_layers)
+        model = _load_model(checkpoint, hidden_dim, num_layers, device=resolved_device)
         for rot_idx in range(4):
             seeds = [seed_base + rot_idx * 10_000 + i for i in range(num_games_per_seating)]
-            _run_cell(rec, rot_idx, model, sims, lookahead_depth, seeds, done, max_seconds)
+            _run_cell(rec, rot_idx, model, sims, lookahead_depth, seeds, done, max_seconds,
+                      device=resolved_device)
             rec.checkpoint(f"rot={rot_idx}")
         rec.flush()
         return out
@@ -194,7 +212,7 @@ def main(
         seeds_per_rot = [seeds_per_rot_per_worker[r][w] for r in range(4)]
         args_list.append((
             w, out, checkpoint, sims, lookahead_depth,
-            seeds_per_rot, max_seconds, base_config, hidden_dim, num_layers,
+            seeds_per_rot, max_seconds, base_config, hidden_dim, num_layers, device,
         ))
 
     ctx = get_context("spawn")
@@ -216,6 +234,10 @@ def cli_main():
     p.add_argument("--max-seconds", type=float, default=600.0)
     p.add_argument("--no-resume", action="store_true")
     p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--device", type=str, default="auto",
+                   choices=["auto", "cpu", "cuda"],
+                   help="device for the GNN model + GnnEvaluator forwards. "
+                        "'auto' picks cuda if available else cpu.")
     args = p.parse_args()
     out = main(
         out_root=args.out_root,
@@ -229,6 +251,7 @@ def cli_main():
         max_seconds=args.max_seconds,
         resume=not args.no_resume,
         workers=args.workers,
+        device=args.device,
     )
     print(f"e7 wrote to {out}")
 
