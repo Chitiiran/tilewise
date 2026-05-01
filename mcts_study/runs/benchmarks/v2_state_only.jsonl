@@ -1,0 +1,6 @@
+[bench] running 4 workloads, version=v2_state_only, git_sha=20ae1396abc298d4085a134d0f93455565936e04
+{"workload":"bench-engine-step","version":"v2_state_only","git_sha":"20ae1396abc298d4085a134d0f93455565936e04","n_iters":5,"mean_us":0.379,"p50_us":0.352,"p99_us":0.489,"min_us":0.346,"max_us":0.489}
+{"workload":"bench-mcts-game","version":"v2_state_only","git_sha":"20ae1396abc298d4085a134d0f93455565936e04","n_iters":10,"mean_us":8292.460,"p50_us":8259.100,"p99_us":8687.100,"min_us":8088.300,"max_us":8687.100}
+{"workload":"bench-evaluator-leaf","version":"v2_state_only","git_sha":"20ae1396abc298d4085a134d0f93455565936e04","n_iters":200,"mean_us":48.844,"p50_us":45.400,"p99_us":90.700,"min_us":33.000,"max_us":97.100}
+{"workload":"bench-state-clone","version":"v2_state_only","git_sha":"20ae1396abc298d4085a134d0f93455565936e04","n_iters":5,"mean_us":0.226,"p50_us":0.226,"p99_us":0.226,"min_us":0.226,"max_us":0.226}
+[bench] done

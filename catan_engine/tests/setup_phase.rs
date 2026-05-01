@@ -26,7 +26,7 @@ fn setup1_distance_rule_blocks_adjacent_vertices() {
     // Place settlement at vertex 0.
     apply(&mut state, Action::BuildSettlement(0), &mut rng);
     // After placing, the road action follows; for this test just inspect occupancy.
-    assert_eq!(state.settlements[0], Some(0)); // owned by player 0
+    assert_eq!(state.settlements.get(0), Some(0)); // owned by player 0
     // After settlement is placed, before player picks a road,
     // legal_actions should enumerate roads at edges of vertex 0 only.
     // (The distance check itself: vertex 0's neighbors must not be settlement-legal

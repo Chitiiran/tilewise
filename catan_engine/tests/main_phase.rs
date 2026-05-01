@@ -26,7 +26,7 @@ fn ready_to_roll() -> GameState {
     // so it becomes a legal Main-phase settlement spot once player 0 can afford it.
     // Required because the bare setup-phase road endpoints for player 0 (v3 and v22)
     // are both blocked by the distance rule from existing settlements.
-    state.roads[6] = Some(0);
+    state.roads.set(6, Some(0));
     assert!(matches!(state.phase, GamePhase::Roll));
     state
 }
@@ -90,7 +90,7 @@ fn building_settlement_deducts_resources_and_grants_vp() {
     apply(&mut state, Action::BuildSettlement(v_to_build), &mut rng);
     assert_eq!(state.hands[0], [1, 1, 1, 1, 0]);
     assert_eq!(state.vp[0], vp_before + 1);
-    assert_eq!(state.settlements[v_to_build as usize], Some(0));
+    assert_eq!(state.settlements.get(v_to_build as usize), Some(0));
 }
 
 #[test]
@@ -99,11 +99,11 @@ fn upgrading_settlement_to_city_costs_2_wheat_3_ore_and_grants_extra_vp() {
     state.phase = GamePhase::Main;
     state.hands[0] = [0, 0, 0, 2, 3];
     let mut rng = Rng::from_seed(0);
-    let owned = (0u8..54).find(|&v| state.settlements[v as usize] == Some(0)).unwrap();
+    let owned = (0u8..54).find(|&v| state.settlements.get(v as usize) == Some(0)).unwrap();
     let vp_before = state.vp[0];
     apply(&mut state, Action::BuildCity(owned), &mut rng);
-    assert_eq!(state.cities[owned as usize], Some(0));
-    assert!(state.settlements[owned as usize].is_none());
+    assert_eq!(state.cities.get(owned as usize), Some(0));
+    assert!(state.settlements.get(owned as usize).is_none());
     assert_eq!(state.hands[0], [0, 0, 0, 0, 0]);
     assert_eq!(state.vp[0], vp_before + 1); // +1 (city is 2VP, settlement was 1VP)
 }

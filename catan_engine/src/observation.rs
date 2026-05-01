@@ -33,10 +33,10 @@ pub fn build_observation(state: &GameState, viewer: u8) -> Observation {
     }
     let mut vertex_features = vec![0.0f32; 54 * F_VERT];
     for v in 0..54usize {
-        if let Some(p) = state.cities[v] {
+        if let Some(p) = state.cities.get(v) {
             vertex_features[v * F_VERT + 2] = 1.0;
             vertex_features[v * F_VERT + 3 + perspective_idx(p, viewer)] = 1.0;
-        } else if let Some(p) = state.settlements[v] {
+        } else if let Some(p) = state.settlements.get(v) {
             vertex_features[v * F_VERT + 1] = 1.0;
             vertex_features[v * F_VERT + 3 + perspective_idx(p, viewer)] = 1.0;
         } else {
@@ -45,7 +45,7 @@ pub fn build_observation(state: &GameState, viewer: u8) -> Observation {
     }
     let mut edge_features = vec![0.0f32; 72 * F_EDGE];
     for e in 0..72usize {
-        if let Some(p) = state.roads[e] {
+        if let Some(p) = state.roads.get(e) {
             edge_features[e * F_EDGE + 1] = 1.0;
             edge_features[e * F_EDGE + 2 + perspective_idx(p, viewer)] = 1.0;
         } else {

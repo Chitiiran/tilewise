@@ -36,7 +36,7 @@ fn moving_robber_to_hex_with_only_self_buildings_skips_steal() {
     // Put player 0's settlement adjacent to hex 5; nobody else has buildings there.
     let target_hex = 5u8;
     let v = state.board.hex_to_vertices[target_hex as usize][0];
-    state.settlements[v as usize] = Some(0);
+    state.settlements.set(v as usize, Some(0));
     state.phase = GamePhase::MoveRobber;
     state.current_player = 0;
     let mut rng = Rng::from_seed(0);

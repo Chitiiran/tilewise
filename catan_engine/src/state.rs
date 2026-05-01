@@ -46,36 +46,19 @@ pub const MAX_SETTLEMENTS: u8 = 5;
 pub const MAX_CITIES: u8 = 4;
 pub const MAX_ROADS: u8 = 15;
 
-/// 8 phases, fits in 3 bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+/// 8 phase variants. Internal layout fits in 3-bit phase tag, but `Discard`/`Steal`
+/// retain their payloads for compatibility — payload is moved out of the bit-packed
+/// state into separate scalar fields once §A-bis 8a (instant discard) lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GamePhase {
-    Setup1Place = 0,
-    Setup2Place = 1,
-    Roll = 2,
-    Main = 3,
-    /// Robber rolled. Each owing player auto-discards floor(hand/2) random cards
-    /// in a single chance step. (v2 simplification §A-bis 8a.)
-    DiscardChance = 4,
-    MoveRobber = 5,
-    Steal = 6,
-    Done = 7,
-}
-
-impl GamePhase {
-    #[inline]
-    pub fn from_bits(b: u8) -> Self {
-        match b & 0b111 {
-            0 => Self::Setup1Place,
-            1 => Self::Setup2Place,
-            2 => Self::Roll,
-            3 => Self::Main,
-            4 => Self::DiscardChance,
-            5 => Self::MoveRobber,
-            6 => Self::Steal,
-            _ => Self::Done,
-        }
-    }
+    Setup1Place,
+    Setup2Place,
+    Roll,
+    Main,
+    Discard { remaining: [u8; 4] },
+    MoveRobber,
+    Steal { from_options: Vec<u8> },
+    Done { winner: u8 },
 }
 
 /// Owner of a vertex/edge slot. 0=empty, 1-4 = player_id+1.
@@ -115,31 +98,16 @@ pub struct GameState {
     // ---- Single-byte fields ----
     pub robber_hex: u8,           // 0..19
     pub current_player: u8,       // 0..3
-    pub phase: GamePhase,         // 3-bit enum
-    pub setup_pending_vertex: Option<u8>, // setup-phase road-must-connect tracker
-    pub steal_victim: Option<u8>, // current Steal phase's victim (if phase == Steal)
+    pub phase: GamePhase,
+    pub setup_pending: Option<u8>, // setup-phase road-must-connect tracker
 
     // ---- Per-resource counts (4 + 1 = 5 of these arrays, all small) ----
     pub hands: [[u8; N_RESOURCES]; N_PLAYERS],   // 20 bytes — could bit-pack later
     pub bank: [u8; N_RESOURCES],                 // 5 bytes
     pub vp: [u8; N_PLAYERS],                     // 4 bytes (settlements + cities + LR/LA bonus)
 
-    // ---- Counters (small fixed arrays) ----
-    pub turn: u16, // 2 bytes — supports up to 65k turns
-
-    // ---- v2 new state ----
-    pub settlements_built: [u8; N_PLAYERS],  // 4 bytes; capped at MAX_SETTLEMENTS
-    pub cities_built: [u8; N_PLAYERS],       // 4 bytes; capped at MAX_CITIES
-    pub roads_built: [u8; N_PLAYERS],        // 4 bytes; capped at MAX_ROADS
-
-    /// Length of each player's longest road. Recomputed on road build / opponent settlement break.
-    pub longest_road_length: [u8; N_PLAYERS],
-    /// Player ID who currently holds the +2 VP for longest road, or None if no one has ≥5 yet.
-    pub longest_road_holder: Option<u8>,
-
-    /// Bitmap: ports owned by each player (3:1 generic = bit 0, 2:1 wood = bit 1, ..., 2:1 ore = bit 5).
-    /// 6 bits used per player × 4 players = 24 bits → 3 bytes.
-    pub ports_owned: [u8; N_PLAYERS],
+    // ---- Counters ----
+    pub turn: u32,
 }
 
 /// 54 vertices × 3 bits each = 162 bits.
@@ -206,43 +174,18 @@ impl GameState {
             robber_hex: desert_hex,
             current_player: 0,
             phase: GamePhase::Setup1Place,
-            setup_pending_vertex: None,
-            steal_victim: None,
+            setup_pending: None,
             hands: [[0; N_RESOURCES]; N_PLAYERS],
             bank: [RESOURCE_SUPPLY; N_RESOURCES],
             vp: [0; N_PLAYERS],
             turn: 0,
-            settlements_built: [0; N_PLAYERS],
-            cities_built: [0; N_PLAYERS],
-            roads_built: [0; N_PLAYERS],
-            longest_road_length: [0; N_PLAYERS],
-            longest_road_holder: None,
-            ports_owned: [0; N_PLAYERS],
         }
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self.phase, GamePhase::Done)
-    }
-
-    /// The winning player, if the game is over.
-    pub fn winner(&self) -> Option<u8> {
-        if !self.is_terminal() { return None; }
-        // Winner is whoever has VP >= 10 (game-over invariant).
-        for p in 0..N_PLAYERS as u8 {
-            if self.vp[p as usize] >= WIN_VP { return Some(p); }
-        }
-        None
+        matches!(self.phase, GamePhase::Done { .. })
     }
 }
-
-// =============================================================================
-// Compile-time sanity checks for layout assumptions
-// =============================================================================
-const _: () = {
-    // GamePhase fits in 3 bits.
-    assert!(GamePhase::Done as u8 < 8);
-};
 
 #[cfg(test)]
 mod tests {
@@ -286,14 +229,4 @@ mod tests {
         assert_eq!(owned, vec![(5, 1), (10, 2), (20, 0)]);
     }
 
-    #[test]
-    fn phase_bits_roundtrip() {
-        for ph in [
-            GamePhase::Setup1Place, GamePhase::Setup2Place, GamePhase::Roll,
-            GamePhase::Main, GamePhase::DiscardChance, GamePhase::MoveRobber,
-            GamePhase::Steal, GamePhase::Done,
-        ] {
-            assert_eq!(GamePhase::from_bits(ph as u8), ph);
-        }
-    }
 }

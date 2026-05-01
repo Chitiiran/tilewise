@@ -68,7 +68,7 @@ fn legal_setup_settlements(state: &GameState) -> Vec<Action> {
 fn legal_setup_roads(state: &GameState, just_placed_vertex: u8) -> Vec<Action> {
     let mut out = Vec::new();
     for &e in &state.board.vertex_to_edges[just_placed_vertex as usize] {
-        if state.roads[e as usize].is_none() {
+        if state.roads.get(e as usize).is_none() {
             out.push(Action::BuildRoad(e));
         }
     }
@@ -76,12 +76,12 @@ fn legal_setup_roads(state: &GameState, just_placed_vertex: u8) -> Vec<Action> {
 }
 
 fn is_legal_settlement_location(state: &GameState, v: u8) -> bool {
-    if state.settlements[v as usize].is_some() || state.cities[v as usize].is_some() {
+    if state.settlements.get(v as usize).is_some() || state.cities.get(v as usize).is_some() {
         return false;
     }
     // Distance rule: no neighbor vertex may have a settlement or city.
     for &n in &state.board.vertex_to_vertices[v as usize] {
-        if state.settlements[n as usize].is_some() || state.cities[n as usize].is_some() {
+        if state.settlements.get(n as usize).is_some() || state.cities.get(n as usize).is_some() {
             return false;
         }
     }
@@ -92,13 +92,13 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
     let mut events = Vec::new();
     match (&state.phase, action) {
         (GamePhase::Setup1Place, Action::BuildSettlement(v)) => {
-            state.settlements[v as usize] = Some(state.current_player);
+            state.settlements.set(v as usize, Some(state.current_player));
             state.vp[state.current_player as usize] += 1;
             state.setup_pending = Some(v);
             events.push(GameEvent::BuildSettlement { player: state.current_player, vertex: v });
         }
         (GamePhase::Setup1Place, Action::BuildRoad(e)) => {
-            state.roads[e as usize] = Some(state.current_player);
+            state.roads.set(e as usize, Some(state.current_player));
             state.setup_pending = None;
             events.push(GameEvent::BuildRoad { player: state.current_player, edge: e });
             // Advance player; if all 4 placed, enter Setup-2 (reverse order, player 3 first).
@@ -110,7 +110,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             }
         }
         (GamePhase::Setup2Place, Action::BuildSettlement(v)) => {
-            state.settlements[v as usize] = Some(state.current_player);
+            state.settlements.set(v as usize, Some(state.current_player));
             state.vp[state.current_player as usize] += 1;
             state.setup_pending = Some(v);
             events.push(GameEvent::BuildSettlement { player: state.current_player, vertex: v });
@@ -133,7 +133,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             }
         }
         (GamePhase::Setup2Place, Action::BuildRoad(e)) => {
-            state.roads[e as usize] = Some(state.current_player);
+            state.roads.set(e as usize, Some(state.current_player));
             state.setup_pending = None;
             events.push(GameEvent::BuildRoad { player: state.current_player, edge: e });
             // Reverse-order advance; when player 0 finishes, transition to Roll.
@@ -163,7 +163,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             pay(&mut hand, &mut bank, &SETTLEMENT_COST);
             state.hands[p as usize] = hand;
             state.bank = bank;
-            state.settlements[v as usize] = Some(p);
+            state.settlements.set(v as usize, Some(p));
             state.vp[p as usize] += 1;
             events.push(GameEvent::BuildSettlement { player: p, vertex: v });
             check_win(state, &mut events);
@@ -175,8 +175,8 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             pay(&mut hand, &mut bank, &CITY_COST);
             state.hands[p as usize] = hand;
             state.bank = bank;
-            state.settlements[v as usize] = None;
-            state.cities[v as usize] = Some(p);
+            state.settlements.set(v as usize, None);
+            state.cities.set(v as usize, Some(p));
             state.vp[p as usize] += 1; // settlement was 1VP, city is 2VP, net +1
             events.push(GameEvent::BuildCity { player: p, vertex: v });
             check_win(state, &mut events);
@@ -188,7 +188,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             pay(&mut hand, &mut bank, &ROAD_COST);
             state.hands[p as usize] = hand;
             state.bank = bank;
-            state.roads[e as usize] = Some(p);
+            state.roads.set(e as usize, Some(p));
             events.push(GameEvent::BuildRoad { player: p, edge: e });
         }
         (GamePhase::Main, Action::EndTurn) => {
@@ -223,7 +223,7 @@ pub fn apply(state: &mut GameState, action: Action, rng: &mut Rng) -> Vec<GameEv
             let me = state.current_player;
             let mut targets: Vec<u8> = Vec::new();
             for &v in &board.hex_to_vertices[h as usize] {
-                let owner = state.settlements[v as usize].or(state.cities[v as usize]);
+                let owner = state.settlements.get(v as usize).or(state.cities.get(v as usize));
                 if let Some(p) = owner {
                     if p != me && state.hands[p as usize].iter().sum::<u8>() > 0
                         && !targets.contains(&p)
@@ -263,7 +263,7 @@ fn produce_resources(state: &mut GameState, roll: u8, events: &mut Vec<GameEvent
         let ri = res as usize;
         for &v in &board.hex_to_vertices[h as usize] {
             // Settlement = 1 card; city = 2.
-            let owner_qty = match (state.settlements[v as usize], state.cities[v as usize]) {
+            let owner_qty = match (state.settlements.get(v as usize), state.cities.get(v as usize)) {
                 (_, Some(p)) => Some((p, 2u8)),
                 (Some(p), None) => Some((p, 1u8)),
                 _ => None,
@@ -310,7 +310,7 @@ fn legal_actions_main(state: &GameState) -> Vec<Action> {
     }
     if can_afford(hand, &CITY_COST) {
         for v in 0u8..54 {
-            if state.settlements[v as usize] == Some(p) {
+            if state.settlements.get(v as usize) == Some(p) {
                 out.push(Action::BuildCity(v));
             }
         }
@@ -330,24 +330,24 @@ fn is_legal_settlement_for_player(state: &GameState, v: u8, p: u8) -> bool {
     if !is_legal_settlement_location(state, v) { return false; }
     // Main-phase rule: must be adjacent to one of the player's roads.
     state.board.vertex_to_edges[v as usize].iter()
-        .any(|&e| state.roads[e as usize] == Some(p))
+        .any(|&e| state.roads.get(e as usize) == Some(p))
 }
 
 fn is_legal_road_for_player(state: &GameState, e: u8, p: u8) -> bool {
-    if state.roads[e as usize].is_some() { return false; }
+    if state.roads.get(e as usize).is_some() { return false; }
     // Connects to one of the player's roads or settlements/cities.
     let [a, b] = state.board.edge_to_vertices[e as usize];
     for v in [a, b] {
-        if state.settlements[v as usize] == Some(p) || state.cities[v as usize] == Some(p) {
+        if state.settlements.get(v as usize) == Some(p) || state.cities.get(v as usize) == Some(p) {
             return true;
         }
         // Or one of the OTHER edges adjacent to this vertex is the player's road,
         // unless that vertex is occupied by another player (blocking).
-        let blocked = matches!(state.settlements[v as usize], Some(o) if o != p)
-                   || matches!(state.cities[v as usize], Some(o) if o != p);
+        let blocked = matches!(state.settlements.get(v as usize), Some(o) if o != p)
+                   || matches!(state.cities.get(v as usize), Some(o) if o != p);
         if !blocked {
             for &e2 in &state.board.vertex_to_edges[v as usize] {
-                if e2 != e && state.roads[e2 as usize] == Some(p) {
+                if e2 != e && state.roads.get(e2 as usize) == Some(p) {
                     return true;
                 }
             }
