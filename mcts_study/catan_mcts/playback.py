@@ -76,8 +76,8 @@ def _build_layout():
 
 
 # Plot bounds — these MUST match what the JS uses to map data->pixel.
-XLIM = (-5.5, 5.5)
-YLIM = (-7.5, 2.0)
+XLIM = (-6.2, 6.2)
+YLIM = (-8.0, 2.5)
 FIG_WIDTH_INCHES = 10.0
 FIG_HEIGHT_INCHES = (YLIM[1] - YLIM[0]) / (XLIM[1] - XLIM[0]) * FIG_WIDTH_INCHES
 FIG_DPI = 100
@@ -86,6 +86,41 @@ RESOURCE_COLORS = {0: "#3d8b37", 1: "#a04020", 2: "#90c060", 3: "#e6c243", 4: "#
 DESERT_COLOR = "#d4b483"
 RESOURCE_LABEL = {0: "Wood", 1: "Brick", 2: "Sheep", 3: "Wheat", 4: "Ore"}
 RESOURCE_EMOJI = {0: "🌲", 1: "🧱", 2: "🐑", 3: "🌾", 4: "⛰️"}
+RESOURCE_LETTER = {0: "W", 1: "B", 2: "Sh", 3: "Wh", 4: "Or"}
+
+# Standard Catan port layout — mirrors catan_engine/src/board.rs::standard_ports().
+# Each entry: (kind, [v1, v2]) — kind is "3:1" or one of "wood"/"brick"/"sheep"/"wheat"/"ore".
+PORTS = [
+    ("3:1",   [0, 4]),
+    ("brick", [2, 5]),
+    ("3:1",   [10, 15]),
+    ("wood",  [26, 32]),
+    ("3:1",   [46, 50]),
+    ("wheat", [49, 52]),
+    ("ore",   [47, 51]),
+    ("3:1",   [33, 38]),
+    ("sheep", [11, 16]),
+]
+PORT_KIND_TO_RESOURCE_IDX = {"wood": 0, "brick": 1, "sheep": 2, "wheat": 3, "ore": 4}
+
+
+def _emoji_font_props():
+    """Return matplotlib FontProperties for color-emoji rendering, or None.
+
+    Matplotlib doesn't honor `fontfamily='Segoe UI Emoji'` directly — it must be
+    given the font file. We probe the typical Win11 path; on WSL/Linux the font
+    is rarely installed, so we return None and the caller falls back to letters.
+    """
+    candidates = [
+        "C:/Windows/Fonts/seguiemj.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+    ]
+    from matplotlib import font_manager
+    for path in candidates:
+        if Path(path).exists():
+            return font_manager.FontProperties(fname=path)
+    return None
 
 
 def _shade(hex_color: str, factor: float) -> str:
@@ -98,7 +133,7 @@ def _shade(hex_color: str, factor: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _render_static_board_png(seed: int, out_path: Path):
+def _render_static_board_png(seed: int, out_path: Path, vertex_xy: dict | None = None):
     """Render the v2 ABC board for this seed: hexes + dice numbers + ports.
     Buildings, roads, robber, dev cards are SVG overlays drawn in JS."""
     fig = plt.figure(figsize=(FIG_WIDTH_INCHES, FIG_HEIGHT_INCHES))
@@ -106,6 +141,7 @@ def _render_static_board_png(seed: int, out_path: Path):
     eng = _engine.Engine(seed)
     obs = eng.observation()
     hex_features = obs["hex_features"]
+    emoji_fp = _emoji_font_props()
 
     for h in range(19):
         cx, cy = _hex_center_pointy(h)
@@ -140,7 +176,14 @@ def _render_static_board_png(seed: int, out_path: Path):
                     fontsize=10, color=_shade(DESERT_COLOR, 0.5), fontstyle="italic")
         else:
             ridx = int(np.argmax(res))
-            ax.text(cx, cy + 0.42, RESOURCE_EMOJI[ridx], ha="center", va="center", fontsize=14)
+            if emoji_fp is not None:
+                ax.text(cx, cy + 0.42, RESOURCE_EMOJI[ridx], ha="center", va="center",
+                        fontsize=14, fontproperties=emoji_fp)
+            else:
+                # No emoji font available — fall back to a readable letter label
+                # in the resource color, which works on any matplotlib install.
+                ax.text(cx, cy + 0.42, RESOURCE_LETTER[ridx], ha="center", va="center",
+                        fontsize=11, fontweight="bold", color=_shade(color, 0.35))
         if dice_str is not None:
             num = int(dice_str)
             is_hot = num in (6, 8)
@@ -158,6 +201,49 @@ def _render_static_board_png(seed: int, out_path: Path):
             pips = 6 - abs(7 - num)
             ax.text(cx, cy - 0.18, "·" * pips, ha="center", va="center",
                     fontsize=8, color=text_color)
+
+    # Port glyphs — small circles on the coast, with a connector to each port vertex.
+    if vertex_xy is not None:
+        board_cx = sum(p[0] for p in vertex_xy.values()) / len(vertex_xy)
+        board_cy = sum(p[1] for p in vertex_xy.values()) / len(vertex_xy)
+        for kind, (v1, v2) in PORTS:
+            x1, y1 = vertex_xy[v1]
+            x2, y2 = vertex_xy[v2]
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            # Push outward from the board center along the perpendicular bisector.
+            dx, dy = mx - board_cx, my - board_cy
+            mag = (dx * dx + dy * dy) ** 0.5
+            offset = 0.55
+            if mag > 1e-6:
+                dx, dy = dx / mag * offset, dy / mag * offset
+            px, py = mx + dx, my + dy
+            if kind == "3:1":
+                face = "#e8e2c8"
+                edge_c = "#5d4715"
+                label = "3:1"
+                text_c = "#222"
+                ridx = None
+            else:
+                ridx = PORT_KIND_TO_RESOURCE_IDX[kind]
+                face = RESOURCE_COLORS[ridx]
+                edge_c = _shade(face, 0.45)
+                text_c = "white"
+                label = "2:1"
+            # Connector lines from each port vertex to the port disk.
+            ax.plot([x1, px], [y1, py], color=edge_c, linewidth=1.4, zorder=1, alpha=0.7)
+            ax.plot([x2, px], [y2, py], color=edge_c, linewidth=1.4, zorder=1, alpha=0.7)
+            disk = plt.Circle((px, py), 0.27, facecolor=face, edgecolor=edge_c,
+                              linewidth=1.6, zorder=4)
+            ax.add_patch(disk)
+            ax.text(px, py + 0.05, label, ha="center", va="center",
+                    fontsize=8, fontweight="bold", color=text_c, zorder=5)
+            if ridx is not None:
+                if emoji_fp is not None:
+                    ax.text(px, py - 0.10, RESOURCE_EMOJI[ridx], ha="center", va="center",
+                            fontsize=9, fontproperties=emoji_fp, zorder=5)
+                else:
+                    ax.text(px, py - 0.10, RESOURCE_LETTER[ridx], ha="center", va="center",
+                            fontsize=7, fontweight="bold", color=text_c, zorder=5)
 
     ax.set_xlim(*XLIM)
     ax.set_ylim(*YLIM)
@@ -463,8 +549,9 @@ INDEX_HTML = r"""<!doctype html>
   #board { display: block; width: 100%; height: auto; }
   svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
         pointer-events: none; overflow: visible; }
-  table.vp { border-collapse: collapse; font-size: 12px; width: 100%; }
-  table.vp th, table.vp td { border: 1px solid #ddd; padding: 3px 6px; vertical-align: top; }
+  table.vp { border-collapse: collapse; font-size: 12px; width: 100%; table-layout: fixed; }
+  table.vp th, table.vp td { border: 1px solid #ddd; padding: 3px 6px; vertical-align: top;
+                              overflow: hidden; text-overflow: ellipsis; word-wrap: break-word; }
   table.vp th { background: #f0f0f0; text-align: left; }
   .swatch { display: inline-block; width: 12px; height: 12px; vertical-align: middle;
             margin-right: 6px; border: 1px solid #333; border-radius: 2px; }
@@ -606,15 +693,15 @@ function renderState() {
   if (st.rh >= 0) {
     const [hx, hy] = layout.hex_centers[st.rh];
     const [px, py] = dataToPx(hx, hy);
-    body += `<g style="filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6))">`;
-    body += `<ellipse cx="${px}" cy="${py + 8}" rx="9" ry="2.5" fill="rgba(0,0,0,0.4)"/>`;
-    body += `<path d="M ${px - 7} ${py + 5} ` +
-            `L ${px - 7} ${py - 3} ` +
-            `Q ${px - 7} ${py - 9} ${px} ${py - 11} ` +
-            `Q ${px + 7} ${py - 9} ${px + 7} ${py - 3} ` +
-            `L ${px + 7} ${py + 5} Z" ` +
-            `fill="#222" stroke="white" stroke-width="1"/>`;
-    body += `<circle cx="${px}" cy="${py - 7}" r="3.5" fill="#222" stroke="white" stroke-width="1"/>`;
+    body += `<g style="filter: drop-shadow(0 2px 3px rgba(0,0,0,0.6))">`;
+    body += `<ellipse cx="${px}" cy="${py + 13}" rx="14" ry="3.5" fill="rgba(0,0,0,0.4)"/>`;
+    body += `<path d="M ${px - 11} ${py + 9} ` +
+            `L ${px - 11} ${py - 5} ` +
+            `Q ${px - 11} ${py - 14} ${px} ${py - 16} ` +
+            `Q ${px + 11} ${py - 14} ${px + 11} ${py - 5} ` +
+            `L ${px + 11} ${py + 9} Z" ` +
+            `fill="#222" stroke="white" stroke-width="1.5"/>`;
+    body += `<circle cx="${px}" cy="${py - 11}" r="5.5" fill="#222" stroke="white" stroke-width="1.5"/>`;
     body += `</g>`;
   }
 
@@ -629,22 +716,22 @@ function renderState() {
   for (const [vid, owner] of st.s) {
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
-    const sz = 7;
+    const sz = 11;
     const path = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/3} L ${px} ${py - sz} L ${px - sz} ${py - sz/3} Z`;
-    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="${PLAYER_COLORS_DARK[owner]}" stroke-width="1.4" stroke-linejoin="round"/>`;
-    body += `<rect x="${px - 1.5}" y="${py + sz/3}" width="3" height="${sz - sz/3 - 1}" fill="${PLAYER_COLORS_DARK[owner]}"/>`;
+    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="${PLAYER_COLORS_DARK[owner]}" stroke-width="1.8" stroke-linejoin="round"/>`;
+    body += `<rect x="${px - 2.5}" y="${py + sz/3}" width="5" height="${sz - sz/3 - 1}" fill="${PLAYER_COLORS_DARK[owner]}"/>`;
   }
 
   for (const [vid, owner] of st.c) {
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
-    const sz = 10;
+    const sz = 14;
     const dark = PLAYER_COLORS_DARK[owner];
-    const base = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/2} L ${px} ${py - sz - 2} L ${px - sz} ${py - sz/2} Z`;
-    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.5" stroke-linejoin="round"/>`;
-    body += `<rect x="${px + sz/2}" y="${py - sz - 1}" width="3" height="5" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1"/>`;
-    body += `<rect x="${px - sz + 2}" y="${py - 1}" width="${sz * 2 - 4}" height="2.5" fill="${dark}" opacity="0.55"/>`;
-    body += `<rect x="${px - 2}" y="${py + sz/3}" width="4" height="${sz - sz/3}" fill="${dark}" opacity="0.7"/>`;
+    const base = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/2} L ${px} ${py - sz - 3} L ${px - sz} ${py - sz/2} Z`;
+    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.8" stroke-linejoin="round"/>`;
+    body += `<rect x="${px + sz/2}" y="${py - sz - 1}" width="4" height="7" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.2"/>`;
+    body += `<rect x="${px - sz + 3}" y="${py - 1}" width="${sz * 2 - 6}" height="3.5" fill="${dark}" opacity="0.55"/>`;
+    body += `<rect x="${px - 3}" y="${py + sz/3}" width="6" height="${sz - sz/3}" fill="${dark}" opacity="0.7"/>`;
   }
 
   svg.innerHTML = body;
@@ -653,7 +740,17 @@ function renderState() {
   status.textContent = `step ${cur} / ${overlays.n_steps - 1}  |  ${cpStr}  |  phase=${st.phase}`;
   slider.value = cur;
 
-  let html = '<tr><th>seat</th><th>VP</th><th>hand</th><th>dev cards</th><th>built (S/C/R)</th><th>LR / Knights</th><th>ports</th></tr>';
+  // Locked column widths so the table doesn't reflow as hand contents change.
+  let html = '<colgroup>' +
+             '<col style="width:54px">' +    // seat
+             '<col style="width:36px">' +    // VP
+             '<col style="width:130px">' +   // hand
+             '<col style="width:120px">' +   // dev cards
+             '<col style="width:60px">' +    // built S/C/R
+             '<col style="width:62px">' +    // LR / knights
+             '<col>' +                       // ports (flex)
+             '</colgroup>';
+  html += '<tr><th>seat</th><th>VP</th><th>hand</th><th>dev cards</th><th>built (S/C/R)</th><th>LR / Knights</th><th>ports</th></tr>';
   for (let i = 0; i < 4; i++) {
     const isCp = (st.cp === i) ? 'background:#ffffaa;' : '';
     const h = st.hands[i];
@@ -768,12 +865,12 @@ def render(run_dir: Path, seed: int, out_dir: Path | None = None) -> Path:
     history, winner, final_vp = _read_action_history(run_dir, seed)
     print(f"  history length = {len(history)}, winner=p{winner}, final_vp={final_vp}", flush=True)
 
-    print("  rendering board PNG...", flush=True)
-    board_png = out_dir / "board.png"
-    _render_static_board_png(seed, board_png)
-
     print("  building layout...", flush=True)
     vertex_xy, edges, hex_centers = _build_layout()
+
+    print("  rendering board PNG...", flush=True)
+    board_png = out_dir / "board.png"
+    _render_static_board_png(seed, board_png, vertex_xy=vertex_xy)
     layout = {
         "xlim": list(XLIM),
         "ylim": list(YLIM),
