@@ -213,7 +213,7 @@ def _render_static_board_png(seed: int, out_path: Path, vertex_xy: dict | None =
             # Push outward from the board center along the perpendicular bisector.
             dx, dy = mx - board_cx, my - board_cy
             mag = (dx * dx + dy * dy) ** 0.5
-            offset = 0.55
+            offset = 0.45
             if mag > 1e-6:
                 dx, dy = dx / mag * offset, dy / mag * offset
             px, py = mx + dx, my + dy
@@ -230,20 +230,20 @@ def _render_static_board_png(seed: int, out_path: Path, vertex_xy: dict | None =
                 text_c = "white"
                 label = "2:1"
             # Connector lines from each port vertex to the port disk.
-            ax.plot([x1, px], [y1, py], color=edge_c, linewidth=1.4, zorder=1, alpha=0.7)
-            ax.plot([x2, px], [y2, py], color=edge_c, linewidth=1.4, zorder=1, alpha=0.7)
-            disk = plt.Circle((px, py), 0.27, facecolor=face, edgecolor=edge_c,
-                              linewidth=1.6, zorder=4)
+            ax.plot([x1, px], [y1, py], color=edge_c, linewidth=1.2, zorder=1, alpha=0.7)
+            ax.plot([x2, px], [y2, py], color=edge_c, linewidth=1.2, zorder=1, alpha=0.7)
+            disk = plt.Circle((px, py), 0.20, facecolor=face, edgecolor=edge_c,
+                              linewidth=1.4, zorder=4)
             ax.add_patch(disk)
-            ax.text(px, py + 0.05, label, ha="center", va="center",
-                    fontsize=8, fontweight="bold", color=text_c, zorder=5)
+            ax.text(px, py + 0.03, label, ha="center", va="center",
+                    fontsize=6, fontweight="bold", color=text_c, zorder=5)
             if ridx is not None:
                 if emoji_fp is not None:
-                    ax.text(px, py - 0.10, RESOURCE_EMOJI[ridx], ha="center", va="center",
-                            fontsize=9, fontproperties=emoji_fp, zorder=5)
+                    ax.text(px, py - 0.09, RESOURCE_EMOJI[ridx], ha="center", va="center",
+                            fontsize=7, fontproperties=emoji_fp, zorder=5)
                 else:
-                    ax.text(px, py - 0.10, RESOURCE_LETTER[ridx], ha="center", va="center",
-                            fontsize=7, fontweight="bold", color=text_c, zorder=5)
+                    ax.text(px, py - 0.09, RESOURCE_LETTER[ridx], ha="center", va="center",
+                            fontsize=6, fontweight="bold", color=text_c, zorder=5)
 
     ax.set_xlim(*XLIM)
     ax.set_ylim(*YLIM)
@@ -447,6 +447,21 @@ def _replay_to_states(seed: int, history: list[int]) -> list[dict]:
         lr_holder = next((p for p in range(4) if per_player[p]["holds_lr"]), -1)
         la_holder = next((p for p in range(4) if per_player[p]["holds_la"]), -1)
 
+        # Played VP cards: derived from VP arithmetic since the engine doesn't
+        # expose state.dev_cards_played[VP] through the observation. The
+        # engine grants 1 VP for each settlement, 2 for each city (settlement
+        # +1 absorbed into the city), +2 for the LR/LA bonus holders, and
+        # +1 per VP card already drawn (auto-applied since "no hidden info").
+        # So:  vp_card_count = vp - settlements - 2*cities - 2*lr - 2*la
+        vp_played = []
+        for p in range(4):
+            base = settle_built[p] + 2 * city_built[p]
+            if lr_holder == p:
+                base += 2
+            if la_holder == p:
+                base += 2
+            vp_played.append(max(0, vps[p] - base))
+
         # Phase: index 13..21 is one-hot.
         phase_idx = -1
         for k in range(8):
@@ -481,6 +496,7 @@ def _replay_to_states(seed: int, history: list[int]) -> list[dict]:
             ],
             "lr_holder": lr_holder,
             "la_holder": la_holder,
+            "vp_played": vp_played,
         })
 
     snapshot("(initial state)")
@@ -741,14 +757,15 @@ function renderState() {
   slider.value = cur;
 
   // Locked column widths so the table doesn't reflow as hand contents change.
+  // Hand gets the widest slot since it grows the most; ports/dev are tighter.
   let html = '<colgroup>' +
-             '<col style="width:54px">' +    // seat
-             '<col style="width:36px">' +    // VP
-             '<col style="width:130px">' +   // hand
-             '<col style="width:120px">' +   // dev cards
-             '<col style="width:60px">' +    // built S/C/R
-             '<col style="width:62px">' +    // LR / knights
-             '<col>' +                       // ports (flex)
+             '<col style="width:90px">' +    // seat (wide enough for "P0 LR LA" badges)
+             '<col style="width:32px">' +    // VP
+             '<col style="width:200px">' +   // hand
+             '<col style="width:108px">' +   // dev cards
+             '<col style="width:50px">' +    // built S/C/R
+             '<col style="width:54px">' +    // LR / knights
+             '<col style="width:84px">' +    // ports
              '</colgroup>';
   html += '<tr><th>seat</th><th>VP</th><th>hand</th><th>dev cards</th><th>built (S/C/R)</th><th>LR / Knights</th><th>ports</th></tr>';
   for (let i = 0; i < 4; i++) {
@@ -758,13 +775,18 @@ function renderState() {
     if (st.lr_holder === i) badges += '<span class="badge lr">LR</span>';
     if (st.la_holder === i) badges += '<span class="badge la">LA</span>';
     const handStr = `${fmtBreakdown(h.breakdown)} <span class="dim">(${h.total})</span>`;
-    const devStr = fmtDev(st.dev_held[i]);
+    let devStr = fmtDev(st.dev_held[i]);
+    const vpcPlayed = (st.vp_played && st.vp_played[i]) || 0;
+    if (vpcPlayed > 0) {
+      const playedStr = `<span title="Victory Point cards already cashed in" class="dim">⭐×${vpcPlayed} played</span>`;
+      devStr = (devStr.includes('none') ? playedStr : `${devStr} · ${playedStr}`);
+    }
     const built = st.built[i];
     const builtStr = `${built.settle}/${built.city}/${built.road}`;
     const lrK = `${st.lr_len[i]} / ${st.knights[i]}`;
     const portStr = fmtPorts(st.ports[i]);
     html += `<tr style="${isCp}">` +
-            `<td><span class="swatch" style="background:${PLAYER_COLORS[i]}"></span>${i} ${badges}</td>` +
+            `<td style="white-space:nowrap"><span class="swatch" style="background:${PLAYER_COLORS[i]}"></span>${i} ${badges}</td>` +
             `<td style="text-align:right;font-weight:bold">${st.vp[i]}</td>` +
             `<td>${handStr}</td>` +
             `<td>${devStr}</td>` +
@@ -785,6 +807,8 @@ function renderState() {
     let badges = '';
     if (st.la_holder === i) badges += ' ⚔️';
     if (st.lr_holder === i) badges += ' 🛣️';
+    const vpc = (st.vp_played && st.vp_played[i]) || 0;
+    if (vpc > 0) badges += ` <span title="VP cards played">⭐×${vpc}</span>`;
     // Emit literal `class="seat-chip"` so static-HTML scanners can match the
     // base class; the `cp` modifier is added via classList below.
     stripHtml += `<div class="seat-chip" style="background:${PLAYER_COLORS[i]}">` +
