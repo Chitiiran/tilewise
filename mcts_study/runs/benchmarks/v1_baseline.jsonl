@@ -1,0 +1,4 @@
+{"workload":"bench-engine-step","version":"v1","git_sha":"aaad4c3c383e9c91c19750f908214e7468d786d2","n_iters":5,"mean_us":0.356,"p50_us":0.349,"p99_us":0.390,"min_us":0.343,"max_us":0.390}
+{"workload":"bench-mcts-game","version":"v1","git_sha":"aaad4c3c383e9c91c19750f908214e7468d786d2","n_iters":10,"mean_us":8504.860,"p50_us":8340.700,"p99_us":9276.400,"min_us":8183.000,"max_us":9276.400}
+{"workload":"bench-evaluator-leaf","version":"v1","git_sha":"aaad4c3c383e9c91c19750f908214e7468d786d2","n_iters":200,"mean_us":46.400,"p50_us":44.400,"p99_us":83.600,"min_us":32.500,"max_us":99.400}
+{"workload":"bench-state-clone","version":"v1","git_sha":"aaad4c3c383e9c91c19750f908214e7468d786d2","n_iters":5,"mean_us":0.228,"p50_us":0.228,"p99_us":0.228,"min_us":0.228,"max_us":0.228}

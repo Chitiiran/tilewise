@@ -1,0 +1,40 @@
+{
+  "version": "v1",
+  "engine_branch": "gnn-v0",
+  "data_source": "/mnt/c/dojo/catan_bot/.claude/worktrees/gnn-v0/runs/gnn-data-2026-04-29-evening/2026-04-29T22-41-e5_lookahead_depth",
+  "training_setup": "depth=25, sims=400, all 4 seats LookaheadMcts (no max_seconds cap \u2192 engine 30k-step cap)",
+  "n_games_total": 400,
+  "n_games_finished": 235,
+  "n_games_timeouts": 165,
+  "timeout_rate": 0.4125,
+  "game_length_finished": {
+    "min": 682,
+    "p25": 2422,
+    "median": 4648,
+    "p75": 8714,
+    "max": 25481,
+    "mean": 6371.936170212766
+  },
+  "winner_margin_distribution": {
+    "min": 1,
+    "median": 1,
+    "max": 7,
+    "count_decisive_ge4": 17,
+    "count_close_eq1": 174
+  },
+  "vp_distribution_finished": {
+    "sum_vp_mean": 24.872340425531913,
+    "sum_vp_max": 32,
+    "sum_vp_min": 17
+  },
+  "vp_source_breakdown": {
+    "note": "v1 engine: VP comes from settlements + cities only. No longest road, largest army, or dev cards. v2 must report broken-down VP sources.",
+    "buildings_only": true
+  },
+  "interpretation": [
+    "41% timeout rate is the load-bearing data-quality issue identified in v1.",
+    "Median 4648 moves = stalled mid-games. Real Catan finishes in 60-100 player turns.",
+    "Margin=1 in 74% of finished games means winners barely got there.",
+    "v2 target: <5% timeout rate, median <800 moves, margin >=2 in >50% of games."
+  ]
+}

@@ -35,7 +35,9 @@ desktop.ini
 
 # Logs / training artifacts (will appear later)
 *.log
-runs/
+runs/*
+mcts_study/runs/*
+!mcts_study/runs/benchmarks/
 checkpoints/
 replays/
 
