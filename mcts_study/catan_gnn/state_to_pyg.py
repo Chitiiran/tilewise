@@ -6,7 +6,7 @@ The observation dict (from `engine.observation()`) carries:
 - hex_features:    np.ndarray [19, 8]  float32
 - vertex_features: np.ndarray [54, 7]  float32
 - edge_features:   np.ndarray [72, 6]  float32
-- scalars:         np.ndarray [22]     float32
+- scalars:         np.ndarray [N_SCALARS] float32
 - legal_mask:      np.ndarray [ACTION_SPACE_SIZE] uint8 (engine returns 0/1 bytes)
 """
 from __future__ import annotations
@@ -38,9 +38,9 @@ def state_to_pyg(obs: dict) -> HeteroData:
     data["vertex", "to", "hex"].edge_index = _V2H_EI
     data["vertex", "to", "edge"].edge_index = _V2E_EI
     data["edge", "to", "vertex"].edge_index = _E2V_EI
-    # Shape [1, 22] (not [22]) so PyG's Batch collation deterministically produces
-    # [B, 22] regardless of PyG version. Otherwise some versions stack to [B, 22]
-    # and others concat to [B*22] requiring a view().
+    # Shape [1, N_SCALARS] (not [N_SCALARS]) so PyG's Batch collation deterministically
+    # produces [B, N_SCALARS] regardless of PyG version. Otherwise some versions stack
+    # to [B, N_SCALARS] and others concat to [B*N_SCALARS] requiring a view().
     data.scalars = torch.from_numpy(np.ascontiguousarray(obs["scalars"], dtype=np.float32)).unsqueeze(0)
     data.legal_mask = torch.from_numpy(np.ascontiguousarray(obs["legal_mask"], dtype=np.uint8)).bool()
     return data

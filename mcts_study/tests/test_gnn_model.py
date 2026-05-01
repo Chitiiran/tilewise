@@ -44,10 +44,12 @@ def test_value_head_in_unit_range():
 
 
 def test_param_count_in_v0_budget():
-    """Spec §2: target ~30-60k params at hidden_dim=32, 2 layers."""
+    """Spec §2: target ~30-60k params at hidden_dim=32, 2 layers (v1).
+    v2 widened scalars from 22 to 59, which adds (59-22) * EMBED_DIM ~ 4.7k params
+    in the final linear; bump the upper bound to 100k."""
     model = GnnModel(hidden_dim=32, num_layers=2)
     n = sum(p.numel() for p in model.parameters())
-    assert 20_000 < n < 80_000, f"v0 model has {n} params; outside [20k, 80k]"
+    assert 20_000 < n < 100_000, f"v0 model has {n} params; outside [20k, 100k]"
 
 
 def test_cpu_latency_under_5ms_b1():
@@ -81,15 +83,16 @@ def test_deterministic_with_fixed_seed():
 
 
 def test_scalars_collated_correctly_for_various_batch_sizes():
-    """Sanity: batch.scalars must have shape [B, 22] after PyG collation,
+    """Sanity: batch.scalars must have shape [B, N_SCALARS] after PyG collation,
     regardless of PyG version. Catches regressions if PyG changes how it
     handles graph-level attributes."""
+    from catan_gnn.gnn_model import N_SCALARS
     model = GnnModel(hidden_dim=32, num_layers=2)
     for B in [1, 2, 4, 16]:
         batch = Batch.from_data_list([_make_data(s) for s in range(B)])
         assert batch.scalars.shape[0] == B
-        # Total elements must equal B * 22 regardless of layout.
-        assert batch.scalars.numel() == B * 22
+        # Total elements must equal B * N_SCALARS regardless of layout.
+        assert batch.scalars.numel() == B * N_SCALARS
         # Forward should not raise.
         value, policy = model(batch)
         assert value.shape == (B, 4)

@@ -25,9 +25,10 @@ def test_node_feature_shapes():
     assert data["hex"].x.shape == (19, 8)
     assert data["vertex"].x.shape == (54, 7)
     assert data["edge"].x.shape == (72, 6)
-    # Scalars stored as graph-level attribute with leading batch dim [1, 22]
-    # so PyG Batch collation yields [B, 22] across PyG versions.
-    assert data.scalars.shape == (1, 22)
+    # Scalars stored as graph-level attribute with leading batch dim [1, N_SCALARS]
+    # so PyG Batch collation yields [B, N_SCALARS] across PyG versions.
+    from catan_gnn.gnn_model import N_SCALARS
+    assert data.scalars.shape == (1, N_SCALARS)
 
 
 def test_edge_indices_present():

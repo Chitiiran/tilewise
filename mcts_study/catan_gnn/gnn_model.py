@@ -4,7 +4,7 @@ Spec §2-3 architecture:
   per-type linear input projection (hex 8->32, vertex 7->32, edge 6->32)
   -> N x HeteroConv(SAGEConv per edge type, hidden_dim)
   -> per-type mean-pool over nodes (3 x [B, hidden_dim])
-  -> concat with scalars (22) -> final linear -> embedding [128]
+  -> concat with scalars (N_SCALARS) -> final linear -> embedding [128]
   -> ValueHead(128 -> 64 -> 4, tanh)
   -> PolicyHead(128 -> ACTION_SPACE_SIZE) -- caller masks illegals + softmaxes
 
@@ -25,7 +25,7 @@ from catan_mcts import ACTION_SPACE_SIZE
 
 
 F_HEX, F_VERT, F_EDGE = 8, 7, 6
-N_SCALARS = 22
+N_SCALARS = 59  # v2 expanded scalars (was 22 in v1)
 EMBED_DIM = 128
 
 
@@ -45,7 +45,7 @@ class GnnBody(nn.Module):
                 ("edge", "to", "vertex"): SAGEConv(hidden_dim, hidden_dim),
             }, aggr="mean"))
         # Final projection: pooled hex (hidden) + pooled vertex (hidden) +
-        # pooled edge (hidden) + scalars (22) -> EMBED_DIM.
+        # pooled edge (hidden) + scalars (N_SCALARS) -> EMBED_DIM.
         self.final = nn.Linear(3 * hidden_dim + N_SCALARS, EMBED_DIM)
 
     def forward(self, batch: HeteroData) -> torch.Tensor:
@@ -64,8 +64,8 @@ class GnnBody(nn.Module):
         for k in ("hex", "vertex", "edge"):
             idx = batch[k].batch
             pooled.append(scatter(x_dict[k], idx, dim=0, reduce="mean"))
-        # state_to_pyg now stores data.scalars as [1, 22], so collation produces
-        # [B, 22] deterministically. Reshape kept as no-op safety against
+        # state_to_pyg now stores data.scalars as [1, N_SCALARS], so collation produces
+        # [B, N_SCALARS] deterministically. Reshape kept as no-op safety against
         # PyG-version layout drift.
         scalars = batch.scalars.view(-1, N_SCALARS)
         emb = torch.cat([*pooled, scalars], dim=1)
