@@ -53,33 +53,46 @@ class _AdaptiveSimsMCTSBot(os_mcts.MCTSBot):
     """MCTSBot variant that reshapes `max_simulations` per call.
 
     Reads the acting player's VP from `state._engine.vp(acting_player)` at
-    the moment of `step()`, computes the sim budget via `sims_for_player`,
-    sets `self.max_simulations`, and delegates to MCTSBot.step().
+    the moment of `step()` or `mcts_search()`, computes the sim budget via
+    `sims_for_player`, sets `self.max_simulations`, and delegates to
+    MCTSBot.
+
+    Both step() and mcts_search() are overridden — the recorder uses
+    mcts_search() directly to extract visit counts, so we have to apply
+    the schedule there too or recorded games would burn the base sim
+    budget on every move regardless of VP.
 
     Falls back to a constant base_sims if the wrapped state doesn't expose
     a `_engine` (defensive — happens in synthetic tests).
     """
 
     def __init__(self, *args, base_sims: int = SIM_BASE, **kwargs):
-        # Initialize with base_sims; step() will override per call.
+        # Initialize with base_sims; step() / mcts_search() will override per call.
         kwargs["max_simulations"] = base_sims
         super().__init__(*args, **kwargs)
         self._base_sims = int(base_sims)
 
-    def step(self, state):
+    def _set_sims_for_state(self, state) -> None:
         engine = getattr(state, "_engine", None)
-        if engine is not None:
-            try:
-                acting = state.current_player()
-                if 0 <= acting <= 3:
-                    self.max_simulations = sims_for_player(engine.vp(acting))
-                else:
-                    self.max_simulations = self._base_sims
-            except Exception:
-                self.max_simulations = self._base_sims
-        else:
+        if engine is None:
             self.max_simulations = self._base_sims
+            return
+        try:
+            acting = state.current_player()
+            if 0 <= acting <= 3:
+                self.max_simulations = sims_for_player(engine.vp(acting))
+            else:
+                self.max_simulations = self._base_sims
+        except Exception:
+            self.max_simulations = self._base_sims
+
+    def step(self, state):
+        self._set_sims_for_state(state)
         return super().step(state)
+
+    def mcts_search(self, state):
+        self._set_sims_for_state(state)
+        return super().mcts_search(state)
 
 
 def build_lookahead_mcts_v3(game, lookahead_depth: int = 10, seed: int = 0,
