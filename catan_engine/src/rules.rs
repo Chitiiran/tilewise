@@ -748,6 +748,10 @@ pub fn trade_ratio_for(state: &GameState, player: u8, give_idx: u8) -> u8 {
 /// Called after any BuildRoad or BuildSettlement (settlements can break opponent chains).
 /// Holder is the strict max owner with length >= 5; ties = no holder change unless
 /// the previous holder no longer has the max.
+///
+/// When `state.bonuses_enabled = false`, length and holder still update (so
+/// observation features stay populated for the GNN), but the +2 VP transfer
+/// is suppressed.
 pub fn update_longest_road(state: &mut GameState) {
     for p in 0..4u8 {
         state.longest_road_length[p as usize] = longest_road_for_player(state, p);
@@ -757,8 +761,9 @@ pub fn update_longest_road(state: &mut GameState) {
     if max_len < 5 {
         // No one qualifies; remove holder if any.
         if let Some(prev) = state.longest_road_holder.take() {
-            // Subtract the +2 VP we previously granted.
-            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            if state.bonuses_enabled {
+                state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            }
         }
         return;
     }
@@ -779,12 +784,52 @@ pub fn update_longest_road(state: &mut GameState) {
     };
 
     if new_holder != state.longest_road_holder {
-        // Transfer +2 VP from old holder (if any) to new holder (if any).
-        if let Some(prev) = state.longest_road_holder {
-            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+        if state.bonuses_enabled {
+            // Transfer +2 VP from old holder (if any) to new holder (if any).
+            if let Some(prev) = state.longest_road_holder {
+                state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            }
+            if let Some(new) = new_holder {
+                state.vp[new as usize] += 2;
+            }
         }
-        if let Some(new) = new_holder {
-            state.vp[new as usize] += 2;
+        state.longest_road_holder = new_holder;
+    }
+}
+
+/// Test-only: run only the holder-transfer logic of `update_longest_road`,
+/// bypassing the recompute-length-from-edges step. Lets tests force a length
+/// array directly without owning matching road edges.
+#[doc(hidden)]
+pub fn transfer_longest_road_holder_for_test(state: &mut GameState) {
+    let max_len = state.longest_road_length.iter().copied().max().unwrap_or(0);
+    if max_len < 5 {
+        if let Some(prev) = state.longest_road_holder.take() {
+            if state.bonuses_enabled {
+                state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            }
+        }
+        return;
+    }
+    let candidates: Vec<u8> = (0..4u8)
+        .filter(|&p| state.longest_road_length[p as usize] == max_len)
+        .collect();
+    let new_holder = if candidates.len() == 1 {
+        Some(candidates[0])
+    } else {
+        match state.longest_road_holder {
+            Some(prev) if candidates.contains(&prev) => Some(prev),
+            _ => None,
+        }
+    };
+    if new_holder != state.longest_road_holder {
+        if state.bonuses_enabled {
+            if let Some(prev) = state.longest_road_holder {
+                state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            }
+            if let Some(new) = new_holder {
+                state.vp[new as usize] += 2;
+            }
         }
         state.longest_road_holder = new_holder;
     }
@@ -792,11 +837,16 @@ pub fn update_longest_road(state: &mut GameState) {
 
 /// Recompute largest_army_holder + transferable +2 VP, just like longest road.
 /// Holder is the strict-max-knights-played owner with knights >= 3.
+///
+/// When `state.bonuses_enabled = false`, holder still updates (so the GNN
+/// observation reflects who has the most knights) but no +2 VP is awarded.
 pub fn update_largest_army(state: &mut GameState) {
     let max_k = state.knights_played.iter().copied().max().unwrap_or(0);
     if max_k < 3 {
         if let Some(prev) = state.largest_army_holder.take() {
-            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            if state.bonuses_enabled {
+                state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            }
         }
         return;
     }
@@ -812,11 +862,13 @@ pub fn update_largest_army(state: &mut GameState) {
         }
     };
     if new_holder != state.largest_army_holder {
-        if let Some(prev) = state.largest_army_holder {
-            state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
-        }
-        if let Some(new) = new_holder {
-            state.vp[new as usize] += 2;
+        if state.bonuses_enabled {
+            if let Some(prev) = state.largest_army_holder {
+                state.vp[prev as usize] = state.vp[prev as usize].saturating_sub(2);
+            }
+            if let Some(new) = new_holder {
+                state.vp[new as usize] += 2;
+            }
         }
         state.largest_army_holder = new_holder;
     }
@@ -824,12 +876,21 @@ pub fn update_largest_army(state: &mut GameState) {
 
 fn check_win(state: &mut GameState, events: &mut Vec<GameEvent>) {
     for p in 0..4u8 {
-        if state.vp[p as usize] >= crate::state::WIN_VP {
+        if state.vp[p as usize] >= state.vp_target {
             state.phase = GamePhase::Done { winner: p };
             events.push(GameEvent::GameOver { winner: p });
             return;
         }
     }
+}
+
+/// Test-only entry point: invoke the win check on a state without dispatching
+/// through the full action-apply path. Used by `tests/v3_rules.rs` to verify
+/// `vp_target` controls the threshold.
+#[doc(hidden)]
+pub fn check_win_for_test(state: &mut GameState) {
+    let mut evs = Vec::new();
+    check_win(state, &mut evs);
 }
 
 /// Apply a specific dice roll value (used by both the rng-driven Action::RollDice path
