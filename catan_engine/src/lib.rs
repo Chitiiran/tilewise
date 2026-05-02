@@ -33,6 +33,23 @@ impl PyEngine {
         Self { inner: Engine::with_standard_board(seed) }
     }
 
+    /// Construct with v3 rule flags. `vp_target` sets the win threshold
+    /// (v2 default = 10). `bonuses_enabled=False` disables the +2 VP awards
+    /// for longest road and largest army (v2 default = True). The holders
+    /// are still tracked so observation features stay populated.
+    #[staticmethod]
+    fn with_rules(seed: u64, vp_target: u8, bonuses_enabled: bool) -> Self {
+        Self { inner: Engine::with_rules(seed, vp_target, bonuses_enabled) }
+    }
+
+    /// Read the engine's VP threshold (v2=10, v3=5). Immutable for the
+    /// engine's lifetime.
+    fn vp_target(&self) -> u8 { self.inner.state.vp_target }
+
+    /// Whether longest-road / largest-army grant +2 VP. Immutable for the
+    /// engine's lifetime.
+    fn bonuses_enabled(&self) -> bool { self.inner.state.bonuses_enabled }
+
     fn legal_actions<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
         self.inner.legal_actions().into_pyarray_bound(py)
     }
@@ -221,7 +238,7 @@ fn chunks(flat: &[f32], width: usize) -> Vec<Vec<f32>> {
 }
 
 #[pyfunction]
-fn engine_version() -> &'static str { "2.0.0-phase2" }
+fn engine_version() -> &'static str { "3.0.0-v3-flags" }
 
 #[pyfunction]
 fn action_space_size() -> usize { actions::ACTION_SPACE_SIZE }
