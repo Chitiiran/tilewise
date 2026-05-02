@@ -14,7 +14,10 @@ from catan_gnn.rotation import (
     ROT60_HEX,
     ROT60_VERTEX,
     rotate_hetero_data,
+    rotate_hetero_data_k,
+    rotate_legal_mask_k,
     rotate_policy,
+    rotate_policy_k,
 )
 from catan_gnn.state_to_pyg import state_to_pyg
 
@@ -116,3 +119,88 @@ def test_rotated_observation_matches_engine_when_we_could_rebuild():
     the tests above already cover. This test exists as a placeholder for the
     future when rotation is wired into the engine itself."""
     pass
+
+
+def test_rotate_k_zero_is_identity():
+    """k=0 must be identity (no transformation)."""
+    e = _engine.Engine(42)
+    data = state_to_pyg(e.observation())
+    out = rotate_hetero_data_k(data, 0)
+    torch.testing.assert_close(out["hex"].x, data["hex"].x)
+    torch.testing.assert_close(out["vertex"].x, data["vertex"].x)
+    torch.testing.assert_close(out.legal_mask, data.legal_mask)
+
+
+def test_rotate_k_one_matches_rotate_60():
+    """k=1 must equal the original single-rotation function."""
+    e = _engine.Engine(42)
+    data = state_to_pyg(e.observation())
+    a = rotate_hetero_data(data)
+    b = rotate_hetero_data_k(data, 1)
+    torch.testing.assert_close(a["hex"].x, b["hex"].x)
+    torch.testing.assert_close(a["vertex"].x, b["vertex"].x)
+    torch.testing.assert_close(a["edge"].x, b["edge"].x)
+    torch.testing.assert_close(a.legal_mask, b.legal_mask)
+
+
+def test_rotate_k_six_returns_to_origin():
+    """k=6 (= k=0 mod 6) must be identity."""
+    e = _engine.Engine(42)
+    data = state_to_pyg(e.observation())
+    out = rotate_hetero_data_k(data, 6)
+    torch.testing.assert_close(out["hex"].x, data["hex"].x)
+
+
+def test_compose_two_rotations_matches_k_two():
+    """Calling rotate_hetero_data_k(rotate_hetero_data_k(data, 1), 1) ==
+    rotate_hetero_data_k(data, 2)."""
+    e = _engine.Engine(42)
+    data = state_to_pyg(e.observation())
+    twice = rotate_hetero_data_k(rotate_hetero_data_k(data, 1), 1)
+    direct = rotate_hetero_data_k(data, 2)
+    torch.testing.assert_close(twice["hex"].x, direct["hex"].x)
+    torch.testing.assert_close(twice["vertex"].x, direct["vertex"].x)
+    torch.testing.assert_close(twice.legal_mask, direct.legal_mask)
+
+
+def test_rotate_policy_k_shapes():
+    p = torch.randn(280)
+    for k in range(6):
+        out = rotate_policy_k(p, k)
+        assert out.shape == (280,)
+    # k=0 is identity
+    torch.testing.assert_close(rotate_policy_k(p, 0), p)
+
+
+def test_random_rotated_dataset_picks_all_k():
+    """RotatedDataset in random mode should hit all 6 k values across enough
+    samples (with very high probability)."""
+    from catan_gnn.dataset import RotatedDataset
+
+    class _DummySource:
+        def __init__(self):
+            self._d = state_to_pyg(_engine.Engine(42).observation())
+            self._v = torch.zeros(4)
+            self._p = torch.zeros(280)
+            self._l = torch.zeros(280, dtype=torch.bool)
+            self.seeds = [42] * 1000
+
+        def __len__(self):
+            return 1000
+
+        def __getitem__(self, i):
+            return self._d, self._v, self._p, self._l
+
+    src = _DummySource()
+    rd = RotatedDataset(src, mode="random", seed=0)
+    # Sample 200 items and check we see >= 4 distinct rotations.
+    seen_hexes = set()
+    for i in range(200):
+        d, _, _, _ = rd[i]
+        # Use first row of hex.x as a fingerprint for which rotation was applied
+        # (since hex features differ between rotated views).
+        key = tuple(d["hex"].x[0].tolist())
+        seen_hexes.add(key)
+    # With 6 rotations, 200 samples should hit at least 4 distinct
+    # views (each rotation is uniformly likely; missing all 6 has tiny prob).
+    assert len(seen_hexes) >= 4, f"random rotation only saw {len(seen_hexes)} distinct views"

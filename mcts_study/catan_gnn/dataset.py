@@ -251,20 +251,33 @@ class CachedDataset(Dataset):
 
 
 class RotatedDataset(Dataset):
-    """Wraps a CachedDataset and applies a fixed 60° hex rotation to every item.
+    """Wraps a CachedDataset and applies a hex rotation to every item.
 
     Same length as the source. Each `__getitem__` rotates the HeteroData
     (hex/vertex/edge feature rows + edge_index entries), the policy target,
     and the legal mask. Value targets are unchanged (rotation doesn't affect
     who won).
 
-    Use case: train on a "rotated view" of the same dataset, testing whether
-    the model learns hex-symmetry-invariant features.
+    Modes:
+      - mode="fixed", k=N (default 1): always apply k×60° rotation.
+        k=0 is identity; k=1..5 are the five non-trivial hex symmetries.
+      - mode="random": each __getitem__ picks k uniformly from 0..5. The full
+        6-fold hex symmetry group, including identity. Standard data
+        augmentation pattern — every batch sees a mix of orientations.
     """
 
-    def __init__(self, source: Dataset) -> None:
+    def __init__(self, source: Dataset, mode: str = "fixed", k: int = 1,
+                 seed: int | None = None) -> None:
         self.source = source
-        # Forward the seeds attribute so train._split_by_seed can split by seed.
+        if mode not in ("fixed", "random"):
+            raise ValueError(f"mode must be 'fixed' or 'random', got {mode!r}")
+        self.mode = mode
+        self.k = int(k) % 6
+        # Per-instance RNG so DataLoader workers don't all roll the same k.
+        # If seed is None, use Python's default (different per worker thanks
+        # to torch's worker_init_fn or numpy's random_state).
+        import random as _random
+        self._rng = _random.Random(seed)
         if hasattr(source, "seeds"):
             self.seeds = source.seeds
 
@@ -272,10 +285,19 @@ class RotatedDataset(Dataset):
         return len(self.source)
 
     def __getitem__(self, i: int):
-        # Lazy import — keeps tests that mock CachedDataset etc. from pulling
-        # in the rotation tables at unrelated import time.
-        from .rotation import rotate_hetero_data, rotate_legal_mask, rotate_policy
+        from .rotation import (
+            rotate_hetero_data_k,
+            rotate_legal_mask_k,
+            rotate_policy_k,
+        )
+
+        if self.mode == "random":
+            k = self._rng.randrange(6)
+        else:
+            k = self.k
 
         data, value, policy, legal = self.source[i]
-        rotated = rotate_hetero_data(data)
-        return rotated, value, rotate_policy(policy), rotate_legal_mask(legal)
+        if k == 0:
+            return data, value, policy, legal
+        rotated = rotate_hetero_data_k(data, k)
+        return rotated, value, rotate_policy_k(policy, k), rotate_legal_mask_k(legal, k)

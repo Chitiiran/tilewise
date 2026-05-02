@@ -252,3 +252,80 @@ def rotate_policy(policy: torch.Tensor) -> torch.Tensor:
 def rotate_legal_mask(mask: torch.Tensor) -> torch.Tensor:
     """Permute a legal-mask tensor of shape [..., 280] by ROT60_ACTION."""
     return mask[..., _ACTION_PERM_T]
+
+
+# --------------------------------------------------------- N-fold rotations
+# Pre-compute permutations for all 6 hex symmetries (0°, 60°, 120°, 180°, 240°, 300°).
+# For each k in 0..5, ROT_K_HEX[i] = original slot of the entity now at slot i
+# after rotating k×60° clockwise.
+
+def _compose(perm: list[int], times: int) -> list[int]:
+    """Compose perm with itself `times` times. perm[i] = old slot at new i,
+    so applying perm twice: new_new[i] = perm[perm[i]] (right-to-left)."""
+    result = list(range(len(perm)))
+    for _ in range(times):
+        result = [result[perm[i]] for i in range(len(perm))]
+    return result
+
+
+_ROT_HEX: list[list[int]] = [_compose(ROT60_HEX, k) for k in range(6)]
+_ROT_VERTEX: list[list[int]] = [_compose(ROT60_VERTEX, k) for k in range(6)]
+_ROT_EDGE: list[list[int]] = [_compose(ROT60_EDGE, k) for k in range(6)]
+_ROT_ACTION: list[list[int]] = [_compose(ROT60_ACTION, k) for k in range(6)]
+
+# Tensor caches for fast indexing.
+_ROT_HEX_T = [torch.tensor(p, dtype=torch.long) for p in _ROT_HEX]
+_ROT_VERTEX_T = [torch.tensor(p, dtype=torch.long) for p in _ROT_VERTEX]
+_ROT_EDGE_T = [torch.tensor(p, dtype=torch.long) for p in _ROT_EDGE]
+_ROT_ACTION_T = [torch.tensor(p, dtype=torch.long) for p in _ROT_ACTION]
+
+
+def rotate_hetero_data_k(data: HeteroData, k: int) -> HeteroData:
+    """Apply k×60° rotation. k in 0..5. k=0 is identity; k=1 same as
+    rotate_hetero_data."""
+    if k == 0:
+        return data
+    k = k % 6
+    hex_perm = _ROT_HEX_T[k]
+    vert_perm = _ROT_VERTEX_T[k]
+    edge_perm = _ROT_EDGE_T[k]
+    action_perm = _ROT_ACTION_T[k]
+
+    new = HeteroData()
+    new["hex"].x = data["hex"].x[hex_perm]
+    new["vertex"].x = data["vertex"].x[vert_perm]
+    new["edge"].x = data["edge"].x[edge_perm]
+
+    inv_hex = torch.empty_like(hex_perm)
+    inv_hex[hex_perm] = torch.arange(len(hex_perm))
+    inv_vert = torch.empty_like(vert_perm)
+    inv_vert[vert_perm] = torch.arange(len(vert_perm))
+    inv_edge = torch.empty_like(edge_perm)
+    inv_edge[edge_perm] = torch.arange(len(edge_perm))
+
+    h2v = data["hex", "to", "vertex"].edge_index
+    new["hex", "to", "vertex"].edge_index = torch.stack([inv_hex[h2v[0]], inv_vert[h2v[1]]])
+    v2h = data["vertex", "to", "hex"].edge_index
+    new["vertex", "to", "hex"].edge_index = torch.stack([inv_vert[v2h[0]], inv_hex[v2h[1]]])
+    v2e = data["vertex", "to", "edge"].edge_index
+    new["vertex", "to", "edge"].edge_index = torch.stack([inv_vert[v2e[0]], inv_edge[v2e[1]]])
+    e2v = data["edge", "to", "vertex"].edge_index
+    new["edge", "to", "vertex"].edge_index = torch.stack([inv_edge[e2v[0]], inv_vert[e2v[1]]])
+
+    new.scalars = data.scalars
+    new.legal_mask = data.legal_mask[action_perm]
+    return new
+
+
+def rotate_policy_k(policy: torch.Tensor, k: int) -> torch.Tensor:
+    """Permute policy by k×60° rotation."""
+    if k == 0:
+        return policy
+    return policy[..., _ROT_ACTION_T[k % 6]]
+
+
+def rotate_legal_mask_k(mask: torch.Tensor, k: int) -> torch.Tensor:
+    """Permute legal mask by k×60° rotation."""
+    if k == 0:
+        return mask
+    return mask[..., _ROT_ACTION_T[k % 6]]

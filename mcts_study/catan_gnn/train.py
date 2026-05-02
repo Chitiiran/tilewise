@@ -193,6 +193,8 @@ def train_main(
     resume_from: Path | None = None,
     init_from: Path | None = None,
     rotate: bool = False,
+    rotate_mode: str = "fixed",
+    rotate_k: int = 1,
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
@@ -229,8 +231,11 @@ def train_main(
     load_secs = _time.perf_counter() - t_load_start
     print(f"[timing] dataset load: {load_secs:.1f}s for {len(full_ds)} positions", flush=True)
     if rotate:
-        full_ds = RotatedDataset(full_ds)
-        print(f"[rotate] wrapping dataset with one 60° hex rotation per item", flush=True)
+        full_ds = RotatedDataset(full_ds, mode=rotate_mode, k=rotate_k, seed=seed)
+        if rotate_mode == "random":
+            print(f"[rotate] random hex symmetry per item (k uniform in 0..5)", flush=True)
+        else:
+            print(f"[rotate] fixed {rotate_k}×60° hex rotation per item", flush=True)
     train_ds, val_ds = _split_by_seed(full_ds, val_frac=val_frac, seed=seed)
     if max_train_samples is not None and len(train_ds) > max_train_samples:
         rng = np.random.default_rng(seed)
@@ -485,9 +490,14 @@ def cli_main() -> None:
                         "epoch counter starts at 1). Use for fine-tuning a prior model "
                         "on new data or augmented data.")
     p.add_argument("--rotate", action="store_true",
-                   help="Wrap the dataset in RotatedDataset, applying one 60° hex rotation "
-                        "to every position. Same dataset size, but every sample is the "
-                        "rotated view. Tests whether the model learns hex-symmetry features.")
+                   help="Wrap the dataset in RotatedDataset. Same dataset size; each "
+                        "position is rotated before training.")
+    p.add_argument("--rotate-mode", type=str, default="fixed", choices=["fixed", "random"],
+                   help="fixed: same k×60° rotation every time (use --rotate-k). "
+                        "random: pick k uniformly from 0..5 per sample (full 6-fold "
+                        "hex symmetry augmentation).")
+    p.add_argument("--rotate-k", type=int, default=1,
+                   help="If --rotate-mode=fixed, apply this many 60° rotations (0..5).")
     args = p.parse_args()
     train_main(
         run_dirs=args.run_dirs, out_dir=args.out_dir,
@@ -499,6 +509,8 @@ def cli_main() -> None:
         resume_from=args.resume_from,
         init_from=args.init_from,
         rotate=args.rotate,
+        rotate_mode=args.rotate_mode,
+        rotate_k=args.rotate_k,
     )
 
 
