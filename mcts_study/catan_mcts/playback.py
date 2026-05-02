@@ -714,9 +714,8 @@ function renderState() {
 
   // Diff against the previous state to find "newly built this step" assets.
   // Each of (s, c, r) is a list of [id, owner] pairs. We treat a vertex/edge
-  // as newly built if it didn't appear with the same owner in prev.s/.c/.r
-  // (e.g. a settlement upgraded to a city counts as a new city, not a new
-  // settlement, so the glow follows the upgrade).
+  // as newly built if it didn't appear with the same owner in prev.s/.c/.r.
+  // A settlement→city upgrade flashes the new city, not the old settlement.
   const prev = (cur > 0) ? overlays.states[cur - 1] : null;
   function asKeySet(arr) { const s = new Set(); for (const [id, o] of arr) s.add(`${id}:${o}`); return s; }
   const prevSettleKeys = prev ? asKeySet(prev.s) : new Set();
@@ -726,31 +725,14 @@ function renderState() {
   const isNewCity   = ([vid, owner]) => prev && !prevCityKeys.has(`${vid}:${owner}`);
   const isNewRoad   = ([eid, owner]) => prev && !prevRoadKeys.has(`${eid}:${owner}`);
 
-  // SVG filter definitions: gold glow for newly-built objects this step,
-  // and a per-player soft glow used to highlight ALL of the current player's
-  // assets while it's their turn. The player-color glow uses CSS variables
-  // applied via filter URL fragments per render.
-  let body = `<defs>
-    <filter id="goldGlow" x="-60%" y="-60%" width="220%" height="220%">
-      <feGaussianBlur stdDeviation="3" result="blur"/>
-      <feFlood flood-color="#ffd633" flood-opacity="0.95" result="gold"/>
-      <feComposite in="gold" in2="blur" operator="in" result="goldBlur"/>
-      <feMerge>
-        <feMergeNode in="goldBlur"/>
-        <feMergeNode in="goldBlur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <filter id="cpGlow" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="1.5" result="b1"/>
-      <feFlood flood-color="#ffffff" flood-opacity="0.55" result="white"/>
-      <feComposite in="white" in2="b1" operator="in" result="bw"/>
-      <feMerge>
-        <feMergeNode in="bw"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-  </defs>`;
+  // "Newly built" pop colors. We swap the asset's fill (or stroke for roads)
+  // from the player palette to a bright amber for ONE step, with a thicker
+  // outline. Avoids SVG filters entirely — no flicker, no Chromium quirks,
+  // no double-rendering — just a clean color change for one frame that
+  // catches the eye when scrubbing or auto-playing.
+  const POP_FILL = "#ffd633";        // bright amber
+  const POP_STROKE = "#a86b00";      // dark amber
+  let body = "";
 
   if (st.rh >= 0) {
     const [hx, hy] = layout.hex_centers[st.rh];
@@ -767,61 +749,52 @@ function renderState() {
     body += `</g>`;
   }
 
-  // Helper: pick the visual emphasis filter for an asset.
-  //   - "newly built this step" wins over everything → gold glow
-  //   - else if the owner is the current player → soft white glow
-  //   - else → no filter
-  function pickFilter(isNew, owner) {
-    if (isNew) return ' filter="url(#goldGlow)"';
-    if (st.cp === owner) return ' filter="url(#cpGlow)"';
-    return '';
-  }
-  // Bold the stroke for current-player assets so it pops even at small sizes.
-  function pickStrokeWidth(owner, base) {
-    return st.cp === owner ? (base + 0.9) : base;
-  }
-
+  // Roads. Newly built this step swap to bright amber + thicker stroke;
+  // every other road keeps the player color, no filter, no halo.
   for (const pair of st.r) {
     const [eid, owner] = pair;
+    const isNew = isNewRoad(pair);
     const e = layout.edges[eid];
     const [x1, y1] = dataToPx(e[0], e[1]);
     const [x2, y2] = dataToPx(e[2], e[3]);
-    const fAttr = pickFilter(isNewRoad(pair), owner);
-    body += `<g${fAttr}>`;
-    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="white" stroke-width="7" stroke-linecap="round"/>`;
-    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${PLAYER_COLORS[owner]}" stroke-width="4.5" stroke-linecap="round"/>`;
-    body += `</g>`;
+    const stroke = isNew ? POP_FILL : PLAYER_COLORS[owner];
+    const sw = isNew ? 6 : 4.5;
+    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="white" stroke-width="${sw + 2.5}" stroke-linecap="round"/>`;
+    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round"/>`;
   }
 
+  // Settlements. Newly built fills with amber; existing keep player color.
   for (const pair of st.s) {
     const [vid, owner] = pair;
+    const isNew = isNewSettle(pair);
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 11;
     const path = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/3} L ${px} ${py - sz} L ${px - sz} ${py - sz/3} Z`;
-    const sw = pickStrokeWidth(owner, 1.8);
-    const fAttr = pickFilter(isNewSettle(pair), owner);
-    body += `<g${fAttr}>`;
-    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="${PLAYER_COLORS_DARK[owner]}" stroke-width="${sw}" stroke-linejoin="round"/>`;
+    const fill = isNew ? POP_FILL : PLAYER_COLORS[owner];
+    const stroke = isNew ? POP_STROKE : PLAYER_COLORS_DARK[owner];
+    const sw = isNew ? 2.6 : 1.8;
+    body += `<path d="${path}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>`;
     body += `<rect x="${px - 2.5}" y="${py + sz/3}" width="5" height="${sz - sz/3 - 1}" fill="${PLAYER_COLORS_DARK[owner]}"/>`;
-    body += `</g>`;
   }
 
+  // Cities. Same color-swap on the body; the door rectangle stays
+  // player-colored so the asset still reads as belonging to a player.
   for (const pair of st.c) {
     const [vid, owner] = pair;
+    const isNew = isNewCity(pair);
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 14;
     const dark = PLAYER_COLORS_DARK[owner];
     const base = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/2} L ${px} ${py - sz - 3} L ${px - sz} ${py - sz/2} Z`;
-    const sw = pickStrokeWidth(owner, 1.8);
-    const fAttr = pickFilter(isNewCity(pair), owner);
-    body += `<g${fAttr}>`;
-    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="${sw}" stroke-linejoin="round"/>`;
+    const fill = isNew ? POP_FILL : PLAYER_COLORS[owner];
+    const stroke = isNew ? POP_STROKE : dark;
+    const sw = isNew ? 2.6 : 1.8;
+    body += `<path d="${base}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>`;
     body += `<rect x="${px + sz/2}" y="${py - sz - 1}" width="4" height="7" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.2"/>`;
     body += `<rect x="${px - sz + 3}" y="${py - 1}" width="${sz * 2 - 6}" height="3.5" fill="${dark}" opacity="0.55"/>`;
     body += `<rect x="${px - 3}" y="${py + sz/3}" width="6" height="${sz - sz/3}" fill="${dark}" opacity="0.7"/>`;
-    body += `</g>`;
   }
 
   svg.innerHTML = body;
