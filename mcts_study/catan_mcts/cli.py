@@ -15,6 +15,7 @@ from .experiments import (
     e7_gnn_tournament,
     e9_v3_data_gen,
     e10_v3_tournament,
+    e10_dual_gnn,
 )
 
 
@@ -28,6 +29,7 @@ _EXPERIMENTS = {
     "e7": e7_gnn_tournament,
     "e9": e9_v3_data_gen,
     "e10": e10_v3_tournament,
+    "e10b": e10_dual_gnn,
 }
 
 
