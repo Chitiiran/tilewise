@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v3 Grid Dashboard</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #f5f5f5; color: #222; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 14px 0 6px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .panel { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; }
+  .meta { color: #666; font-size: 12px; }
+  .card { flex: 1 1 320px; min-width: 320px; }
+  .grid-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  .grid-table th, .grid-table td { border: 1px solid #ccc; padding: 4px 8px; text-align: center; }
+  .grid-table th { background: #eee; }
+  .cell-running { background: #fff7c4; }
+  .cell-done { background: #c8f5c8; }
+  .cell-failed { background: #f5c8c8; }
+  .cell-pending { background: #f0f0f0; color: #999; }
+  .cell-early-stopped { background: #d4e7ff; }
+  .progress-bar { background: #ddd; border-radius: 3px; height: 8px; overflow: hidden; margin: 2px 0; }
+  .progress-fill { background: #4a8; height: 100%; transition: width 0.3s; }
+  .progress-fill.early-stopped { background: #36c; }
+  .num { font-family: ui-monospace, monospace; }
+  .badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px;
+           background: #eee; border: 1px solid #ccc; }
+  .badge.win { background: #c8f5c8; border-color: #4a8; }
+  .badge.lose { background: #f5c8c8; border-color: #c66; }
+  .seat-strip { display: flex; gap: 6px; }
+  .seat-pill { padding: 1px 8px; border-radius: 3px; font-size: 11px;
+               background: #eee; border: 1px solid #ccc; }
+  details summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+  pre { background: #f8f8f8; padding: 8px; border-radius: 3px; font-size: 11px;
+        max-height: 220px; overflow: auto; }
+  .stale { color: #c66; }
+</style>
+</head>
+<body>
+<h1>v3 grid experiment dashboard</h1>
+<div class="meta" id="meta">loading…</div>
+
+<div class="panel" style="margin-top:10px;">
+  <h2 style="margin-top:0">Grid (3 × 3) — hidden_dim × num_layers</h2>
+  <table class="grid-table" id="gridTable">
+    <thead>
+      <tr>
+        <th></th>
+        <th>L = 2</th>
+        <th>L = 3</th>
+        <th>L = 4</th>
+      </tr>
+    </thead>
+    <tbody id="gridBody"></tbody>
+  </table>
+</div>
+
+<h2>Per-cell detail</h2>
+<div class="row" id="cellsRow"></div>
+
+<details style="margin-top:14px">
+  <summary>Raw dashboard JSON</summary>
+  <pre id="rawJson"></pre>
+</details>
+
+<script>
+const REFRESH_MS = 10000;
+
+function fmt(x, d=3) {
+  if (x == null || isNaN(x)) return '—';
+  return Number(x).toFixed(d);
+}
+function fmtSecs(s) {
+  if (!s) return '—';
+  if (s < 60) return s.toFixed(0) + 's';
+  return Math.floor(s/60) + 'm ' + Math.floor(s%60) + 's';
+}
+function ageSecs(t) {
+  if (!t) return Infinity;
+  return Date.now()/1000 - t;
+}
+
+const GRID = [
+  ['h32_l2', 'h32_l3', 'h32_l4'],
+  ['h64_l2', 'h64_l3', 'h64_l4'],
+  ['h128_l2', 'h128_l3', 'h128_l4'],
+];
+const HIDDENS = [32, 64, 128];
+
+function cellState(cell) {
+  if (!cell) return 'pending';
+  if (cell.state === 'done') return 'done';
+  if (cell.state === 'training_failed' || cell.state === 'tournament_failed') return 'failed';
+  if (cell.training && cell.training.state === 'early_stopped') return 'early-stopped';
+  if (cell.training || cell.state === 'training_starting' || cell.state === 'training_done') return 'running';
+  return 'pending';
+}
+
+function renderGrid(blob) {
+  const cells = blob.cells || {};
+  const tbody = document.getElementById('gridBody');
+  tbody.innerHTML = '';
+  for (let i = 0; i < 3; i++) {
+    const tr = document.createElement('tr');
+    const labelCell = document.createElement('th');
+    labelCell.textContent = 'H = ' + HIDDENS[i];
+    tr.appendChild(labelCell);
+    for (let j = 0; j < 3; j++) {
+      const label = GRID[i][j];
+      const cell = cells[label];
+      const state = cellState(cell);
+      const td = document.createElement('td');
+      td.className = 'cell-' + state.replace('_', '-');
+      let html = `<b>${label}</b><br>`;
+      if (cell) {
+        if (cell.training) {
+          const t = cell.training;
+          const pct = Math.round(100 * t.epoch / t.epochs_total);
+          html += `epoch ${t.epoch}/${t.epochs_total}<br>`;
+          html += `<div class="progress-bar"><div class="progress-fill ${state==='early-stopped'?'early-stopped':''}" style="width:${pct}%"></div></div>`;
+          html += `val_top1: <b>${fmt(t.val_top1)}</b><br>`;
+          html += `<span class="meta">best: ${fmt(t.best_top1)} @ ep${t.best_top1_epoch}</span>`;
+          if (state === 'early-stopped') html += '<br><span class="badge">early stopped</span>';
+        }
+        if (cell.tournament) {
+          const tn = cell.tournament;
+          const wr = tn.win_rate_by_role || {};
+          const gnn = wr.PureGnn || 0;
+          const gnnMcts = wr.GnnMcts || 0;
+          const lh = wr.LookaheadMctsV3 || 0;
+          html += `<br><b>tournament</b> (${tn.n_games}g)<br>`;
+          html += `<span class="badge ${(gnn+gnnMcts)>0.1?'win':'lose'}">PureGnn ${(gnn*100).toFixed(0)}% · GnnMcts ${(gnnMcts*100).toFixed(0)}%</span><br>`;
+          html += `<span class="meta">LookaheadV3 ${(lh*100).toFixed(0)}%</span>`;
+        }
+      } else {
+        html += '<span class="meta">pending</span>';
+      }
+      td.innerHTML = html;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+function renderCells(blob) {
+  const cells = blob.cells || {};
+  const row = document.getElementById('cellsRow');
+  row.innerHTML = '';
+  const ordered = ['h32_l2','h32_l3','h32_l4','h64_l2','h64_l3','h64_l4','h128_l2','h128_l3','h128_l4'];
+  for (const label of ordered) {
+    const cell = cells[label];
+    if (!cell) continue;
+    const state = cellState(cell);
+    const div = document.createElement('div');
+    div.className = 'panel card';
+    let html = `<b>${label}</b> <span class="badge">${state}</span>`;
+    html += `<div class="meta">h=${cell.hidden_dim}, l=${cell.num_layers}</div>`;
+    if (cell.training) {
+      const t = cell.training;
+      const ageS = ageSecs(t.updated_at);
+      const staleClass = ageS > 600 ? 'stale' : 'meta';
+      html += `<div style="margin-top:4px"><span class="num">epoch ${t.epoch}/${t.epochs_total}</span> ` +
+              `<span class="meta">(${fmtSecs(t.train_secs)} train + ${fmtSecs(t.val_secs)} val)</span></div>`;
+      const pct = Math.round(100 * t.epoch / t.epochs_total);
+      html += `<div class="progress-bar"><div class="progress-fill ${state==='early-stopped'?'early-stopped':''}" style="width:${pct}%"></div></div>`;
+      html += `<div class="num">train_loss: ${fmt(t.train_loss)} · val_loss: ${fmt(t.val_loss)}</div>`;
+      html += `<div class="num">val_top1: <b>${fmt(t.val_top1)}</b> · best: ${fmt(t.best_top1)} @ ep${t.best_top1_epoch}</div>`;
+      html += `<div class="num meta">per-game [${fmt(t.per_game_min,2)} | ${fmt(t.per_game_p25,2)} | ${fmt(t.per_game_median,2)} | ${fmt(t.per_game_p75,2)} | ${fmt(t.per_game_max,2)}]</div>`;
+      if (t.early_stop_patience > 0) {
+        html += `<div class="meta">epochs since best: ${t.epochs_since_best}/${t.early_stop_patience}</div>`;
+      }
+      html += `<div class="${staleClass}">last update: ${ageS<60?ageS.toFixed(0)+'s ago':Math.floor(ageS/60)+'m ago'}</div>`;
+    }
+    if (cell.tournament) {
+      const tn = cell.tournament;
+      const wr = tn.win_rate_by_role || {};
+      html += `<hr style="margin:6px 0">`;
+      html += `<b>tournament</b> (${tn.n_games}g)<br>`;
+      html += `<div class="seat-strip">`;
+      for (const role of ['PureGnn','GnnMcts','LookaheadMctsV3','Random']) {
+        const w = wr[role] || 0;
+        html += `<span class="seat-pill"><b>${role}</b>: ${(w*100).toFixed(1)}%</span>`;
+      }
+      html += `</div>`;
+      const mvp = tn.mean_vp_by_role || {};
+      html += `<div class="num meta" style="margin-top:3px">mean VP: ` +
+              Object.keys(mvp).map(r => `${r}=${fmt(mvp[r],2)}`).join(' · ') + `</div>`;
+    }
+    div.innerHTML = html;
+    row.appendChild(div);
+  }
+}
+
+function renderMeta(blob) {
+  const o = blob.orchestrator || {};
+  const totalCells = o.cells_total || 0;
+  const doneCells = o.cells_done || 0;
+  const status = o.status || 'unknown';
+  const startedAgo = o.started_at ? Math.floor((Date.now()/1000 - o.started_at) / 60) : '—';
+  const updatedAgo = blob.updated_at ? Math.floor((Date.now()/1000 - blob.updated_at) / 60) : '—';
+  document.getElementById('meta').innerHTML =
+    `orchestrator: <b>${status}</b> · cells done: ${doneCells}/${totalCells} · ` +
+    `started ${startedAgo}m ago · last update ${updatedAgo}m ago`;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('grid_dashboard.json?t=' + Date.now());
+    if (!r.ok) {
+      document.getElementById('meta').textContent = 'dashboard.json not found yet — orchestrator not started';
+      return;
+    }
+    const blob = await r.json();
+    renderMeta(blob);
+    renderGrid(blob);
+    renderCells(blob);
+    document.getElementById('rawJson').textContent = JSON.stringify(blob, null, 2);
+  } catch (e) {
+    document.getElementById('meta').textContent = 'error: ' + e;
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

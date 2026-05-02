@@ -123,6 +123,72 @@ def _resolve_device(device: str) -> torch.device:
     return torch.device(device)
 
 
+def _write_training_status(
+    *,
+    status_file: Path,
+    label: str,
+    epoch: int,
+    epochs_total: int,
+    train_loss: float,
+    val_loss: float,
+    val_top1: float,
+    per_game: tuple,
+    best_top1: float,
+    best_top1_epoch: int,
+    epochs_since_best: int,
+    early_stop_patience: int,
+    state: str,
+    train_secs: float,
+    val_secs: float,
+) -> None:
+    """Write a per-cell training status block into a shared dashboard JSON.
+
+    Atomic via temp-file + rename so the dashboard never reads a partial write.
+    Layout: status_file is the path to a JSON file shared across all cells.
+    Each cell writes/updates `cells[label]` with its current state.
+    """
+    import json as _json
+    import os as _os
+    import time as _time2
+
+    status_file = Path(status_file)
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    # Read existing JSON (or start fresh).
+    if status_file.exists():
+        try:
+            blob = _json.loads(status_file.read_text())
+        except Exception:
+            blob = {}
+    else:
+        blob = {}
+    blob.setdefault("cells", {})
+    cell = blob["cells"].setdefault(label, {})
+    cell["training"] = {
+        "state": state,
+        "epoch": epoch,
+        "epochs_total": epochs_total,
+        "train_loss": float(train_loss),
+        "val_loss": float(val_loss),
+        "val_top1": float(val_top1),
+        "per_game_min": float(per_game[0]),
+        "per_game_p25": float(per_game[1]),
+        "per_game_median": float(per_game[2]),
+        "per_game_p75": float(per_game[3]),
+        "per_game_max": float(per_game[4]),
+        "best_top1": float(best_top1),
+        "best_top1_epoch": int(best_top1_epoch),
+        "epochs_since_best": int(epochs_since_best),
+        "early_stop_patience": int(early_stop_patience),
+        "train_secs": float(train_secs),
+        "val_secs": float(val_secs),
+        "updated_at": _time2.time(),
+    }
+    blob["updated_at"] = _time2.time()
+    tmp = status_file.with_suffix(status_file.suffix + ".tmp")
+    tmp.write_text(_json.dumps(blob, indent=2))
+    _os.replace(tmp, status_file)
+
+
 def _write_progress_plot(out_path: Path, log: dict, *, epochs_total: int,
                           best_top1: float, best_top1_epoch: int) -> None:
     """Generate a live progress plot from accumulated per-epoch stats.
@@ -195,6 +261,9 @@ def train_main(
     rotate: bool = False,
     rotate_mode: str = "fixed",
     rotate_k: int = 1,
+    early_stop_patience: int = 0,
+    status_file: Path | None = None,
+    status_label: str = "",
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
@@ -302,6 +371,9 @@ def train_main(
             model.load_state_dict(ck)
         print(f"[init_from] loaded model weights from {init_path} (fresh optimizer + log)", flush=True)
 
+    # Early-stopping counter: number of consecutive epochs with no improvement
+    # over best_top1. Resets to 0 whenever we set a new best.
+    epochs_since_best = 0
     for epoch in range(start_epoch, epochs + 1):
         # Train.
         model.train()
@@ -424,6 +496,9 @@ def train_main(
             torch.save(cpu_state, out_dir / "checkpoint_best.pt")
             print(f"  ↳ new best_top1={best_top1:.3f} at epoch {epoch} (saved checkpoint_best.pt)",
                   flush=True)
+            epochs_since_best = 0
+        else:
+            epochs_since_best += 1
         # Append-only training log (so a kill mid-run still has all stats).
         (out_dir / "training_log.json").write_text(json.dumps(log, indent=2))
         # Live progress plot.
@@ -435,6 +510,57 @@ def train_main(
         except Exception as e:
             # Plot is non-critical; don't crash training.
             print(f"  (progress.png write failed: {e})", flush=True)
+
+        # Live dashboard status write — atomic via tmp + rename.
+        if status_file is not None:
+            try:
+                _write_training_status(
+                    status_file=status_file,
+                    label=status_label,
+                    epoch=epoch,
+                    epochs_total=epochs,
+                    train_loss=stats.train_loss_total,
+                    val_loss=stats.val_loss_total,
+                    val_top1=stats.val_policy_top1_acc,
+                    per_game=(pg_min, pg_p25, pg_p50, pg_p75, pg_max),
+                    best_top1=best_top1,
+                    best_top1_epoch=best_top1_epoch,
+                    epochs_since_best=epochs_since_best,
+                    early_stop_patience=early_stop_patience,
+                    state="training",
+                    train_secs=train_secs,
+                    val_secs=val_secs,
+                )
+            except Exception as e:
+                print(f"  (status_file write failed: {e})", flush=True)
+
+        # Early-stop check: if patience set and we've not improved for N epochs, stop.
+        if early_stop_patience > 0 and epochs_since_best >= early_stop_patience:
+            print(f"  ↳ early-stop: val_top1 not improved for {epochs_since_best} epochs "
+                  f"(best={best_top1:.3f} at epoch {best_top1_epoch}); stopping at epoch {epoch}",
+                  flush=True)
+            if status_file is not None:
+                try:
+                    _write_training_status(
+                        status_file=status_file,
+                        label=status_label,
+                        epoch=epoch,
+                        epochs_total=epochs,
+                        train_loss=stats.train_loss_total,
+                        val_loss=stats.val_loss_total,
+                        val_top1=stats.val_policy_top1_acc,
+                        per_game=(pg_min, pg_p25, pg_p50, pg_p75, pg_max),
+                        best_top1=best_top1,
+                        best_top1_epoch=best_top1_epoch,
+                        epochs_since_best=epochs_since_best,
+                        early_stop_patience=early_stop_patience,
+                        state="early_stopped",
+                        train_secs=train_secs,
+                        val_secs=val_secs,
+                    )
+                except Exception:
+                    pass
+            break
 
     # Per-epoch artifacts already wrote checkpoint.pt + training_log.json
     # after the final epoch. Just write the run config below.
@@ -498,6 +624,14 @@ def cli_main() -> None:
                         "hex symmetry augmentation).")
     p.add_argument("--rotate-k", type=int, default=1,
                    help="If --rotate-mode=fixed, apply this many 60° rotations (0..5).")
+    p.add_argument("--early-stop-patience", type=int, default=0,
+                   help="Stop training when val_top1 hasn't beaten best for N epochs in a row. "
+                        "0 disables early stopping (default; preserves prior --epochs behavior).")
+    p.add_argument("--status-file", type=Path, default=None,
+                   help="If set, write a per-epoch dashboard JSON entry to this file. Used by "
+                        "the grid-experiment orchestrator (grid_dashboard.py).")
+    p.add_argument("--status-label", type=str, default="",
+                   help="Cell label to use when writing status (e.g. 'h64_l3'). Required with --status-file.")
     args = p.parse_args()
     train_main(
         run_dirs=args.run_dirs, out_dir=args.out_dir,
@@ -511,6 +645,9 @@ def cli_main() -> None:
         rotate=args.rotate,
         rotate_mode=args.rotate_mode,
         rotate_k=args.rotate_k,
+        early_stop_patience=args.early_stop_patience,
+        status_file=args.status_file,
+        status_label=args.status_label,
     )
 
 
