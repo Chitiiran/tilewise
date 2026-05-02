@@ -14,6 +14,7 @@ from .experiments import (
     e6_mcts_gnn_winrate,
     e7_gnn_tournament,
     e9_v3_data_gen,
+    e10_v3_tournament,
 )
 
 
@@ -26,6 +27,7 @@ _EXPERIMENTS = {
     "e6": e6_mcts_gnn_winrate,
     "e7": e7_gnn_tournament,
     "e9": e9_v3_data_gen,
+    "e10": e10_v3_tournament,
 }
 
 
