@@ -50,6 +50,18 @@ impl PyEngine {
     /// engine's lifetime.
     fn bonuses_enabled(&self) -> bool { self.inner.state.bonuses_enabled }
 
+    /// Read the current VP of player `p` (0..=3). Used by v3's VP-aware
+    /// MCTS sim-budget schedule (smaller search budget when acting player
+    /// is close to winning) and by the playback viewer.
+    fn vp(&self, p: u8) -> PyResult<u8> {
+        if p >= 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("player must be 0..=3, got {}", p)
+            ));
+        }
+        Ok(self.inner.state.vp[p as usize])
+    }
+
     fn legal_actions<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
         self.inner.legal_actions().into_pyarray_bound(py)
     }
