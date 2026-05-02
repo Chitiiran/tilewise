@@ -569,6 +569,14 @@ INDEX_HTML = r"""<!doctype html>
   table.vp th, table.vp td { border: 1px solid #ddd; padding: 3px 6px; vertical-align: top;
                               overflow: hidden; text-overflow: ellipsis; word-wrap: break-word; }
   table.vp th { background: #f0f0f0; text-align: left; }
+  table.vp tr.cp-row td { background: linear-gradient(90deg, #fff7c4 0%, #fffae0 100%) !important;
+                          border-top: 2px solid #f5b800; border-bottom: 2px solid #f5b800;
+                          font-weight: 600; }
+  table.vp tr.cp-row td:first-child { border-left: 4px solid #f5b800; }
+  @keyframes turnPulse { 0%,100% { box-shadow: 0 0 6px 1px #ffd633; }
+                          50% { box-shadow: 0 0 14px 3px #ffe97a; } }
+  .seat-chip.cp { outline: 2px solid #ffd633; outline-offset: 1px;
+                  animation: turnPulse 1.6s ease-in-out infinite; }
   .swatch { display: inline-block; width: 12px; height: 12px; vertical-align: middle;
             margin-right: 6px; border: 1px solid #333; border-radius: 2px; }
   .key-hint { color: #888; font-size: 11px; }
@@ -583,7 +591,6 @@ INDEX_HTML = r"""<!doctype html>
     color: white; font-weight: 600; display: flex; justify-content: space-between;
     align-items: center; min-width: 0;
   }
-  .seat-chip.cp { outline: 2px solid #ffd633; outline-offset: 1px; }
   .seat-chip .vp { background: rgba(255,255,255,0.25); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
   .seat-chip .ttl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dim { color: #999; }
@@ -704,7 +711,46 @@ function renderState() {
   svg.setAttribute('width', img.clientWidth);
   svg.setAttribute('height', img.clientHeight);
   svg.setAttribute('viewBox', `0 0 ${img.clientWidth} ${img.clientHeight}`);
-  let body = '';
+
+  // Diff against the previous state to find "newly built this step" assets.
+  // Each of (s, c, r) is a list of [id, owner] pairs. We treat a vertex/edge
+  // as newly built if it didn't appear with the same owner in prev.s/.c/.r
+  // (e.g. a settlement upgraded to a city counts as a new city, not a new
+  // settlement, so the glow follows the upgrade).
+  const prev = (cur > 0) ? overlays.states[cur - 1] : null;
+  function asKeySet(arr) { const s = new Set(); for (const [id, o] of arr) s.add(`${id}:${o}`); return s; }
+  const prevSettleKeys = prev ? asKeySet(prev.s) : new Set();
+  const prevCityKeys   = prev ? asKeySet(prev.c) : new Set();
+  const prevRoadKeys   = prev ? asKeySet(prev.r) : new Set();
+  const isNewSettle = ([vid, owner]) => prev && !prevSettleKeys.has(`${vid}:${owner}`);
+  const isNewCity   = ([vid, owner]) => prev && !prevCityKeys.has(`${vid}:${owner}`);
+  const isNewRoad   = ([eid, owner]) => prev && !prevRoadKeys.has(`${eid}:${owner}`);
+
+  // SVG filter definitions: gold glow for newly-built objects this step,
+  // and a per-player soft glow used to highlight ALL of the current player's
+  // assets while it's their turn. The player-color glow uses CSS variables
+  // applied via filter URL fragments per render.
+  let body = `<defs>
+    <filter id="goldGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feFlood flood-color="#ffd633" flood-opacity="0.95" result="gold"/>
+      <feComposite in="gold" in2="blur" operator="in" result="goldBlur"/>
+      <feMerge>
+        <feMergeNode in="goldBlur"/>
+        <feMergeNode in="goldBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="cpGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="1.5" result="b1"/>
+      <feFlood flood-color="#ffffff" flood-opacity="0.55" result="white"/>
+      <feComposite in="white" in2="b1" operator="in" result="bw"/>
+      <feMerge>
+        <feMergeNode in="bw"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>`;
 
   if (st.rh >= 0) {
     const [hx, hy] = layout.hex_centers[st.rh];
@@ -721,33 +767,61 @@ function renderState() {
     body += `</g>`;
   }
 
-  for (const [eid, owner] of st.r) {
+  // Helper: pick the visual emphasis filter for an asset.
+  //   - "newly built this step" wins over everything → gold glow
+  //   - else if the owner is the current player → soft white glow
+  //   - else → no filter
+  function pickFilter(isNew, owner) {
+    if (isNew) return ' filter="url(#goldGlow)"';
+    if (st.cp === owner) return ' filter="url(#cpGlow)"';
+    return '';
+  }
+  // Bold the stroke for current-player assets so it pops even at small sizes.
+  function pickStrokeWidth(owner, base) {
+    return st.cp === owner ? (base + 0.9) : base;
+  }
+
+  for (const pair of st.r) {
+    const [eid, owner] = pair;
     const e = layout.edges[eid];
     const [x1, y1] = dataToPx(e[0], e[1]);
     const [x2, y2] = dataToPx(e[2], e[3]);
+    const fAttr = pickFilter(isNewRoad(pair), owner);
+    body += `<g${fAttr}>`;
     body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="white" stroke-width="7" stroke-linecap="round"/>`;
     body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${PLAYER_COLORS[owner]}" stroke-width="4.5" stroke-linecap="round"/>`;
+    body += `</g>`;
   }
 
-  for (const [vid, owner] of st.s) {
+  for (const pair of st.s) {
+    const [vid, owner] = pair;
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 11;
     const path = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/3} L ${px} ${py - sz} L ${px - sz} ${py - sz/3} Z`;
-    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="${PLAYER_COLORS_DARK[owner]}" stroke-width="1.8" stroke-linejoin="round"/>`;
+    const sw = pickStrokeWidth(owner, 1.8);
+    const fAttr = pickFilter(isNewSettle(pair), owner);
+    body += `<g${fAttr}>`;
+    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="${PLAYER_COLORS_DARK[owner]}" stroke-width="${sw}" stroke-linejoin="round"/>`;
     body += `<rect x="${px - 2.5}" y="${py + sz/3}" width="5" height="${sz - sz/3 - 1}" fill="${PLAYER_COLORS_DARK[owner]}"/>`;
+    body += `</g>`;
   }
 
-  for (const [vid, owner] of st.c) {
+  for (const pair of st.c) {
+    const [vid, owner] = pair;
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 14;
     const dark = PLAYER_COLORS_DARK[owner];
     const base = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/2} L ${px} ${py - sz - 3} L ${px - sz} ${py - sz/2} Z`;
-    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.8" stroke-linejoin="round"/>`;
+    const sw = pickStrokeWidth(owner, 1.8);
+    const fAttr = pickFilter(isNewCity(pair), owner);
+    body += `<g${fAttr}>`;
+    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="${sw}" stroke-linejoin="round"/>`;
     body += `<rect x="${px + sz/2}" y="${py - sz - 1}" width="4" height="7" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.2"/>`;
     body += `<rect x="${px - sz + 3}" y="${py - 1}" width="${sz * 2 - 6}" height="3.5" fill="${dark}" opacity="0.55"/>`;
     body += `<rect x="${px - 3}" y="${py + sz/3}" width="6" height="${sz - sz/3}" fill="${dark}" opacity="0.7"/>`;
+    body += `</g>`;
   }
 
   svg.innerHTML = body;
@@ -769,11 +843,12 @@ function renderState() {
              '</colgroup>';
   html += '<tr><th>seat</th><th>VP</th><th>hand</th><th>dev cards</th><th>built (S/C/R)</th><th>LR / Knights</th><th>ports</th></tr>';
   for (let i = 0; i < 4; i++) {
-    const isCp = (st.cp === i) ? 'background:#ffffaa;' : '';
+    const cpClass = (st.cp === i) ? 'cp-row' : '';
     const h = st.hands[i];
     let badges = '';
     if (st.lr_holder === i) badges += '<span class="badge lr">LR</span>';
     if (st.la_holder === i) badges += '<span class="badge la">LA</span>';
+    const turnIcon = (st.cp === i) ? '<span title="Current turn" style="margin-right:3px">▶</span>' : '';
     const handStr = `${fmtBreakdown(h.breakdown)} <span class="dim">(${h.total})</span>`;
     let devStr = fmtDev(st.dev_held[i]);
     const vpcPlayed = (st.vp_played && st.vp_played[i]) || 0;
@@ -785,8 +860,8 @@ function renderState() {
     const builtStr = `${built.settle}/${built.city}/${built.road}`;
     const lrK = `${st.lr_len[i]} / ${st.knights[i]}`;
     const portStr = fmtPorts(st.ports[i]);
-    html += `<tr style="${isCp}">` +
-            `<td style="white-space:nowrap"><span class="swatch" style="background:${PLAYER_COLORS[i]}"></span>${i} ${badges}</td>` +
+    html += `<tr class="${cpClass}">` +
+            `<td style="white-space:nowrap">${turnIcon}<span class="swatch" style="background:${PLAYER_COLORS[i]}"></span>${i} ${badges}</td>` +
             `<td style="text-align:right;font-weight:bold">${st.vp[i]}</td>` +
             `<td>${handStr}</td>` +
             `<td>${devStr}</td>` +
