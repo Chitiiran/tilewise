@@ -329,6 +329,23 @@ def main():
         # If user passed --resume-from-prior, salvage compute by resuming from
         # the latest epoch checkpoint of this same cell from the prior run.
         prior_ckpt = _find_latest_epoch_checkpoint(args.resume_from_prior, label)
+        # Pre-seed pass-2's checkpoint_best.pt from pass-1's, so if pass-2
+        # never beats pass-1's best (e.g. h32_l3 epoch-1 fluke at 0.207 that
+        # the resumed run can't match), we still have a usable best file
+        # for the tournament. Train.py only writes checkpoint_best.pt on
+        # strict-better val_top1, so without this seeding the file would
+        # stay missing if pass-1's best epoch was an early outlier.
+        if prior_ckpt is not None and args.resume_from_prior is not None:
+            prior_best = (args.resume_from_prior / f"training_{label}" /
+                          "checkpoint_best.pt")
+            if prior_best.exists():
+                train_out.mkdir(parents=True, exist_ok=True)
+                target = train_out / "checkpoint_best.pt"
+                if not target.exists():
+                    import shutil as _shutil
+                    _shutil.copy2(prior_best, target)
+                    print(f"[orchestrator] seeded {target.name} from pass-1's "
+                          f"checkpoint_best.pt", flush=True)
         rc = _run_training(
             label=label,
             hidden_dim=cell["hidden_dim"],
