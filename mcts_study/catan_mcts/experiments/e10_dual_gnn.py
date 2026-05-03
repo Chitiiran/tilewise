@@ -57,8 +57,16 @@ def _resolve_device(spec: str) -> str:
 
 def _load_model(checkpoint: Path, hidden_dim: int, num_layers: int,
                 device: str = "cpu") -> GnnModel:
+    """Load a checkpoint that may be either a raw state_dict (e.g.
+    `checkpoint_best.pt`, `checkpoint.pt`) or a resume-bundle dict
+    containing model + optimizer + log (e.g. `checkpoint_epochNN.pt`).
+    """
     model = GnnModel(hidden_dim=hidden_dim, num_layers=num_layers)
-    state = torch.load(checkpoint, map_location=device)
+    obj = torch.load(checkpoint, map_location=device, weights_only=False)
+    if isinstance(obj, dict) and "model_state" in obj:
+        state = obj["model_state"]
+    else:
+        state = obj
     model.load_state_dict(state)
     model.eval()
     return model.to(device)
