@@ -979,7 +979,28 @@ async function refresh() {
 }
 
 setPass('pass1');
-setInterval(refresh, REFRESH_MS);
+
+// Path 1 — true Server-Sent Events push (when served by dashboard_server.py).
+// Path 2 — fallback to 8s polling (works with plain `python -m http.server`).
+let _sseConnected = false;
+function tryStartSSE() {
+  try {
+    const es = new EventSource('/events');
+    es.addEventListener('hello', () => { _sseConnected = true; refresh(); });
+    es.addEventListener('update', () => { refresh(); });
+    es.onerror = () => {
+      // EventSource auto-reconnects; mark disconnected so poll-fallback resumes.
+      _sseConnected = false;
+    };
+  } catch (e) {
+    _sseConnected = false;
+  }
+}
+tryStartSSE();
+
+// Poll fallback. Skips the fetch if SSE is currently driving updates,
+// so the only cost when SSE works is one timer tick.
+setInterval(() => { if (!_sseConnected) refresh(); }, REFRESH_MS);
 </script>
 </body>
 </html>
