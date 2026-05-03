@@ -53,6 +53,11 @@
   .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; margin-top: 4px; }
   .legend-item { display: flex; align-items: center; gap: 3px; }
   .legend-swatch { width: 12px; height: 12px; border: 1px solid #888; border-radius: 2px; }
+  button.active { background: #c8f5c8; border-color: #4a8; }
+  button { padding: 5px 10px; font-size: 12px; cursor: pointer; border-radius: 4px; border: 1px solid #aaa; background: #f8f8f8; }
+  button:hover { background: #eee; }
+  #eventLog > div { padding: 2px 0; border-bottom: 1px dashed #eee; }
+  #eventLog > div:first-child { background: #fffae0; padding: 3px 4px; border-radius: 3px; }
   canvas { display: block; max-width: 100%; }
   .header-row { display: flex; justify-content: space-between; align-items: baseline; }
   .small-stat { font-size: 11px; color: #666; }
@@ -64,7 +69,10 @@
 
 <div class="header-row">
   <h1>v3 grid experiment dashboard</h1>
-  <span class="small-stat" id="autoRefresh">auto-refresh: 10s</span>
+  <div style="display:flex; gap:8px; align-items:center">
+    <button id="soundBtn" onclick="unlockSounds()" style="font-size:12px">🔔 enable sounds</button>
+    <span class="small-stat" id="autoRefresh">refresh-on-change · 8s poll</span>
+  </div>
 </div>
 <div class="meta" id="meta">loading…</div>
 
@@ -89,6 +97,15 @@
   <div class="legend-item"><span class="seat-pill win-strong">≥10%</span> strong</div>
   <div class="legend-item"><span class="seat-pill win-mid">5-10%</span> mid</div>
   <div class="legend-item"><span class="seat-pill win-weak">0-5%</span> weak</div>
+</div>
+
+<div class="panel" style="margin-top:10px;">
+  <h2 style="margin-top:0">Recent events
+    <span class="meta" style="font-weight:normal">— newest first, last 12</span>
+  </h2>
+  <div id="eventLog" style="font-size:12px; max-height:140px; overflow-y:auto; line-height:1.5">
+    <div class="meta">no events yet — sounds: epoch tick (660Hz), new best (880Hz), tournament 2-tone, pass complete 3-tone, failure 2-tone descending</div>
+  </div>
 </div>
 
 <div class="panel" style="margin-top:10px;">
@@ -127,6 +144,148 @@
 
 <script>
 const REFRESH_MS = 8000;  // 8s — pulls fresh training_log.json on every cycle
+
+// Diff-on-poll event detection. We snapshot the previous payload and only
+// re-render + chime when something meaningful changed. The browser's
+// autoplay policy blocks WebAudio until the first user gesture; the user
+// must click "🔔 enable sounds" once per session to unlock.
+let prevSnapshot = null;
+let audioCtx = null;
+let soundsEnabled = false;
+let soundQueue = [];
+
+function unlockSounds() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    soundsEnabled = true;
+    document.getElementById('soundBtn').textContent = '🔔 sounds on';
+    document.getElementById('soundBtn').classList.add('active');
+    // Test ping so the user knows it works.
+    playTone(880, 0.08, 0.15);
+  } catch (e) {
+    document.getElementById('soundBtn').textContent = '🔇 unsupported';
+  }
+}
+
+function playTone(freq, durSec, vol) {
+  if (!audioCtx || !soundsEnabled) return;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(vol, t0 + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + durSec);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + durSec + 0.05);
+}
+
+function chimeForEvent(kind) {
+  // kind: "epoch", "best", "tournament_done", "pass_done", "failed"
+  if (!soundsEnabled) return;
+  switch (kind) {
+    case "epoch":          playTone(660, 0.08, 0.10); break;        // soft tick
+    case "best":           playTone(880, 0.10, 0.18); break;        // higher tick
+    case "tournament_done": // two-note ascending
+      playTone(660, 0.10, 0.20);
+      setTimeout(() => playTone(990, 0.18, 0.25), 100);
+      break;
+    case "pass_done":      // three-note triumphal
+      playTone(660, 0.12, 0.25);
+      setTimeout(() => playTone(880, 0.12, 0.28), 130);
+      setTimeout(() => playTone(1320, 0.25, 0.32), 260);
+      break;
+    case "failed":         // descending alarm
+      playTone(440, 0.18, 0.30);
+      setTimeout(() => playTone(220, 0.28, 0.30), 200);
+      break;
+  }
+}
+
+function updatePageTitle(unread) {
+  const base = 'v3 grid dashboard';
+  document.title = unread > 0 ? `(${unread}!) ${base}` : base;
+}
+
+let unreadEvents = 0;
+function noteEvent(kind, message, cellLabel) {
+  unreadEvents += 1;
+  updatePageTitle(unreadEvents);
+  chimeForEvent(kind);
+  // Push to recent-events log.
+  const log = document.getElementById('eventLog');
+  if (log) {
+    const li = document.createElement('div');
+    const ts = new Date().toLocaleTimeString();
+    li.innerHTML = `<span class="meta">${ts}</span> <b>${cellLabel || ''}</b> ${message}`;
+    log.insertBefore(li, log.firstChild);
+    while (log.children.length > 12) log.removeChild(log.lastChild);
+  }
+  // Flash the cell card briefly.
+  if (cellLabel) {
+    const card = document.getElementById('cell_' + cellLabel);
+    if (card) {
+      card.style.transition = 'box-shadow 0.3s';
+      card.style.boxShadow = '0 0 0 4px #ffd633';
+      setTimeout(() => { card.style.boxShadow = ''; }, 1500);
+    }
+  }
+}
+
+function clearUnread() {
+  unreadEvents = 0;
+  updatePageTitle(0);
+}
+window.addEventListener('focus', clearUnread);
+
+// Compare new blob to previous and emit events for anything important.
+function detectEvents(newBlob, oldBlob) {
+  if (!oldBlob) return;
+  const oldCells = oldBlob.cells || {};
+  const newCells = newBlob.cells || {};
+  for (const [label, nc] of Object.entries(newCells)) {
+    const oc = oldCells[label] || {};
+    const nt = nc.training, ot = oc.training;
+    const newEpoch = nt && nt.epoch || 0;
+    const oldEpoch = ot && ot.epoch || 0;
+    // New epoch landed.
+    if (newEpoch > oldEpoch && newEpoch > 0) {
+      const isBest = nt.best_top1_epoch === nt.epoch;
+      const msg = `epoch ${nt.epoch}/${nt.epochs_total} — val_top1 ${nt.val_top1.toFixed(3)}` +
+                  (isBest ? ' 🏆 new best' : '');
+      noteEvent(isBest ? 'best' : 'epoch', msg, label);
+    }
+    // Tournament completed (had progress, now has tournament block).
+    if (!oc.tournament && nc.tournament) {
+      const wr = nc.tournament.win_rate_by_role || {};
+      const pg = (wr.PureGnn || 0) * 100;
+      const gm = (wr.GnnMcts || 0) * 100;
+      const msg = `tournament done — PureGnn ${pg.toFixed(1)}% · GnnMcts ${gm.toFixed(1)}%`;
+      noteEvent('tournament_done', msg, label);
+    }
+    // Failure transition.
+    const oldState = oc.state || '';
+    const newState = nc.state || '';
+    if (newState !== oldState && (newState === 'failed' || newState === 'training_failed' ||
+                                    newState === 'tournament_failed')) {
+      noteEvent('failed', `failed (${newState})`, label);
+    }
+  }
+  // Pass completion.
+  const oldStatus = (oldBlob.orchestrator || {}).status;
+  const newStatus = (newBlob.orchestrator || {}).status;
+  if (oldStatus !== 'finished' && newStatus === 'finished') {
+    noteEvent('pass_done', `${currentPass} ALL CELLS DONE`, '');
+  }
+}
+
+function blobChanged(a, b) {
+  if (!a || !b) return true;
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
 const PASS_FILES = {
   pass1: 'grid_dashboard.json',
   pass2: 'grid_full20.json',
@@ -799,6 +958,15 @@ async function refresh() {
       return;
     }
     const blob = await r.json();
+    // Diff-on-poll: only re-render + chime if the payload actually changed.
+    if (!blobChanged(blob, prevSnapshot)) {
+      // Light heartbeat to show liveness without re-rendering.
+      const meta = document.getElementById('meta');
+      if (meta && meta.dataset) meta.dataset.lastPoll = Date.now();
+      return;
+    }
+    detectEvents(blob, prevSnapshot);
+    prevSnapshot = blob;
     renderMeta(blob);
     renderLeaderboard(blob);
     renderInsights(blob);
