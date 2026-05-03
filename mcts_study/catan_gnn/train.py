@@ -374,6 +374,33 @@ def train_main(
     # Early-stopping counter: number of consecutive epochs with no improvement
     # over best_top1. Resets to 0 whenever we set a new best.
     epochs_since_best = 0
+
+    # Initial dashboard write so the dashboard knows training has begun
+    # the cache load + first epoch can be 10-20 min on big datasets, and
+    # without this write the dashboard sits on `training_starting` for
+    # that whole window.
+    if status_file is not None:
+        try:
+            _write_training_status(
+                status_file=status_file,
+                label=status_label,
+                epoch=0,
+                epochs_total=epochs,
+                train_loss=0.0,
+                val_loss=0.0,
+                val_top1=0.0,
+                per_game=(0.0, 0.0, 0.0, 0.0, 0.0),
+                best_top1=0.0,
+                best_top1_epoch=0,
+                epochs_since_best=0,
+                early_stop_patience=early_stop_patience,
+                state="warming_up",
+                train_secs=0.0,
+                val_secs=0.0,
+            )
+        except Exception:
+            pass
+
     for epoch in range(start_epoch, epochs + 1):
         # Train.
         model.train()
@@ -490,12 +517,25 @@ def train_main(
         # bench-2, etc.) that expect torch.save(model.state_dict()).
         torch.save(cpu_state, out_dir / "checkpoint.pt")
         # Best-checkpoint tracking.
+        # We track two notions of "best":
+        #   - best_top1 (strict): saved checkpoint, used by downstream code.
+        #   - For early-stop "improvement" we require a small margin (0.005)
+        #     over the best so noise-spikes from a single early epoch don't
+        #     wedge the patience counter. Without the margin we observed
+        #     val_top1 oscillating ±0.01 between epochs (true noise) and
+        #     patience=3 firing too early — see `feedback_early_stop_margin`.
+        EARLY_STOP_MARGIN = 0.005
         if stats.val_policy_top1_acc > best_top1:
             best_top1 = stats.val_policy_top1_acc
             best_top1_epoch = epoch
             torch.save(cpu_state, out_dir / "checkpoint_best.pt")
             print(f"  ↳ new best_top1={best_top1:.3f} at epoch {epoch} (saved checkpoint_best.pt)",
                   flush=True)
+        # Early-stop counter: increment unless this epoch's val_top1 is
+        # within EARLY_STOP_MARGIN of the running best. This treats epochs
+        # that nearly match the high as "still trending toward improvement"
+        # rather than as a regression.
+        if stats.val_policy_top1_acc >= best_top1 - EARLY_STOP_MARGIN:
             epochs_since_best = 0
         else:
             epochs_since_best += 1
