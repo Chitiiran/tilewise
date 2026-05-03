@@ -12,9 +12,32 @@ Sequential by default — runs cells one at a time so the GPU is dedicated
 to each. ~30-60 min per cell, ~5-9 hours total.
 """
 from __future__ import annotations
-import argparse, json, os, subprocess, sys, time
+import argparse, json, os, re, subprocess, sys, time
 from collections import Counter
 from pathlib import Path
+
+
+_EPOCH_RE = re.compile(r"checkpoint_epoch(\d+)\.pt$")
+
+
+def _resolve_checkpoint(cell_dir: Path, mode: str) -> Path | None:
+    """Return the path of the checkpoint to use for this cell, or None if
+    nothing suitable exists. Mode 'best' picks checkpoint_best.pt; 'last'
+    picks the highest-numbered checkpoint_epochNN.pt."""
+    if mode == "best":
+        p = cell_dir / "checkpoint_best.pt"
+        return p if p.exists() else None
+    if mode == "last":
+        candidates: list[tuple[int, Path]] = []
+        for child in cell_dir.glob("checkpoint_epoch*.pt"):
+            m = _EPOCH_RE.search(child.name)
+            if m:
+                candidates.append((int(m.group(1)), child))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: t[0])
+        return candidates[-1][1]
+    raise ValueError(f"unknown checkpoint mode: {mode}")
 
 
 CELLS = [
@@ -124,6 +147,9 @@ def main():
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--cells", type=str, default="all",
                    help="Comma-separated cell labels, or 'all'")
+    p.add_argument("--checkpoint-mode", choices=["best", "last"], default="best",
+                   help="best = checkpoint_best.pt (early-stop peak val_top1). "
+                        "last = highest-numbered checkpoint_epochNN.pt (end of training).")
     args = p.parse_args()
 
     args.out_root.mkdir(parents=True, exist_ok=True)
@@ -141,6 +167,7 @@ def main():
         started_at=time.time(),
         config={
             "checkpoints_root": str(args.checkpoints_root),
+            "checkpoint_mode": args.checkpoint_mode,
             "num_games_per_seating": args.num_games_per_seating,
             "seed_base": args.seed_base,
             "lookahead_depth": args.lookahead_depth,
@@ -153,12 +180,15 @@ def main():
         cell_out = args.out_root / label
         cell_out.mkdir(parents=True, exist_ok=True)
 
-        ckpt = args.checkpoints_root / f"training_{label}" / "checkpoint_best.pt"
-        if not ckpt.exists():
-            print(f"[pass3] {label}: no checkpoint at {ckpt} — skipping", flush=True)
+        cell_dir = args.checkpoints_root / f"training_{label}"
+        ckpt = _resolve_checkpoint(cell_dir, args.checkpoint_mode)
+        if ckpt is None or not ckpt.exists():
+            print(f"[pass3] {label}: no checkpoint in {cell_dir} (mode={args.checkpoint_mode}) — skipping",
+                  flush=True)
             _write_cell(args.status_file, label, state="no_checkpoint",
                         hidden_dim=cell["hidden_dim"], num_layers=cell["num_layers"])
             continue
+        print(f"[pass3] {label}: using {ckpt.name} (mode={args.checkpoint_mode})", flush=True)
 
         # Skip if this cell already has a tournament block.
         existing = _read_json(args.status_file).get("cells", {}).get(label, {})
