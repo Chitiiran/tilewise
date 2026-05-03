@@ -806,7 +806,7 @@ function renderState() {
   // Locked column widths so the table doesn't reflow as hand contents change.
   // Hand gets the widest slot since it grows the most; ports/dev are tighter.
   let html = '<colgroup>' +
-             '<col style="width:90px">' +    // seat (wide enough for "P0 LR LA" badges)
+             '<col style="width:130px">' +    // seat (now includes role label like "P0 LookV3")
              '<col style="width:32px">' +    // VP
              '<col style="width:200px">' +   // hand
              '<col style="width:108px">' +   // dev cards
@@ -833,8 +833,11 @@ function renderState() {
     const builtStr = `${built.settle}/${built.city}/${built.road}`;
     const lrK = `${st.lr_len[i]} / ${st.knights[i]}`;
     const portStr = fmtPorts(st.ports[i]);
+    // Seat label: colored swatch + role name (e.g. "P0 LookV3"). The full
+    // SEAT_NAMES entry is already prefixed with "P{i}", so we don't repeat it.
+    const seatLabel = SEAT_NAMES[i] || `P${i}`;
     html += `<tr class="${cpClass}">` +
-            `<td style="white-space:nowrap">${turnIcon}<span class="swatch" style="background:${PLAYER_COLORS[i]}"></span>${i} ${badges}</td>` +
+            `<td style="white-space:nowrap">${turnIcon}<span class="swatch" style="background:${PLAYER_COLORS[i]}"></span><b>${seatLabel}</b> ${badges}</td>` +
             `<td style="text-align:right;font-weight:bold">${st.vp[i]}</td>` +
             `<td>${handStr}</td>` +
             `<td>${devStr}</td>` +
@@ -859,8 +862,11 @@ function renderState() {
     if (vpc > 0) badges += ` <span title="VP cards played">⭐×${vpc}</span>`;
     // Emit literal `class="seat-chip"` so static-HTML scanners can match the
     // base class; the `cp` modifier is added via classList below.
+    // Use SEAT_NAMES[i] which includes the role (e.g. "P0 LookV3").
+    // Falls back to "P{i}" when role data isn't available.
+    const stripLabel = SEAT_NAMES[i] || `P${i}`;
     stripHtml += `<div class="seat-chip" style="background:${PLAYER_COLORS[i]}">` +
-                 `<span class="ttl">P${i}${badges}</span>` +
+                 `<span class="ttl">${stripLabel}${badges}</span>` +
                  `<span class="vp">${st.vp[i]} VP</span>` +
                  `</div>`;
   }
@@ -925,6 +931,58 @@ if (img.complete) renderState();
 """
 
 
+def _derive_seat_names(run_dir: Path, seed: int) -> list[str]:
+    """Look up the 4-player seating + per-seed rotation so we can label each
+    seat with its role (e.g., "P0 LookaheadV3", "P1 PureGnn"). Falls back to
+    plain "P0..P3" if no config or seating is found.
+
+    Reads worker*/config.json for `seating` (base order), then derives
+    `seed_base` from the smallest seed in this run's parquet shards
+    (e10 doesn't write seed_base into config). Rotation = (seed-seed_base)//10000.
+    """
+    fallback = [f"P{i}" for i in range(4)]
+    try:
+        cfg_files = list(run_dir.glob("worker*/config.json"))
+        if not cfg_files:
+            cfg_files = list(run_dir.glob("config.json"))
+        if not cfg_files:
+            return fallback
+        import json as _json
+        cfg = _json.loads(cfg_files[0].read_text())
+        seating = cfg.get("seating")
+        if not seating or len(seating) != 4:
+            return fallback
+        # Derive seed_base from min seed in parquet (e10 doesn't write it).
+        try:
+            import pyarrow.parquet as pq
+            import pandas as pd
+            game_files = list(run_dir.glob("worker*/games.*.parquet"))
+            if not game_files:
+                game_files = list(run_dir.glob("games.*.parquet"))
+            if not game_files:
+                seed_base = seed - (seed % 10000)
+            else:
+                games = pd.concat([pq.read_table(f).to_pandas() for f in game_files], ignore_index=True)
+                seed_base = int(games.seed.min()) if len(games) else seed
+        except Exception:
+            seed_base = seed - (seed % 10000)
+        rot = (seed - seed_base) // 10000
+        # role at slot s for this rotation = seating[(s + rot) % 4]
+        # Short labels to fit the seat-strip and side panel.
+        short = {
+            "GnnMcts": "GnnMcts",
+            "PureGnn": "PureGnn",
+            "LookaheadMctsV3": "LookV3",
+            "Random": "Random",
+        }
+        return [
+            f"P{s} " + short.get(seating[(s + rot) % 4], seating[(s + rot) % 4])
+            for s in range(4)
+        ]
+    except Exception:
+        return fallback
+
+
 def render(run_dir: Path, seed: int, out_dir: Path | None = None) -> Path:
     """Replay seed from run_dir's parquet and emit a self-contained HTML viewer.
 
@@ -963,7 +1021,7 @@ def render(run_dir: Path, seed: int, out_dir: Path | None = None) -> Path:
         "states": states,
     }
 
-    seat_names = [f"P{i}" for i in range(4)]
+    seat_names = _derive_seat_names(run_dir, seed)
     board_b64 = base64.b64encode(board_png.read_bytes()).decode("ascii")
     html = (INDEX_HTML
             .replace("{{SEED}}", str(seed))
