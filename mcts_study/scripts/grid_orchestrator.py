@@ -82,6 +82,18 @@ def _has_tournament(status_file: Path, label: str) -> bool:
     return bool(blob.get("cells", {}).get(label, {}).get("tournament"))
 
 
+def _find_latest_epoch_checkpoint(prior_run_root: Path | None, label: str) -> Path | None:
+    """If a prior pass already trained this cell, return the highest-numbered
+    checkpoint_epochNN.pt bundle so we can resume from it. None if no prior."""
+    if prior_run_root is None:
+        return None
+    cell_dir = prior_run_root / f"training_{label}"
+    if not cell_dir.exists():
+        return None
+    candidates = sorted(cell_dir.glob("checkpoint_epoch*.pt"))
+    return candidates[-1] if candidates else None
+
+
 def _run_training(
     *,
     label: str,
@@ -97,6 +109,7 @@ def _run_training(
     device: str,
     rotate: bool,
     rotate_mode: str,
+    resume_from: Path | None = None,
 ) -> int:
     cmd = [
         sys.executable, "-m", "catan_gnn.train",
@@ -114,7 +127,11 @@ def _run_training(
     ]
     if rotate:
         cmd.extend(["--rotate", "--rotate-mode", rotate_mode])
-    print(f"[orchestrator] training cell {label} (h{hidden_dim} l{num_layers})", flush=True)
+    if resume_from is not None:
+        cmd.extend(["--resume", str(resume_from)])
+    print(f"[orchestrator] training cell {label} (h{hidden_dim} l{num_layers})" +
+          (f" resuming from {resume_from.name}" if resume_from else " from scratch"),
+          flush=True)
     print(f"  cmd: {' '.join(cmd)}", flush=True)
     return subprocess.call(cmd)
 
@@ -185,12 +202,16 @@ def _aggregate_tournament(run_dir: Path, label: str) -> dict:
         return {"error": "no config.json found"}
     cfg = json.loads(cfg_files[0].read_text())
     seating_base = cfg.get("seating", ["GnnMcts", "PureGnn", "LookaheadMctsV3", "Random"])
-    seed_base = cfg.get("seed_base", 0)
 
     games_files = list(run_dir.glob("worker*/games.*.parquet"))
     if not games_files:
         return {"error": "no games shards"}
     games = pd.concat([pq.read_table(f).to_pandas() for f in games_files], ignore_index=True)
+
+    # e10 doesn't write seed_base into its config, so derive it from the
+    # smallest seed: e10 uses seed_base + rot*10_000 + i, so MIN seed has
+    # rot=0, i=0 and equals exactly seed_base.
+    seed_base = int(games.seed.min()) if len(games) else 0
 
     def role_at_slot(rot, slot):
         return seating_base[(slot + rot) % 4]
@@ -248,6 +269,10 @@ def main():
     # Cell selection
     p.add_argument("--cells", type=str, default="all",
                    help="Comma-separated cell labels to run, or 'all' (default).")
+    p.add_argument("--resume-from-prior", type=Path, default=None,
+                   help="Path to a prior grid out-root (e.g. runs/v3/grid). For each cell, "
+                        "we'll resume from the latest checkpoint_epochNN.pt under "
+                        "{prior}/training_{label}/ if it exists. Salvages prior compute.")
     args = p.parse_args()
 
     args.out_root.mkdir(parents=True, exist_ok=True)
@@ -301,6 +326,9 @@ def main():
             started_at=time.time(),
         )
 
+        # If user passed --resume-from-prior, salvage compute by resuming from
+        # the latest epoch checkpoint of this same cell from the prior run.
+        prior_ckpt = _find_latest_epoch_checkpoint(args.resume_from_prior, label)
         rc = _run_training(
             label=label,
             hidden_dim=cell["hidden_dim"],
@@ -315,6 +343,7 @@ def main():
             device=args.device,
             rotate=args.rotate,
             rotate_mode=args.rotate_mode,
+            resume_from=prior_ckpt,
         )
         if rc != 0:
             _write_cell_state(args.status_file, label, state="training_failed", rc=rc)
@@ -331,6 +360,11 @@ def main():
         # The e10 tournament uses ONE checkpoint (the cell's own) and pits its
         # GnnMcts + PureGnn against LookaheadMctsV3 + Random. d500 comparison
         # has to be handled separately or via the dashboard's diff display.
+        _write_cell_state(
+            args.status_file, label,
+            state="tournament_running",
+            tournament_started_at=time.time(),
+        )
         rc = _run_tournament(
             label=label,
             out_root=args.out_root,
@@ -343,7 +377,11 @@ def main():
             num_games_per_seating=args.num_games_per_seating,
             base_sims_v3=args.base_sims_v3,
             lookahead_depth=args.lookahead_depth,
-            seed_base=args.seed_base + cell_idx * 100_000,
+            # All cells use the same seed range so they face the SAME boards +
+            # dice sequences. Differences across cells become purely model-
+            # driven, not seed-luck. (Earlier code had cell_idx*100_000 offset
+            # which broke fair comparison.)
+            seed_base=args.seed_base,
             workers=args.tournament_workers,
             device=args.device,
         )
