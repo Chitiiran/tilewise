@@ -22,6 +22,10 @@
   .cell-failed { background: #f5c8c8; }
   .cell-pending { background: #f8f8f8; color: #aaa; }
   .cell-early-stopped { background: #d4e7ff; }
+  /* trained-but-no-best: yellowish, not red — model exists, just no new best.pt */
+  .cell-no-improvement { background: #ffe6b3; }
+  /* never-trained: orange — real bug, no model produced */
+  .cell-no-training { background: #ffb380; }
   @keyframes pulse {
     0%, 100% { background: #fff7c4; }
     50% { background: #ffe97a; }
@@ -91,6 +95,8 @@
   <div class="legend-item"><span class="legend-swatch" style="background:#d4e7ff"></span> early-stopped</div>
   <div class="legend-item"><span class="legend-swatch" style="background:#e0d4ff"></span> tournament running</div>
   <div class="legend-item"><span class="legend-swatch" style="background:#d4f5d4"></span> done</div>
+  <div class="legend-item" title="model exists as epoch20.pt, just didn't beat the prior best.pt threshold during training"><span class="legend-swatch" style="background:#ffe6b3"></span> no new best (model OK)</div>
+  <div class="legend-item" title="training ran 0 epochs (e.g. resume off-by-one bug) — no new model produced"><span class="legend-swatch" style="background:#ffb380"></span> no training (0 epochs)</div>
   <div class="legend-item"><span class="legend-swatch" style="background:#f5c8c8"></span> failed</div>
   <div class="legend-item"><span class="legend-swatch" style="background:#f8f8f8"></span> pending</div>
   <div class="legend-item">|</div>
@@ -367,8 +373,17 @@ function pctClass(p) {
 function cellState(cell) {
   if (!cell) return 'pending';
   if (cell.state === 'done') return 'done';
+  // 'no_checkpoint' has two flavors:
+  //   - cell trained 20 epochs but never beat its prior best.pt threshold
+  //     (training completed; bookkeeping issue, model exists as epoch20.pt)
+  //   - cell never trained at all (e.g. resume off-by-one bug → 0 epochs done)
+  // We distinguish by looking at the training log's actual epoch count.
+  if (cell.state === 'no_checkpoint') {
+    const trained = cell.training && cell.training.epoch && cell.training.epoch > 0;
+    return trained ? 'no-improvement' : 'no-training';
+  }
   if (cell.state === 'training_failed' || cell.state === 'tournament_failed' ||
-      cell.state === 'failed' || cell.state === 'no_checkpoint') return 'failed';
+      cell.state === 'failed') return 'failed';
   if (cell.state === 'tournament_running') return 'tournament';
   // INFERRED tournament: training_done but no tournament yet means orchestrator
   // moved on but didn't write tournament_running (older orchestrator binary,
@@ -412,6 +427,13 @@ function cellPhaseLabel(cell, state) {
     return 'starting up · ' + fmtSecs(dur) + ' elapsed';
   }
   if (state === 'failed') return 'FAILED';
+  if (state === 'no-improvement') {
+    const ep = cell.training && cell.training.epoch ? cell.training.epoch : 20;
+    return 'trained ' + ep + ' epochs · no new best.pt (val_top1 didn\'t beat prior threshold)';
+  }
+  if (state === 'no-training') {
+    return 'training did not run (0 epochs) · likely resume off-by-one bug';
+  }
   return 'pending';
 }
 
@@ -757,6 +779,22 @@ function renderCells(blob) {
     if (cell.state === 'training_failed' || cell.state === 'tournament_failed') {
       html += `<div class="badge lose">FAILED rc=${cell.rc}</div>`;
     }
+    if (state === 'no-improvement') {
+      const ep = cell.training && cell.training.epoch ? cell.training.epoch : 20;
+      const vt = cell.training && cell.training.val_top1 ? cell.training.val_top1 : 0;
+      html += `<div style="background:#ffe6b3; padding:6px; margin-top:6px; border-radius:4px; font-size:11px;">` +
+              `<b>No new best.pt</b> — trained ${ep} epochs (final val_top1 = ${vt.toFixed(4)}), ` +
+              `but never beat the inherited threshold from pass-1's best.pt. ` +
+              `Model exists as <code>checkpoint_epoch${ep}.pt</code> and is usable for pass-3.` +
+              `</div>`;
+    }
+    if (state === 'no-training') {
+      html += `<div style="background:#ffb380; padding:6px; margin-top:6px; border-radius:4px; font-size:11px;">` +
+              `<b>No epochs ran.</b> Likely cause: pass-1 finished all 20 epochs, ` +
+              `so resume-from-prior + <code>--epochs 20</code> meant "resume from epoch 21" — ` +
+              `train.py exited with no work to do. Pass-1's <code>checkpoint_best.pt</code> is still available as a fallback.` +
+              `</div>`;
+    }
     div.innerHTML = html;
     row.appendChild(div);
   }
@@ -905,6 +943,7 @@ function renderMeta(blob) {
   // Categorize all 9 expected cells.
   const allLabels = ['h32_l2','h32_l3','h32_l4','h64_l2','h64_l3','h64_l4','h128_l2','h128_l3','h128_l4'];
   let nDone = 0, nTraining = 0, nTournament = 0, nPending = 0, nFailed = 0;
+  let nNoImprovement = 0, nNoTraining = 0;
   let activeLabel = null;
   for (const label of allLabels) {
     const c = cells[label];
@@ -913,6 +952,8 @@ function renderMeta(blob) {
     else if (st === 'tournament') { nTournament++; activeLabel = label; }
     else if (st === 'running') { nTraining++; activeLabel = label; }
     else if (st === 'failed') nFailed++;
+    else if (st === 'no-improvement') nNoImprovement++;
+    else if (st === 'no-training') nNoTraining++;
     else nPending++;
   }
   const totalCells = allLabels.length;
@@ -936,6 +977,8 @@ function renderMeta(blob) {
   if (nTournament > 0) metaHtml += ` · <span class="badge live">${nTournament} tournament</span>`;
   if (nPending > 0) metaHtml += ` · ${nPending} pending`;
   if (nFailed > 0) metaHtml += ` · <span class="badge lose">${nFailed} failed</span>`;
+  if (nNoImprovement > 0) metaHtml += ` · <span class="badge" style="background:#ffe6b3" title="trained 20 epochs but didn't beat prior best.pt threshold">${nNoImprovement} no-new-best</span>`;
+  if (nNoTraining > 0) metaHtml += ` · <span class="badge" style="background:#ffb380" title="0 epochs trained — likely orchestrator resume off-by-one">${nNoTraining} no-training</span>`;
   if (activeLabel) metaHtml += ` · active: <b>${activeLabel}</b>`;
   metaHtml += `<br><span class="meta">started ${startedAgo}m ago`;
   if (etaStr !== '—') metaHtml += ` · estimated remaining: <b>${etaStr}</b>`;
