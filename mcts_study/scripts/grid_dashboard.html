@@ -455,7 +455,10 @@ function renderGrid(blob) {
       const td = document.createElement('td');
       td.className = 'cell-' + state.replace('_', '-');
       const params = APPROX_PARAMS[label] || 0;
-      let html = `<b>${label}</b> <span class="meta">(${fmtParams(params)} params)</span><br>`;
+      const transferredCell = cell && cell.transferred_from_pass1;
+      let html = `<b>${label}</b> ` +
+                 (transferredCell ? `<span class="meta" style="color:#a8650a; font-weight:bold;" title="data transferred from pass-1">↺p1</span> ` : '') +
+                 `<span class="meta">(${fmtParams(params)} params)</span><br>`;
       if (cell) {
         const phase = cellPhaseLabel(cell, state);
         if (state === 'tournament') {
@@ -677,8 +680,10 @@ function renderCells(blob) {
     div.className = 'panel card' + ((state === 'running' || state === 'tournament') ? ' active' : '');
     div.id = 'cell_' + label;
     const phase = cellPhaseLabel(cell, state);
+    const transferred = cell.transferred_from_pass1;
     let html = `<div class="header-row">` +
                `<div><b>${label}</b> <span class="badge">${state}</span> ` +
+               (transferred ? `<span class="badge" style="background:#ffd699; color:#5a3a00" title="checkpoint_best.pt + training log + tournament results were copied from pass-1 because pass-2 did not produce a new best.pt">transferred from pass-1</span> ` : '') +
                `<span class="meta">h=${cell.hidden_dim}, l=${cell.num_layers}, ` +
                `~${fmtParams(APPROX_PARAMS[label]||0)} params</span></div>` +
                `</div>` +
