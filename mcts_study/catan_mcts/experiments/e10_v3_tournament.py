@@ -58,6 +58,12 @@ def _load_model(checkpoint: Path, hidden_dim: int, num_layers: int,
                 device: str = "cpu") -> GnnModel:
     model = GnnModel(hidden_dim=hidden_dim, num_layers=num_layers)
     state = torch.load(checkpoint, map_location=device)
+    # Two on-disk formats:
+    #   checkpoint_best.pt — raw state_dict of model parameters
+    #   checkpoint_epochNN.pt — resume bundle: {model_state, opt_state, next_epoch, ...}
+    # Detect by looking for the "model_state" wrapper key.
+    if isinstance(state, dict) and "model_state" in state:
+        state = state["model_state"]
     model.load_state_dict(state)
     model.eval()
     return model.to(device)
