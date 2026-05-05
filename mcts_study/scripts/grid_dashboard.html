@@ -87,6 +87,7 @@
   <button id="passBtn1" onclick="setPass('pass1')">Pass 1 (patience=3)</button>
   <button id="passBtn2" onclick="setPass('pass2')">Pass 2 (full 20 epochs)</button>
   <button id="passBtn3" onclick="setPass('pass3')">Pass 3 (120g shared-seed)</button>
+  <button id="passBtnCmp" onclick="setPass('comparison')" style="background:#fff4dc; border:1px solid #d4a700;">Comparison (all tournaments)</button>
   <span class="meta" id="passInfo"></span>
 </div>
 
@@ -114,18 +115,18 @@
   </div>
 </div>
 
-<div class="panel" style="margin-top:10px;">
+<div class="panel" id="leaderboardPanel" style="margin-top:10px;">
   <h2 style="margin-top:0">Leaderboard (cells with completed tournaments)</h2>
   <div id="leaderboard">no cells finished yet</div>
   <div class="meta" style="margin-top:4px">Baseline references: <b>v3.6 best</b> (10k-ep10) = 8.3% PureGnn · 2.1% GnnMcts · 87.5% Lookahead · prior d500 = 4.2% PureGnn · 5% GnnMcts · 90% Lookahead</div>
 </div>
 
-<div class="panel" style="margin-top:10px;">
+<div class="panel" id="insightsPanel" style="margin-top:10px;">
   <h2 style="margin-top:0">Key observations (auto-updated)</h2>
   <div id="insights" class="meta">waiting for more cells…</div>
 </div>
 
-<div class="panel" style="margin-top:10px;">
+<div class="panel" id="gridPanel" style="margin-top:10px;">
   <h2 style="margin-top:0">Grid (3 × 3) — hidden_dim × num_layers</h2>
   <table class="grid-table" id="gridTable">
     <thead>
@@ -140,8 +141,23 @@
   </table>
 </div>
 
-<h2>Per-cell detail (active cell highlighted)</h2>
-<div class="row" id="cellsRow"></div>
+<div id="cellsPanel">
+  <h2>Per-cell detail (active cell highlighted)</h2>
+  <div class="row" id="cellsRow"></div>
+</div>
+
+<!-- Tournament-comparison panel (visible only when currentPass === 'comparison') -->
+<div class="panel" id="comparisonPanel" style="margin-top:10px; display:none">
+  <h2 style="margin-top:0">Tournament comparison — all sources, all 9 cells</h2>
+  <div class="meta" style="margin-bottom:8px">
+    Each cell × tournament shows PureGnn winrate vs LookaheadMctsV3 (depth=10, base_sims=200).
+    Game count tagged per row. Δ vs pass-3 best.pt highlighted: <span style="background:#cdf2cd;padding:1px 4px">green = better</span>, <span style="background:#fbd0d0;padding:1px 4px">red = worse</span>, <span style="background:#eee;padding:1px 4px">gray = within noise (±1pp)</span>.
+  </div>
+  <div id="comparisonContent">loading…</div>
+  <h3 style="margin-top:14px">Per-cell detail (all roles)</h3>
+  <div class="meta" style="margin-bottom:6px">Click a cell to expand its full breakdown across all tournaments.</div>
+  <div id="comparisonDetail"></div>
+</div>
 
 <details style="margin-top:14px">
   <summary>Raw dashboard JSON</summary>
@@ -296,6 +312,7 @@ const PASS_FILES = {
   pass1: 'grid_dashboard.json',
   pass2: 'grid_full20.json',
   pass3: 'grid_pass3.json',
+  comparison: 'grid_pass3.json',  // not actually used; comparison fetches all 4 itself
 };
 // Each pass writes per-cell training_log.json into a different out-root.
 // Sparkline charts must fetch the correct one for the currently-viewed pass.
@@ -303,11 +320,13 @@ const PASS_TRAINING_ROOTS = {
   pass1: '../grid',
   pass2: '../grid_full20',
   pass3: null,  // pass-3 is tournament-only, no training_log
+  comparison: null,
 };
 const PASS_LABELS = {
   pass1: 'showing patience=3 early-stop run',
   pass2: 'showing full 20-epoch run (resumes from pass-1)',
   pass3: 'showing 120-game shared-seed final tournament (best checkpoints from pass-2)',
+  comparison: 'comparing all tournaments side-by-side (game count tagged per row)',
 };
 let currentPass = 'pass1';
 
@@ -316,7 +335,15 @@ function setPass(pass) {
   for (const p of ['pass1', 'pass2', 'pass3']) {
     document.getElementById('passBtn' + p.slice(-1)).classList.toggle('active', pass === p);
   }
+  document.getElementById('passBtnCmp').classList.toggle('active', pass === 'comparison');
   document.getElementById('passInfo').textContent = PASS_LABELS[pass] || '';
+  // Show/hide the comparison panel vs the standard panels.
+  const isCmp = pass === 'comparison';
+  document.getElementById('comparisonPanel').style.display = isCmp ? '' : 'none';
+  for (const id of ['leaderboardPanel','insightsPanel','gridPanel','cellsPanel','metaPanelExtra']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = isCmp ? 'none' : '';
+  }
   refresh();
 }
 
@@ -998,6 +1025,10 @@ function renderMeta(blob) {
 
 async function refresh() {
   try {
+    if (currentPass === 'comparison') {
+      await refreshComparison();
+      return;
+    }
     const file = PASS_FILES[currentPass];
     const r = await fetch(file + '?t=' + Date.now());
     if (!r.ok) {
@@ -1024,6 +1055,135 @@ async function refresh() {
   } catch (e) {
     document.getElementById('meta').textContent = 'error: ' + e;
   }
+}
+
+// Comparison view: pulls all 4 source JSONs and renders a side-by-side
+// table of PureGnn winrates per cell × tournament. No SSE coupling beyond
+// reusing the refresh() trigger (gets called whenever any source updates).
+async function refreshComparison() {
+  const sources = [
+    {key: 'pass1',     file: 'grid_dashboard.json',           label: 'Pass 1', games: 48,  note: 'patience=3 early-stop · per-cell seeds'},
+    {key: 'pass2',     file: 'grid_full20.json',              label: 'Pass 2', games: 48,  note: 'full 20-epoch resume · per-cell seeds'},
+    {key: 'pass3',     file: 'grid_pass3.json',               label: 'Pass 3', games: 120, note: 'best.pt · shared seed_base=19M'},
+    {key: 'lastepoch', file: 'grid_pass3_lastepoch.json',     label: 'Last-epoch', games: 120, note: 'epoch20.pt · shared seed_base=19M'},
+  ];
+  const blobs = {};
+  for (const s of sources) {
+    try {
+      const r = await fetch(s.file + '?t=' + Date.now());
+      blobs[s.key] = r.ok ? await r.json() : null;
+    } catch { blobs[s.key] = null; }
+  }
+  // Header meta: progress per source.
+  let metaHtml = '<b>tournament comparison view</b> · ';
+  for (const s of sources) {
+    const b = blobs[s.key];
+    if (!b) { metaHtml += `<span class="badge" style="background:#eee">${s.label}: not started</span> `; continue; }
+    const cells = b.cells || {};
+    const nDone = Object.values(cells).filter(c => (c.tournament || {}).win_rate_by_role).length;
+    const status = (b.orchestrator || {}).status || 'unknown';
+    const cls = status === 'finished' ? 'badge' : 'badge live';
+    metaHtml += `<span class="${cls}">${s.label}: ${nDone}/9 ${status==='running'?'(running)':''}</span> `;
+  }
+  document.getElementById('meta').innerHTML = metaHtml;
+
+  // Build the cell × source matrix.
+  const allLabels = ['h32_l2','h32_l3','h32_l4','h64_l2','h64_l3','h64_l4','h128_l2','h128_l3','h128_l4'];
+  function getWr(blob, label, role) {
+    if (!blob) return null;
+    const c = (blob.cells || {})[label];
+    if (!c) return null;
+    const wr = ((c.tournament || {}).win_rate_by_role || {})[role];
+    return (wr === undefined || wr === null) ? null : wr;
+  }
+  function fmtPct(v) {
+    return v === null ? '—' : (v * 100).toFixed(1) + '%';
+  }
+  function deltaCell(le, p3) {
+    if (le === null || p3 === null) return '<td class="meta">—</td>';
+    const d = (le - p3) * 100;
+    let bg = '#eee', sign = '';
+    if (d > 1) { bg = '#cdf2cd'; sign = '+'; }
+    else if (d < -1) { bg = '#fbd0d0'; sign = ''; }
+    return `<td style="background:${bg}; font-weight:bold">${sign}${d.toFixed(1)}pp</td>`;
+  }
+
+  // Main table.
+  let html = `<table class="grid-table" style="margin-top:6px">
+    <thead><tr>
+      <th>Cell</th>
+      <th>~params</th>`;
+  for (const s of sources) {
+    html += `<th>${s.label}<br><span class="meta">${s.games}g · ${s.note}</span></th>`;
+  }
+  html += `<th>Δ last-ep<br>vs pass-3</th>`;
+  html += `</tr></thead><tbody>`;
+
+  for (const lbl of allLabels) {
+    const params = APPROX_PARAMS[lbl] || 0;
+    const wrs = sources.map(s => getWr(blobs[s.key], lbl, 'PureGnn'));
+    const p3 = wrs[2], le = wrs[3];
+    html += `<tr><td><b>${lbl}</b></td><td class="meta">${fmtParams(params)}</td>`;
+    for (let i = 0; i < sources.length; i++) {
+      const wr = wrs[i];
+      const cls = wr === null ? '' : pctClass(wr);
+      html += `<td><span class="seat-pill ${cls}">${fmtPct(wr)}</span></td>`;
+    }
+    html += deltaCell(le, p3);
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+
+  // Best-cell summary.
+  let bestPerSource = sources.map(s => {
+    let best = null;
+    for (const lbl of allLabels) {
+      const wr = getWr(blobs[s.key], lbl, 'PureGnn');
+      if (wr === null) continue;
+      if (!best || wr > best.wr) best = {label: lbl, wr};
+    }
+    return {source: s.label, best};
+  });
+  let summaryHtml = '<div style="margin-top:10px"><b>Best PureGnn cell per tournament:</b><br>';
+  for (const e of bestPerSource) {
+    if (!e.best) { summaryHtml += `<div class="meta">${e.source}: no data yet</div>`; continue; }
+    summaryHtml += `<div>${e.source}: <b>${e.best.label}</b> @ ${(e.best.wr*100).toFixed(1)}%</div>`;
+  }
+  summaryHtml += '</div>';
+  document.getElementById('comparisonContent').innerHTML = html + summaryHtml;
+
+  // Per-cell detail (all roles, all sources).
+  let dHtml = '';
+  for (const lbl of allLabels) {
+    let cellHtml = `<div class="panel card" style="margin-top:8px"><b>${lbl}</b> <span class="meta">~${fmtParams(APPROX_PARAMS[lbl] || 0)} params</span><br>`;
+    cellHtml += `<table class="compact" style="margin-top:4px; font-size:11px"><tr><th>Source</th><th>Games</th><th>PureGnn</th><th>GnnMcts</th><th>Look</th><th>Random</th><th>VP_PureGnn</th></tr>`;
+    let anyData = false;
+    for (const s of sources) {
+      const b = blobs[s.key];
+      const c = b ? (b.cells || {})[lbl] : null;
+      const t = c ? (c.tournament || {}) : null;
+      if (!t || !t.win_rate_by_role) {
+        cellHtml += `<tr><td>${s.label}</td><td>${s.games}</td><td colspan="5" class="meta">—</td></tr>`;
+        continue;
+      }
+      anyData = true;
+      const wr = t.win_rate_by_role || {};
+      const mvp = t.mean_vp_by_role || {};
+      const ng = t.n_games || s.games;
+      cellHtml += `<tr>
+        <td>${s.label}</td>
+        <td>${ng}</td>
+        <td><span class="seat-pill ${pctClass(wr.PureGnn||0)}">${fmtPct(wr.PureGnn||0)}</span></td>
+        <td><span class="seat-pill ${pctClass(wr.GnnMcts||0)}">${fmtPct(wr.GnnMcts||0)}</span></td>
+        <td>${fmtPct(wr.LookaheadMctsV3||0)}</td>
+        <td>${fmtPct(wr.Random||0)}</td>
+        <td>${(mvp.PureGnn||0).toFixed(2)}</td>
+      </tr>`;
+    }
+    cellHtml += `</table></div>`;
+    dHtml += cellHtml;
+  }
+  document.getElementById('comparisonDetail').innerHTML = dHtml;
 }
 
 setPass('pass1');
