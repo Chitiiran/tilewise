@@ -166,6 +166,7 @@ class CachedDataset(Dataset):
         source: Dataset | None,
         cache_path: Path | None = None,
         verbose: bool = True,
+        chunk_size: int = 500_000,
     ) -> None:
         self._items: list[dict] = []
         # Per-position seed list, mirroring the source's index. Used by
@@ -176,13 +177,7 @@ class CachedDataset(Dataset):
             cache_path = Path(cache_path)
 
         if cache_path is not None and cache_path.exists():
-            if verbose:
-                print(f"[CachedDataset] loading cache from {cache_path}", flush=True)
-            blob = torch.load(cache_path, map_location="cpu", weights_only=False)
-            self._items = blob["items"]
-            self.seeds = list(blob.get("seeds", []))
-            if verbose:
-                print(f"[CachedDataset] loaded {len(self._items)} positions", flush=True)
+            self._load_from_disk(cache_path, verbose=verbose)
             return
 
         if source is None:
@@ -197,12 +192,19 @@ class CachedDataset(Dataset):
 
         n = len(source)
         if verbose:
-            print(f"[CachedDataset] building cache from {n} source positions", flush=True)
+            print(f"[CachedDataset] building cache from {n} source positions"
+                  f" (chunk_size={chunk_size})", flush=True)
         import time as _time
         t0 = _time.perf_counter()
+
+        use_chunks = cache_path is not None and n > chunk_size
+        chunk_buf: list[dict] = []
+        chunk_seeds: list[int] = []
+        chunk_paths: list[tuple[str, int]] = []  # (path, length)
+
         for i in range(n):
             data, value, policy, legal_mask = source[i]
-            self._items.append({
+            item = {
                 "hex_x": data["hex"].x.contiguous(),
                 "vertex_x": data["vertex"].x.contiguous(),
                 "edge_x": data["edge"].x.contiguous(),
@@ -215,21 +217,103 @@ class CachedDataset(Dataset):
                 "value": value,
                 "policy": policy,
                 "legal": legal_mask,
-            })
-            if source_seeds is not None:
-                self.seeds.append(source_seeds[i])
+            }
+            seed = source_seeds[i] if source_seeds is not None else None
+
+            if use_chunks:
+                chunk_buf.append(item)
+                if seed is not None:
+                    chunk_seeds.append(seed)
+                if len(chunk_buf) >= chunk_size:
+                    chunk_paths.append(self._flush_chunk(
+                        cache_path, chunk_buf, chunk_seeds, len(chunk_paths), verbose
+                    ))
+                    chunk_buf = []
+                    chunk_seeds = []
+            else:
+                self._items.append(item)
+                if seed is not None:
+                    self.seeds.append(seed)
+
             if verbose and (i + 1) % 500 == 0:
                 rate = (i + 1) / (_time.perf_counter() - t0)
                 eta_s = (n - (i + 1)) / max(rate, 1e-6)
                 print(f"[CachedDataset] built {i + 1}/{n} "
                       f"({rate:.1f} pos/s, eta {eta_s:.0f}s)", flush=True)
 
-        if cache_path is not None:
+        if use_chunks:
+            # Flush any final partial chunk
+            if chunk_buf:
+                chunk_paths.append(self._flush_chunk(
+                    cache_path, chunk_buf, chunk_seeds, len(chunk_paths), verbose
+                ))
+                chunk_buf = []
+                chunk_seeds = []
+            # Write manifest at cache_path itself
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            total = sum(n for _, n in chunk_paths)
+            torch.save(
+                {"format": "chunked-v1", "chunks": chunk_paths, "total": total},
+                cache_path,
+            )
+            if verbose:
+                print(f"[CachedDataset] wrote chunked manifest to {cache_path} "
+                      f"({len(chunk_paths)} chunks, {total} items)", flush=True)
+            # Eager-load chunks back into one list so __getitem__ works in the
+            # same process. Each chunk is small enough not to spike memory.
+            self._load_chunks(chunk_paths, verbose=verbose)
+        elif cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save({"items": self._items, "seeds": self.seeds, "version": 2},
                        cache_path)
             if verbose:
                 print(f"[CachedDataset] saved cache to {cache_path}", flush=True)
+
+    @staticmethod
+    def _flush_chunk(cache_path: Path, items: list[dict], seeds: list[int],
+                     chunk_idx: int, verbose: bool) -> tuple[str, int]:
+        """Save one chunk to disk and return (path, length). Caller drops the
+        in-memory buffer after this returns."""
+        chunk_path = cache_path.parent / f"{cache_path.stem}_part{chunk_idx:03d}.pt"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"items": items, "seeds": seeds, "version": 2}, chunk_path)
+        if verbose:
+            print(f"[CachedDataset] flushed chunk {chunk_idx} -> {chunk_path.name} "
+                  f"({len(items)} items, {chunk_path.stat().st_size / 1024**3:.2f} GB)",
+                  flush=True)
+        return (str(chunk_path), len(items))
+
+    def _load_chunks(self, chunk_paths: list[tuple[str, int]], verbose: bool) -> None:
+        """Eagerly load all chunks into self._items / self.seeds."""
+        import time as _time
+        t0 = _time.perf_counter()
+        for idx, (path, n) in enumerate(chunk_paths):
+            blob = torch.load(path, map_location="cpu", weights_only=False)
+            self._items.extend(blob["items"])
+            self.seeds.extend(blob.get("seeds", []))
+            if verbose:
+                print(f"[CachedDataset] loaded chunk {idx + 1}/{len(chunk_paths)} "
+                      f"({n} items, total {len(self._items)})", flush=True)
+        if verbose:
+            print(f"[CachedDataset] all chunks loaded in {_time.perf_counter() - t0:.1f}s",
+                  flush=True)
+
+    def _load_from_disk(self, cache_path: Path, verbose: bool) -> None:
+        """Load either a chunked manifest or a monolithic cache file."""
+        if verbose:
+            print(f"[CachedDataset] loading cache from {cache_path}", flush=True)
+        blob = torch.load(cache_path, map_location="cpu", weights_only=False)
+        if blob.get("format") == "chunked-v1":
+            chunk_paths = blob["chunks"]
+            if verbose:
+                print(f"[CachedDataset] chunked manifest found "
+                      f"({len(chunk_paths)} chunks, {blob['total']} items)", flush=True)
+            self._load_chunks(chunk_paths, verbose=verbose)
+        else:
+            self._items = blob["items"]
+            self.seeds = list(blob.get("seeds", []))
+            if verbose:
+                print(f"[CachedDataset] loaded {len(self._items)} positions", flush=True)
 
     def __len__(self) -> int:
         return len(self._items)
