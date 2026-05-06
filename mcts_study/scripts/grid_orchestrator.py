@@ -244,8 +244,9 @@ def _find_latest_run(out_root: Path, prefix: str) -> Path | None:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--data-dir", type=Path, required=True,
-                   help="Path to the e9 data-gen run dir (parquet shards live in worker*/)")
+    p.add_argument("--data-dir", type=Path, action="append", required=True,
+                   help="Path to an e9 data-gen run dir (parquet shards live in worker*/). "
+                        "Pass multiple times to merge corpora; each occurrence appends a dir.")
     p.add_argument("--cache-path", type=Path, required=True,
                    help="Path to the CachedDataset .pt to reuse across cells")
     p.add_argument("--out-root", type=Path, required=True,
@@ -281,8 +282,15 @@ def main():
     if args.cells == "all":
         grid = DEFAULT_GRID
     else:
-        wanted = set(c.strip() for c in args.cells.split(","))
-        grid = [c for c in DEFAULT_GRID if c["label"] in wanted]
+        # Preserve user-specified order. When --cells is given, iterate cells
+        # in the order the user listed them, not in DEFAULT_GRID order. This
+        # lets us run e.g. diagonals-first ("h32_l2,h64_l3,h128_l4").
+        by_label = {c["label"]: c for c in DEFAULT_GRID}
+        wanted = [c.strip() for c in args.cells.split(",")]
+        grid = [by_label[w] for w in wanted if w in by_label]
+        unknown = [w for w in wanted if w not in by_label]
+        if unknown:
+            print(f"[orchestrator] WARNING: unknown cells skipped: {unknown}", flush=True)
     if not grid:
         print(f"[orchestrator] no cells matched '{args.cells}'", flush=True)
         return 1
@@ -295,7 +303,7 @@ def main():
         cells_done=0,
         started_at=time.time(),
         config={
-            "data_dir": str(args.data_dir),
+            "data_dirs": [str(d) for d in args.data_dir],
             "epochs": args.epochs,
             "early_stop_patience": args.early_stop_patience,
             "batch_size": args.batch_size,
@@ -350,7 +358,7 @@ def main():
             label=label,
             hidden_dim=cell["hidden_dim"],
             num_layers=cell["num_layers"],
-            run_dirs=[args.data_dir],
+            run_dirs=list(args.data_dir),
             out_dir=train_out,
             cache_path=args.cache_path,
             status_file=args.status_file,
