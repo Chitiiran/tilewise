@@ -121,8 +121,16 @@ def main(
     bonuses: bool = False,
     resume: bool = True,
     workers: int = 1,
+    run_dir: Path | None = None,
 ) -> Path:
-    out = make_run_dir(out_root, "e9_v3_data_gen")
+    # If run_dir is provided, reuse that exact directory (so resume reads
+    # the existing per-worker done.txt files). Otherwise create a fresh
+    # timestamped subdir as before.
+    if run_dir is not None:
+        out = Path(run_dir)
+        out.mkdir(parents=True, exist_ok=True)
+    else:
+        out = make_run_dir(out_root, "e9_v3_data_gen")
     base_config = {
         "experiment": "e9_v3_data_gen",
         "uct_c": 1.4,
@@ -184,6 +192,10 @@ def cli_main():
                    help="Enable +2 LR/LA bonuses (default off in v3)")
     p.add_argument("--no-resume", action="store_true")
     p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--run-dir", type=Path, default=None,
+                   help="Reuse an existing run subdirectory (for resume). "
+                        "Bypasses the timestamped make_run_dir convention so "
+                        "workers read the existing per-worker done.txt files.")
     args = p.parse_args()
     out = main(
         out_root=args.out_root,
@@ -196,6 +208,7 @@ def cli_main():
         bonuses=args.bonuses,
         resume=not args.no_resume,
         workers=args.workers,
+        run_dir=args.run_dir,
     )
     print(f"e9 wrote to {out}")
 
