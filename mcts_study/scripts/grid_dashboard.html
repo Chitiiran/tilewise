@@ -87,6 +87,7 @@
   <button id="passBtn1" onclick="setPass('pass1')">Pass 1 (patience=3)</button>
   <button id="passBtn2" onclick="setPass('pass2')">Pass 2 (full 20 epochs)</button>
   <button id="passBtn3" onclick="setPass('pass3')">Pass 3 (120g shared-seed)</button>
+  <button id="passBtn100k" onclick="setPass('pass100k')" style="background:#dde8ff; border:1px solid #4a78c2;">Pass 100k (10× corpus)</button>
   <button id="passBtnCmp" onclick="setPass('comparison')" style="background:#fff4dc; border:1px solid #d4a700;">Comparison (all tournaments)</button>
   <span class="meta" id="passInfo"></span>
 </div>
@@ -312,7 +313,8 @@ const PASS_FILES = {
   pass1: 'grid_dashboard.json',
   pass2: 'grid_full20.json',
   pass3: 'grid_pass3.json',
-  comparison: 'grid_pass3.json',  // not actually used; comparison fetches all 4 itself
+  pass100k: 'grid_pass100k.json',
+  comparison: 'grid_pass3.json',  // not actually used; comparison fetches all sources itself
 };
 // Each pass writes per-cell training_log.json into a different out-root.
 // Sparkline charts must fetch the correct one for the currently-viewed pass.
@@ -320,12 +322,14 @@ const PASS_TRAINING_ROOTS = {
   pass1: '../grid',
   pass2: '../grid_full20',
   pass3: null,  // pass-3 is tournament-only, no training_log
+  pass100k: '../grid_pass100k',
   comparison: null,
 };
 const PASS_LABELS = {
   pass1: 'showing patience=3 early-stop run',
   pass2: 'showing full 20-epoch run (resumes from pass-1)',
   pass3: 'showing 120-game shared-seed final tournament (best checkpoints from pass-2)',
+  pass100k: 'showing the 100k-corpus retraining + tournaments at seed_base=19M (same games as pass-3, directly comparable)',
   comparison: 'comparing all tournaments side-by-side (game count tagged per row)',
 };
 let currentPass = 'pass1';
@@ -335,6 +339,7 @@ function setPass(pass) {
   for (const p of ['pass1', 'pass2', 'pass3']) {
     document.getElementById('passBtn' + p.slice(-1)).classList.toggle('active', pass === p);
   }
+  document.getElementById('passBtn100k').classList.toggle('active', pass === 'pass100k');
   document.getElementById('passBtnCmp').classList.toggle('active', pass === 'comparison');
   document.getElementById('passInfo').textContent = PASS_LABELS[pass] || '';
   // Show/hide the comparison panel vs the standard panels.
@@ -1066,6 +1071,7 @@ async function refreshComparison() {
     {key: 'pass2',     file: 'grid_full20.json',              label: 'Pass 2', games: 48,  note: 'full 20-epoch resume · per-cell seeds'},
     {key: 'pass3',     file: 'grid_pass3.json',               label: 'Pass 3', games: 120, note: 'best.pt · shared seed_base=19M'},
     {key: 'lastepoch', file: 'grid_pass3_lastepoch.json',     label: 'Last-epoch', games: 120, note: 'epoch20.pt · shared seed_base=19M'},
+    {key: 'pass100k',  file: 'grid_pass100k.json',             label: 'Pass-100k',  games: 120, note: '10× corpus · shared seed_base=19M'},
   ];
   const blobs = {};
   for (const s of sources) {

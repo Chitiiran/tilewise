@@ -21,7 +21,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
 
-WATCH_FILES = ["grid_dashboard.json", "grid_full20.json", "grid_pass3.json", "grid_pass3_lastepoch.json"]
+WATCH_FILES = ["grid_dashboard.json", "grid_full20.json", "grid_pass3.json", "grid_pass3_lastepoch.json", "grid_pass100k.json"]
 WATCH_INTERVAL_S = 1.0
 SSE_KEEPALIVE_S = 25.0
 
