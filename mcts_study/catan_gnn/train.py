@@ -256,6 +256,7 @@ def train_main(
     max_train_samples: int | None = None,
     num_workers: int = 0,
     cache_path: Path | None = None,
+    cache_dataset=None,
     resume_from: Path | None = None,
     init_from: Path | None = None,
     rotate: bool = False,
@@ -277,6 +278,11 @@ def train_main(
         to cache_path. Subsequent calls load from disk and skip replay entirely.
         This is the GPU-utilization fix: replay-from-scratch is CPU-bound and
         starves the GPU; the cache puts all positions in RAM-resident tensors.
+    cache_dataset: pre-loaded CachedDataset instance. If provided, skips ALL
+        loading (cache_path AND run_dirs are ignored for dataset construction).
+        Used by scripts/train_grid_inproc.py to share one loaded cache across
+        multiple cells in a single Python process — saves the ~30-min cache
+        deserialization cost per cell.
     """
     import time as _time
     out_dir = Path(out_dir)
@@ -286,7 +292,9 @@ def train_main(
     np.random.seed(seed)
 
     t_load_start = _time.perf_counter()
-    if cache_path is not None:
+    if cache_dataset is not None:
+        full_ds = cache_dataset
+    elif cache_path is not None:
         cache_path = Path(cache_path)
         if cache_path.exists():
             full_ds = CachedDataset(source=None, cache_path=cache_path)
