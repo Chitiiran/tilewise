@@ -1008,8 +1008,21 @@ function renderMeta(blob) {
   const updatedAgo = blob.updated_at ? (Date.now()/1000 - blob.updated_at) : Infinity;
 
   // Header summary.
-  let metaHtml = `<b>orchestrator:</b> <span class="badge ${status==='running'?'live':''}">${status}</span> ` +
+  // Special handling for the new train_grid_inproc.py "loading_cache" state.
+  // While the cache is loading the dashboard would otherwise just show
+  // "9 pending" with no progress feedback — show explicit cache-load info
+  // so the user knows the system is alive and what it's doing.
+  const isLoadingCache = status === 'loading_cache';
+  const cacheLoadSecs = (o.cache_load_secs !== undefined) ? o.cache_load_secs : null;
+  const statusBadgeCls = (status === 'running' || isLoadingCache) ? 'live' : '';
+  let metaHtml = `<b>orchestrator:</b> <span class="badge ${statusBadgeCls}">${status}</span> ` +
                  ` · <b>${nDone}/${totalCells}</b> cells done`;
+  if (isLoadingCache) {
+    const dur = o.started_at ? Math.floor(Date.now()/1000 - o.started_at) : 0;
+    metaHtml += ` · <span class="badge live" title="loading the pre-built CachedDataset chunks into RAM (one-time cost; shared across all cells)">loading cache · ${fmtSecs(dur)} elapsed</span>`;
+  } else if (cacheLoadSecs !== null) {
+    metaHtml += ` · <span class="meta">cache loaded in ${fmtSecs(cacheLoadSecs)}</span>`;
+  }
   if (nTraining > 0) metaHtml += ` · <span class="badge">${nTraining} training</span>`;
   if (nTournament > 0) metaHtml += ` · <span class="badge live">${nTournament} tournament</span>`;
   if (nPending > 0) metaHtml += ` · ${nPending} pending`;
