@@ -156,10 +156,39 @@ class CachedDataset(Dataset):
     avoiding PyG version drift in pickled HeteroData objects. Each cached
     item is a dict of tensors (no Python objects).
 
-    Memory footprint: ~10-12 KB per position (3 small float matrices + scalars
-    + legal_mask + 4-vector value + ACTION_SPACE_SIZE-vector policy). 100k positions ~= 1 GB.
-    Fits comfortably in 16 GB RAM for any v0 dataset size.
+    Sparse format (sparse=True, default for new caches): the 4 edge_index
+    tensors (hex<->vertex, vertex<->edge) are NOT stored per sample because
+    Catan board geometry is constant. They live as a class-level singleton
+    `_SHARED_EDGE_INDEX` and are referenced (not copied) by every __getitem__
+    call. Saves ~30 GB of redundant storage on a 100k corpus (3.2M samples).
+
+    Memory footprint:
+      - dense (legacy): ~16 KB per sample. 3.2M positions ~= 51 GB.
+      - sparse (new): ~7 KB per sample. 3.2M positions ~= 22 GB.
     """
+
+    # Class-level singleton: the fixed Catan-board edge_index tables.
+    # Lazily computed on first instantiation. Shared across all instances
+    # and all samples (read-only — RotatedDataset never mutates these,
+    # it builds new edge_index tensors via torch.stack).
+    _SHARED_EDGE_INDEX: dict | None = None
+
+    @classmethod
+    def _get_shared_edge_index(cls) -> dict:
+        """Compute (or return cached) the 4 edge_index tables for an empty
+        Catan board. Identical for every game position."""
+        if cls._SHARED_EDGE_INDEX is not None:
+            return cls._SHARED_EDGE_INDEX
+        from .state_to_pyg import state_to_pyg
+        eng = _engine.Engine(0)
+        ref_data = state_to_pyg(eng.observation())
+        cls._SHARED_EDGE_INDEX = {
+            "h2v_ei": ref_data["hex", "to", "vertex"].edge_index.clone(),
+            "v2h_ei": ref_data["vertex", "to", "hex"].edge_index.clone(),
+            "v2e_ei": ref_data["vertex", "to", "edge"].edge_index.clone(),
+            "e2v_ei": ref_data["edge", "to", "vertex"].edge_index.clone(),
+        }
+        return cls._SHARED_EDGE_INDEX
 
     def __init__(
         self,
@@ -167,8 +196,13 @@ class CachedDataset(Dataset):
         cache_path: Path | None = None,
         verbose: bool = True,
         chunk_size: int = 500_000,
+        sparse: bool = True,
     ) -> None:
         self._items: list[dict] = []
+        # When True, items don't carry h2v_ei/v2h_ei/v2e_ei/e2v_ei; __getitem__
+        # reads them from the class-level _SHARED_EDGE_INDEX. Set during cache
+        # build; preserved across save/load via the manifest's "format" field.
+        self._sparse: bool = sparse
         # Per-position seed list, mirroring the source's index. Used by
         # train._split_by_seed to do whole-game train/val splits even when the
         # source CatanReplayDataset has been wrapped in this cache.
@@ -192,10 +226,16 @@ class CachedDataset(Dataset):
 
         n = len(source)
         if verbose:
-            print(f"[CachedDataset] building cache from {n} source positions"
+            fmt = "sparse" if sparse else "dense"
+            print(f"[CachedDataset] building {fmt} cache from {n} source positions"
                   f" (chunk_size={chunk_size})", flush=True)
         import time as _time
         t0 = _time.perf_counter()
+
+        # Sparse mode: ensure the shared edge_index singleton exists, and
+        # validate the first sample matches it (catches the unlikely case
+        # where state_to_pyg produces something different).
+        shared = self._get_shared_edge_index() if sparse else None
 
         use_chunks = cache_path is not None and n > chunk_size
         chunk_buf: list[dict] = []
@@ -210,14 +250,26 @@ class CachedDataset(Dataset):
                 "edge_x": data["edge"].x.contiguous(),
                 "scalars": data.scalars.contiguous(),
                 "legal_mask_attr": data.legal_mask.contiguous(),
-                "h2v_ei": data["hex", "to", "vertex"].edge_index,
-                "v2h_ei": data["vertex", "to", "hex"].edge_index,
-                "v2e_ei": data["vertex", "to", "edge"].edge_index,
-                "e2v_ei": data["edge", "to", "vertex"].edge_index,
                 "value": value,
                 "policy": policy,
                 "legal": legal_mask,
             }
+            if not sparse:
+                # Dense path: store per-sample edge_index too
+                item["h2v_ei"] = data["hex", "to", "vertex"].edge_index
+                item["v2h_ei"] = data["vertex", "to", "hex"].edge_index
+                item["v2e_ei"] = data["vertex", "to", "edge"].edge_index
+                item["e2v_ei"] = data["edge", "to", "vertex"].edge_index
+            elif i == 0:
+                # Sparse-mode invariant check: first sample's edge_index
+                # must match shared. Fail loud if not.
+                src_h2v = data["hex", "to", "vertex"].edge_index
+                if not torch.equal(src_h2v, shared["h2v_ei"]):
+                    raise RuntimeError(
+                        "CachedDataset(sparse=True): first sample's h2v_ei "
+                        "differs from the shared global edge_index. Cannot "
+                        "use sparse cache."
+                    )
             seed = source_seeds[i] if source_seeds is not None else None
 
             if use_chunks:
@@ -249,25 +301,33 @@ class CachedDataset(Dataset):
                 ))
                 chunk_buf = []
                 chunk_seeds = []
-            # Write manifest at cache_path itself
+            # Write manifest at cache_path itself.
+            # Format string encodes both chunking and storage layout:
+            #   chunked-v1            — legacy dense, per-sample edge_index
+            #   chunked-v2-sparse     — new sparse, edge_index shared globally
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             total = sum(n for _, n in chunk_paths)
+            fmt_str = "chunked-v2-sparse" if sparse else "chunked-v1"
             torch.save(
-                {"format": "chunked-v1", "chunks": chunk_paths, "total": total},
+                {"format": fmt_str, "chunks": chunk_paths, "total": total,
+                 "sparse": bool(sparse)},
                 cache_path,
             )
             if verbose:
-                print(f"[CachedDataset] wrote chunked manifest to {cache_path} "
+                print(f"[CachedDataset] wrote {fmt_str} manifest to {cache_path} "
                       f"({len(chunk_paths)} chunks, {total} items)", flush=True)
             # Eager-load chunks back into one list so __getitem__ works in the
             # same process. Each chunk is small enough not to spike memory.
             self._load_chunks(chunk_paths, verbose=verbose)
         elif cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save({"items": self._items, "seeds": self.seeds, "version": 2},
+            # Monolithic save also tags sparse vs dense.
+            torch.save({"items": self._items, "seeds": self.seeds,
+                        "version": 2, "sparse": bool(sparse)},
                        cache_path)
             if verbose:
-                print(f"[CachedDataset] saved cache to {cache_path}", flush=True)
+                fmt = "sparse" if sparse else "dense"
+                print(f"[CachedDataset] saved {fmt} cache to {cache_path}", flush=True)
 
     @staticmethod
     def _flush_chunk(cache_path: Path, items: list[dict], seeds: list[int],
@@ -299,21 +359,38 @@ class CachedDataset(Dataset):
                   flush=True)
 
     def _load_from_disk(self, cache_path: Path, verbose: bool) -> None:
-        """Load either a chunked manifest or a monolithic cache file."""
+        """Load either a chunked manifest or a monolithic cache file.
+
+        Detects format from manifest's "format"/"sparse" fields:
+          - "chunked-v1"           → dense chunked
+          - "chunked-v2-sparse"    → sparse chunked
+          - monolithic w/ sparse=True → sparse monolithic
+          - else                   → dense monolithic (legacy)
+        """
         if verbose:
             print(f"[CachedDataset] loading cache from {cache_path}", flush=True)
         blob = torch.load(cache_path, map_location="cpu", weights_only=False)
-        if blob.get("format") == "chunked-v1":
+        fmt = blob.get("format")
+        # Recover sparse flag from manifest. Default False (dense) for
+        # backward compat with old caches that have no flag.
+        self._sparse = bool(blob.get("sparse", fmt == "chunked-v2-sparse"))
+        if fmt in ("chunked-v1", "chunked-v2-sparse"):
             chunk_paths = blob["chunks"]
             if verbose:
-                print(f"[CachedDataset] chunked manifest found "
+                fmt_label = "sparse" if self._sparse else "dense"
+                print(f"[CachedDataset] {fmt_label} chunked manifest found "
                       f"({len(chunk_paths)} chunks, {blob['total']} items)", flush=True)
             self._load_chunks(chunk_paths, verbose=verbose)
         else:
             self._items = blob["items"]
             self.seeds = list(blob.get("seeds", []))
             if verbose:
-                print(f"[CachedDataset] loaded {len(self._items)} positions", flush=True)
+                fmt_label = "sparse" if self._sparse else "dense"
+                print(f"[CachedDataset] loaded {len(self._items)} positions ({fmt_label})", flush=True)
+        # If we're sparse, ensure the shared edge_index is materialized so
+        # __getitem__ can use it. Cheap (one engine call).
+        if self._sparse:
+            self._get_shared_edge_index()
 
     def __len__(self) -> int:
         return len(self._items)
@@ -325,10 +402,19 @@ class CachedDataset(Dataset):
         data["hex"].x = it["hex_x"]
         data["vertex"].x = it["vertex_x"]
         data["edge"].x = it["edge_x"]
-        data["hex", "to", "vertex"].edge_index = it["h2v_ei"]
-        data["vertex", "to", "hex"].edge_index = it["v2h_ei"]
-        data["vertex", "to", "edge"].edge_index = it["v2e_ei"]
-        data["edge", "to", "vertex"].edge_index = it["e2v_ei"]
+        # Sparse items lack edge_index keys; use the class-level shared store.
+        # Per-item dense path stays bit-identical to the legacy behavior.
+        if self._sparse:
+            shared = self._SHARED_EDGE_INDEX
+            data["hex", "to", "vertex"].edge_index = shared["h2v_ei"]
+            data["vertex", "to", "hex"].edge_index = shared["v2h_ei"]
+            data["vertex", "to", "edge"].edge_index = shared["v2e_ei"]
+            data["edge", "to", "vertex"].edge_index = shared["e2v_ei"]
+        else:
+            data["hex", "to", "vertex"].edge_index = it["h2v_ei"]
+            data["vertex", "to", "hex"].edge_index = it["v2h_ei"]
+            data["vertex", "to", "edge"].edge_index = it["v2e_ei"]
+            data["edge", "to", "vertex"].edge_index = it["e2v_ei"]
         data.scalars = it["scalars"]
         data.legal_mask = it["legal_mask_attr"]
         return data, it["value"], it["policy"], it["legal"]
