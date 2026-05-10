@@ -265,6 +265,14 @@ def train_main(
     early_stop_patience: int = 0,
     status_file: Path | None = None,
     status_label: str = "",
+    mid_tournament_every: int = 0,
+    mid_tournament_games_per_seating: int = 30,
+    mid_tournament_drop_threshold: int = 3,
+    mid_tournament_sims: int = 100,
+    mid_tournament_lookahead_depth: int = 10,
+    mid_tournament_base_sims_v3: int = 200,
+    mid_tournament_seed_base: int = 20_000_000,
+    mid_tournament_max_seconds: float = 600.0,
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
@@ -283,6 +291,18 @@ def train_main(
         Used by scripts/train_grid_inproc.py to share one loaded cache across
         multiple cells in a single Python process — saves the ~30-min cache
         deserialization cost per cell.
+    mid_tournament_every: if > 0, run a PureGnn-vs-LookaheadV3 tournament
+        every N epochs (after the per-epoch checkpoint save). Used as the
+        early-stopping signal for the loss-augmentation roadmap, since
+        val_top1 is by-design pulled away from MCTS visits by Cands 8/10
+        and no longer correlates with tournament winrate. Default 0 (off).
+    mid_tournament_games_per_seating: per-rotation game count. 30 × 4
+        rotations = 120 games per tournament (the plan's standard).
+    mid_tournament_drop_threshold: stop iff PureGnn wins drop by this many
+        games vs the previous mid-training tournament. Default 3 (~2.5pp
+        at 120 games). First tournament always passes (no prior).
+    mid_tournament_sims / lookahead_depth / base_sims_v3 / seed_base /
+    max_seconds: pass-through to e10_v3_tournament.main.
     """
     import time as _time
     out_dir = Path(out_dir)
@@ -382,6 +402,12 @@ def train_main(
     # Early-stopping counter: number of consecutive epochs with no improvement
     # over best_top1. Resets to 0 whenever we set a new best.
     epochs_since_best = 0
+
+    # Mid-training tournament history: list of PureGnn win counts (int)
+    # from past mid-training tournaments, oldest first. Used by the
+    # drop-based early-stop decision rule.
+    mid_tournament_history: list[int] = []
+    log.setdefault("mid_tournaments", [])
 
     # Initial dashboard write so the dashboard knows training has begun
     # the cache load + first epoch can be 10-20 min on big datasets, and
@@ -581,6 +607,80 @@ def train_main(
                 )
             except Exception as e:
                 print(f"  (status_file write failed: {e})", flush=True)
+
+        # === Mid-training tournament hook (loss-augmentation roadmap) ===
+        # Runs after the per-epoch checkpoint save; uses the just-saved
+        # checkpoint_best.pt (= the running highest val_top1 so far). On a
+        # >= drop_threshold-game drop in PureGnn winrate vs the previous
+        # mid-training tournament, request stop.
+        mid_tournament_stop = False
+        if mid_tournament_every > 0 and (epoch % mid_tournament_every == 0):
+            from .mid_training_tournament import (
+                run_mid_training_tournament, should_stop_for_drop,
+            )
+            mt_out_root = out_dir / "mid_tournaments"
+            mt_out_root.mkdir(parents=True, exist_ok=True)
+            try:
+                result = run_mid_training_tournament(
+                    epoch=epoch,
+                    checkpoint_path=out_dir / "checkpoint_best.pt",
+                    out_root=mt_out_root,
+                    hidden_dim=hidden_dim,
+                    num_layers=num_layers,
+                    num_games_per_seating=mid_tournament_games_per_seating,
+                    sims=mid_tournament_sims,
+                    lookahead_depth=mid_tournament_lookahead_depth,
+                    base_sims_v3=mid_tournament_base_sims_v3,
+                    seed_base=mid_tournament_seed_base,
+                    max_seconds=mid_tournament_max_seconds,
+                    device=device,
+                )
+                s = result.summary
+                print(f"  ↳ mid-tournament @ epoch {epoch}: "
+                      f"PureGnn={s['pure_gnn_wins']}/{s['total_games']} "
+                      f"({100 * s['pure_gnn_winrate']:.1f}%); "
+                      f"GnnMcts={s['gnn_mcts_wins']}, "
+                      f"LookaheadV3={s['lookahead_v3_wins']}, "
+                      f"Random={s['random_wins']}, "
+                      f"draws={s['no_winner_games']}; "
+                      f"{result.elapsed_seconds:.0f}s",
+                      flush=True)
+                log["mid_tournaments"].append({
+                    "epoch": epoch,
+                    "pure_gnn_wins": s["pure_gnn_wins"],
+                    "pure_gnn_winrate": s["pure_gnn_winrate"],
+                    "gnn_mcts_wins": s["gnn_mcts_wins"],
+                    "lookahead_v3_wins": s["lookahead_v3_wins"],
+                    "random_wins": s["random_wins"],
+                    "no_winner_games": s["no_winner_games"],
+                    "total_games": s["total_games"],
+                    "run_dir": str(result.run_dir),
+                    "elapsed_seconds": result.elapsed_seconds,
+                })
+                (out_dir / "training_log.json").write_text(json.dumps(log, indent=2))
+                if should_stop_for_drop(
+                    history=mid_tournament_history,
+                    current_wins=s["pure_gnn_wins"],
+                    total_games=s["total_games"],
+                    drop_threshold=mid_tournament_drop_threshold,
+                ):
+                    prev = mid_tournament_history[-1] if mid_tournament_history else 0
+                    print(f"  ↳ mid-tournament early-stop: "
+                          f"PureGnn wins dropped {prev} → {s['pure_gnn_wins']} "
+                          f"(>= {mid_tournament_drop_threshold}-game threshold); "
+                          f"stopping at epoch {epoch}",
+                          flush=True)
+                    mid_tournament_stop = True
+                mid_tournament_history.append(s["pure_gnn_wins"])
+            except Exception as e:
+                # Tournament infra failure should not kill training — log and
+                # continue. The next mid-tournament will retry.
+                print(f"  ↳ mid-tournament @ epoch {epoch} FAILED: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+
+        if mid_tournament_stop:
+            break
 
         # Early-stop check: if patience set and we've not improved for N epochs, stop.
         if early_stop_patience > 0 and epochs_since_best >= early_stop_patience:

@@ -118,7 +118,38 @@ def main() -> int:
     p.add_argument("--cells", type=str, default="all",
                    help="Comma-separated cell labels in execution order, or 'all'")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--resume-cell", action="append", default=[],
+                   metavar="LABEL=PATH",
+                   help="Resume a cell from a checkpoint bundle. Repeatable. "
+                        "Example: --resume-cell h64_l3=runs/v3/grid_pass100k/training_h64_l3/checkpoint_epoch10.pt")
+    # Mid-training tournament gating (loss-augmentation roadmap Phase 1).
+    p.add_argument("--mid-tournament-every", type=int, default=0,
+                   help="Run 120-game PureGnn-vs-LookaheadV3 tournament every N epochs. "
+                        "Set to 5 for the standard Phase 1 cell. Default 0 = off.")
+    p.add_argument("--mid-tournament-games-per-seating", type=int, default=30,
+                   help="Per-rotation game count; 30*4=120. Default 30.")
+    p.add_argument("--mid-tournament-drop-threshold", type=int, default=3,
+                   help="Stop iff PureGnn wins drop by >= this many games "
+                        "vs the previous mid-tournament. Default 3.")
+    p.add_argument("--mid-tournament-sims", type=int, default=100,
+                   help="MCTS sims for GnnMcts in mid-tournaments. Default 100.")
+    p.add_argument("--mid-tournament-lookahead-depth", type=int, default=10,
+                   help="Lookahead depth for LookaheadV3 in mid-tournaments. Default 10.")
+    p.add_argument("--mid-tournament-base-sims-v3", type=int, default=200,
+                   help="Base sims for LookaheadV3 in mid-tournaments. Default 200.")
+    p.add_argument("--mid-tournament-seed-base", type=int, default=20_000_000,
+                   help="Seed base for mid-tournament games. Default 20M.")
+    p.add_argument("--mid-tournament-max-seconds", type=float, default=600.0,
+                   help="Max wall-clock seconds per mid-tournament game. Default 600.")
     args = p.parse_args()
+
+    resume_map: dict[str, Path] = {}
+    for spec in args.resume_cell:
+        if "=" not in spec:
+            print(f"[inproc] bad --resume-cell spec '{spec}', expected LABEL=PATH", flush=True)
+            return 2
+        lbl, pth = spec.split("=", 1)
+        resume_map[lbl.strip()] = Path(pth.strip())
 
     args.out_root.mkdir(parents=True, exist_ok=True)
     args.status_file.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +210,9 @@ def main() -> int:
 
         try:
             t0 = time.perf_counter()
+            resume_path = resume_map.get(label)
+            if resume_path is not None:
+                print(f"[inproc] {label} resuming from {resume_path}", flush=True)
             train_main(
                 run_dirs=[],  # not used when cache_dataset is provided
                 out_dir=cell_out,
@@ -190,12 +224,21 @@ def main() -> int:
                 device=args.device,
                 num_workers=args.num_workers,
                 cache_dataset=cache_ds,  # ← shared, NO reload
+                resume_from=resume_path,
                 rotate=args.rotate,
                 rotate_mode=args.rotate_mode,
                 early_stop_patience=args.early_stop_patience,
                 status_file=args.status_file,
                 status_label=label,
                 seed=args.seed,
+                mid_tournament_every=args.mid_tournament_every,
+                mid_tournament_games_per_seating=args.mid_tournament_games_per_seating,
+                mid_tournament_drop_threshold=args.mid_tournament_drop_threshold,
+                mid_tournament_sims=args.mid_tournament_sims,
+                mid_tournament_lookahead_depth=args.mid_tournament_lookahead_depth,
+                mid_tournament_base_sims_v3=args.mid_tournament_base_sims_v3,
+                mid_tournament_seed_base=args.mid_tournament_seed_base,
+                mid_tournament_max_seconds=args.mid_tournament_max_seconds,
             )
             elapsed = time.perf_counter() - t0
             print(f"[inproc] {label} done in {elapsed:.1f}s "
