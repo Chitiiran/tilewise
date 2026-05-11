@@ -270,6 +270,7 @@ def train_main(
     w_value: float = 1.0,
     w_policy: float = 1.0,
     lambda_vp: float = 0.0,
+    vp_compare_rule: bool = False,
     val_frac: float = 0.1,
     seed: int = 0,
     device: str = "auto",
@@ -462,6 +463,9 @@ def train_main(
         model.train()
         tot, tv, tp, n = 0.0, 0.0, 0.0, 0
         t_train_start = _time.perf_counter()
+        # Track Cand 10 swap rate per epoch.
+        vp_swap_total = 0
+        vp_swap_samples = 0
         for batch, value_t, policy_t, legal in train_loader:
             batch = batch.to(dev)
             value_t = value_t.to(dev)
@@ -469,6 +473,20 @@ def train_main(
             legal = legal.to(dev)
             opt.zero_grad()
             v_pred, p_logits = model(batch)
+            # Cand 10: 1-step VP comparison target swap. Modifies policy_t
+            # in place for samples where the model's argmax is a strictly
+            # higher-VP action than the teacher's. Cited: in v3 with
+            # bonuses=False, vp-delta is fully determined by action_class.
+            if vp_compare_rule:
+                from .vp_compare import vp_compare_swap_target
+                # Detach: this is just a target rewrite, not a loss term;
+                # gradient should flow only through the CE on the new target.
+                with torch.no_grad():
+                    policy_t, swap_count = vp_compare_swap_target(
+                        p_logits.detach(), policy_t, legal,
+                    )
+                vp_swap_total += swap_count
+                vp_swap_samples += policy_t.shape[0]
             lv = F.mse_loss(v_pred, value_t)
             lp = _masked_policy_loss(p_logits, policy_t, legal)
             loss = w_value * lv + w_policy * lp
@@ -553,9 +571,14 @@ def train_main(
             val_n_games=n_games,
         )
         log["epochs"].append(asdict(stats))
+        vp_swap_str = ""
+        if vp_compare_rule and vp_swap_samples > 0:
+            vp_swap_rate = vp_swap_total / vp_swap_samples
+            vp_swap_str = f" vp_swap={vp_swap_total}/{vp_swap_samples} ({100*vp_swap_rate:.2f}%)"
         print(f"[epoch {epoch}/{epochs}] train_loss={stats.train_loss_total:.3f} "
               f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f} "
-              f"per_game[{pg_min:.2f}|{pg_p25:.2f}|{pg_p50:.2f}|{pg_p75:.2f}|{pg_max:.2f}] "
+              f"per_game[{pg_min:.2f}|{pg_p25:.2f}|{pg_p50:.2f}|{pg_p75:.2f}|{pg_max:.2f}]"
+              f"{vp_swap_str} "
               f"[timing] train={train_secs:.1f}s ({n} batches, "
               f"{train_secs * 1000 / max(1, n):.0f}ms/batch) val={val_secs:.1f}s",
               flush=True)

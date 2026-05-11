@@ -155,6 +155,11 @@ def main() -> int:
                    help="Cand 8 (action-class VP prior). Weight on the auxiliary KL "
                         "term toward the VP-yielding-actions target. Default 0 (off). "
                         "Plan recommends 0.10 for Cell 1.")
+    p.add_argument("--vp-compare-rule", action="store_true",
+                   help="Cand 10 (1-step VP comparison). For each training sample, "
+                        "if the model's argmax is a strictly higher-VP action than "
+                        "the teacher's, swap the supervised target to one-hot(a_model). "
+                        "Otherwise keep teacher. Default off.")
     args = p.parse_args()
 
     resume_map: dict[str, Path] = {}
@@ -256,6 +261,7 @@ def main() -> int:
                 mid_tournament_workers=args.mid_tournament_workers,
                 mid_tournament_device=args.mid_tournament_device,
                 lambda_vp=args.lambda_vp,
+                vp_compare_rule=args.vp_compare_rule,
             )
             elapsed = time.perf_counter() - t0
             print(f"[inproc] {label} done in {elapsed:.1f}s "
