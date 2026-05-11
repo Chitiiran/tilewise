@@ -106,6 +106,25 @@ def _masked_policy_loss(logits: torch.Tensor, target: torch.Tensor, mask: torch.
     return -(target * log_probs).sum(dim=1).mean()
 
 
+def _vp_prior_loss(logits: torch.Tensor, vp_target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Cand 8 auxiliary loss: KL(policy || vp_prior) over legal actions.
+
+    Same form as _masked_policy_loss (cross-entropy against a target
+    distribution), but the target is the action-class VP prior from
+    catan_gnn.action_classes.build_vp_prior_target. Cited plan:
+        loss += lambda_vp * KL(softmax(logits over legal) || vp_target)
+
+    Since KL(p || q) = -sum(q * log(p)) + sum(q * log(q)), and the second
+    term has no gradient w.r.t. logits, we can use the cross-entropy
+    form -sum(vp_target * log_softmax(logits)) which is equivalent for
+    gradient purposes.
+    """
+    masked = logits.masked_fill(~mask, float("-inf"))
+    log_probs = F.log_softmax(masked, dim=1)
+    log_probs = log_probs.masked_fill(~mask, 0.0)
+    return -(vp_target * log_probs).sum(dim=1).mean()
+
+
 def _git_sha() -> str:
     try:
         sha = subprocess.check_output(
@@ -250,6 +269,7 @@ def train_main(
     lr: float = 1e-3,
     w_value: float = 1.0,
     w_policy: float = 1.0,
+    lambda_vp: float = 0.0,
     val_frac: float = 0.1,
     seed: int = 0,
     device: str = "auto",
@@ -452,6 +472,13 @@ def train_main(
             lv = F.mse_loss(v_pred, value_t)
             lp = _masked_policy_loss(p_logits, policy_t, legal)
             loss = w_value * lv + w_policy * lp
+            # Cand 8: action-class VP prior KL term. Off by default
+            # (lambda_vp=0). Enabled per Phase 1 cell config.
+            if lambda_vp > 0.0:
+                from .action_classes import build_vp_prior_target
+                vp_target = build_vp_prior_target(legal)
+                lvp = _vp_prior_loss(p_logits, vp_target, legal)
+                loss = loss + lambda_vp * lvp
             loss.backward()
             opt.step()
             tot += loss.item(); tv += lv.item(); tp += lp.item(); n += 1

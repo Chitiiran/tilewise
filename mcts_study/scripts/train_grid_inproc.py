@@ -150,6 +150,11 @@ def main() -> int:
                    choices=["auto", "cpu", "cuda"],
                    help="Device for mid-tournament. Default cuda (verified faster than "
                         "cpu+10 on GTX 1650 with the GnnEvaluator forward pass).")
+    # Loss-augmentation flags (Phase 1 cells).
+    p.add_argument("--lambda-vp", type=float, default=0.0,
+                   help="Cand 8 (action-class VP prior). Weight on the auxiliary KL "
+                        "term toward the VP-yielding-actions target. Default 0 (off). "
+                        "Plan recommends 0.10 for Cell 1.")
     args = p.parse_args()
 
     resume_map: dict[str, Path] = {}
@@ -250,6 +255,7 @@ def main() -> int:
                 mid_tournament_max_seconds=args.mid_tournament_max_seconds,
                 mid_tournament_workers=args.mid_tournament_workers,
                 mid_tournament_device=args.mid_tournament_device,
+                lambda_vp=args.lambda_vp,
             )
             elapsed = time.perf_counter() - t0
             print(f"[inproc] {label} done in {elapsed:.1f}s "
