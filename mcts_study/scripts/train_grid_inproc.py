@@ -137,18 +137,19 @@ def main() -> int:
                    help="Lookahead depth for LookaheadV3 in mid-tournaments. Default 10.")
     p.add_argument("--mid-tournament-base-sims-v3", type=int, default=200,
                    help="Base sims for LookaheadV3 in mid-tournaments. Default 200.")
-    p.add_argument("--mid-tournament-seed-base", type=int, default=20_000_000,
-                   help="Seed base for mid-tournament games. Default 20M.")
+    p.add_argument("--mid-tournament-seed-base", type=int, default=19_000_000,
+                   help="Seed base for mid-tournament games. Default 19M to match the "
+                        "pass-3 baseline range (apples-to-apples comparison).")
     p.add_argument("--mid-tournament-max-seconds", type=float, default=600.0,
                    help="Max wall-clock seconds per mid-tournament game. Default 600.")
-    p.add_argument("--mid-tournament-workers", type=int, default=8,
-                   help="Multiprocessing pool size for mid-tournament. spawn-based; "
-                        "each worker is a fresh Python process, cache is NOT replicated. "
-                        "Default 8.")
-    p.add_argument("--mid-tournament-device", type=str, default="auto",
+    p.add_argument("--mid-tournament-workers", type=int, default=10,
+                   help="Multiprocessing pool size for mid-tournament. spawn-based. "
+                        "Verified end-to-end 2026-05-11: 10 workers x 150 MB VRAM each = "
+                        "1.5 GB on GTX 1650 4GB; ~30-40 min for 120 games. Default 10.")
+    p.add_argument("--mid-tournament-device", type=str, default="cuda",
                    choices=["auto", "cpu", "cuda"],
-                   help="Device for mid-tournament. 'cpu' usually fastest since bottleneck "
-                        "is PyO3 boundary, not NN forward. Default auto.")
+                   help="Device for mid-tournament. Default cuda (verified faster than "
+                        "cpu+10 on GTX 1650 with the GnnEvaluator forward pass).")
     args = p.parse_args()
 
     resume_map: dict[str, Path] = {}

@@ -8,8 +8,8 @@ away from raw MCTS visit counts; cited v3.6 production journal showed
 winrate doubling while val_top1 stayed at 0.18-0.19).
 
 This module is a thin wrapper around e10_v3_tournament.main that:
-  - runs the tournament in-process with workers=1 (avoid nested-pool
-    contention with the calling training process)
+  - runs the tournament with parallel workers + GPU (see STANDARD_*
+    defaults below for the values verified end-to-end 2026-05-11)
   - parses the resulting worker*/games.rot=*.parquet files
   - returns PureGnn winrate + auxiliary role counts
   - exposes a pure decision rule (should_stop_for_drop) for early-stop
@@ -30,6 +30,33 @@ import pyarrow.parquet as pq
 
 # Cited from catan_mcts/experiments/e10_v3_tournament.py:48.
 ROLES = ["GnnMcts", "PureGnn", "LookaheadMctsV3", "Random"]
+
+
+# === STANDARD TOURNAMENT CONFIG (Phase 1 baseline & all subsequent runs) ===
+# These constants encode the apples-to-apples comparison the loss-aug
+# roadmap requires. ALL Phase 1 mid-tournaments and standalone validation
+# runs MUST use these values. Cited 2026-05-11 from pass-3 ground truth:
+#
+#   sims=100, lookahead_depth=10, base_sims_v3=200, vp_target=5,
+#   bonuses=False, num_games_per_seating=30 (4 rotations -> 120 games),
+#   seed_base=19_000_000 (the canonical Phase 1 seed range; pass-3 used
+#   this same range so per-seed comparisons are valid).
+#
+# Pass-3 cited baselines on these seeds:
+#   h32_l2 epoch 20 (val_top1≈0.18):   PureGnn 7/120 = 5.83%
+#   h128_l4 epoch 20 (val_top1≈0.18):  PureGnn 3/120 = 2.50%
+#
+# Worker config: workers=10 + device="cuda" verified to run 120 games
+# in ~30-40 min on GTX 1650 4GB. Each spawn worker loads ~150 MB into
+# VRAM; 10 workers x 150 MB = 1.5 GB, leaving 2.5 GB headroom in 4 GB.
+STANDARD_NUM_GAMES_PER_SEATING = 30
+STANDARD_SIMS = 100
+STANDARD_LOOKAHEAD_DEPTH = 10
+STANDARD_BASE_SIMS_V3 = 200
+STANDARD_SEED_BASE = 19_000_000
+STANDARD_WORKERS = 10
+STANDARD_DEVICE = "cuda"
+STANDARD_MAX_SECONDS = 600.0
 
 
 def _seat_to_role(seat: int, rot: int) -> str:
@@ -141,14 +168,14 @@ def run_mid_training_tournament(
     out_root: Path,
     hidden_dim: int,
     num_layers: int,
-    num_games_per_seating: int = 30,
-    sims: int = 100,
-    lookahead_depth: int = 10,
-    base_sims_v3: int = 200,
-    seed_base: int = 20_000_000,
-    max_seconds: float = 600.0,
-    device: str = "auto",
-    workers: int = 8,
+    num_games_per_seating: int = STANDARD_NUM_GAMES_PER_SEATING,
+    sims: int = STANDARD_SIMS,
+    lookahead_depth: int = STANDARD_LOOKAHEAD_DEPTH,
+    base_sims_v3: int = STANDARD_BASE_SIMS_V3,
+    seed_base: int = STANDARD_SEED_BASE,
+    max_seconds: float = STANDARD_MAX_SECONDS,
+    device: str = STANDARD_DEVICE,
+    workers: int = STANDARD_WORKERS,
 ) -> MidTrainingTournamentResult:
     """Run one mid-training tournament with the given checkpoint.
 

@@ -271,10 +271,10 @@ def train_main(
     mid_tournament_sims: int = 100,
     mid_tournament_lookahead_depth: int = 10,
     mid_tournament_base_sims_v3: int = 200,
-    mid_tournament_seed_base: int = 20_000_000,
+    mid_tournament_seed_base: int = 19_000_000,  # Phase 1 standard (pass-3 baseline range)
     mid_tournament_max_seconds: float = 600.0,
-    mid_tournament_workers: int = 8,
-    mid_tournament_device: str = "auto",
+    mid_tournament_workers: int = 10,
+    mid_tournament_device: str = "cuda",
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
