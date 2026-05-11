@@ -141,6 +141,14 @@ def main() -> int:
                    help="Seed base for mid-tournament games. Default 20M.")
     p.add_argument("--mid-tournament-max-seconds", type=float, default=600.0,
                    help="Max wall-clock seconds per mid-tournament game. Default 600.")
+    p.add_argument("--mid-tournament-workers", type=int, default=8,
+                   help="Multiprocessing pool size for mid-tournament. spawn-based; "
+                        "each worker is a fresh Python process, cache is NOT replicated. "
+                        "Default 8.")
+    p.add_argument("--mid-tournament-device", type=str, default="auto",
+                   choices=["auto", "cpu", "cuda"],
+                   help="Device for mid-tournament. 'cpu' usually fastest since bottleneck "
+                        "is PyO3 boundary, not NN forward. Default auto.")
     args = p.parse_args()
 
     resume_map: dict[str, Path] = {}
@@ -239,6 +247,8 @@ def main() -> int:
                 mid_tournament_base_sims_v3=args.mid_tournament_base_sims_v3,
                 mid_tournament_seed_base=args.mid_tournament_seed_base,
                 mid_tournament_max_seconds=args.mid_tournament_max_seconds,
+                mid_tournament_workers=args.mid_tournament_workers,
+                mid_tournament_device=args.mid_tournament_device,
             )
             elapsed = time.perf_counter() - t0
             print(f"[inproc] {label} done in {elapsed:.1f}s "

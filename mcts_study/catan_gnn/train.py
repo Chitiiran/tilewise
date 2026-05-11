@@ -273,6 +273,8 @@ def train_main(
     mid_tournament_base_sims_v3: int = 200,
     mid_tournament_seed_base: int = 20_000_000,
     mid_tournament_max_seconds: float = 600.0,
+    mid_tournament_workers: int = 8,
+    mid_tournament_device: str = "auto",
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
@@ -633,7 +635,8 @@ def train_main(
                     base_sims_v3=mid_tournament_base_sims_v3,
                     seed_base=mid_tournament_seed_base,
                     max_seconds=mid_tournament_max_seconds,
-                    device=device,
+                    device=mid_tournament_device,
+                    workers=mid_tournament_workers,
                 )
                 s = result.summary
                 print(f"  ↳ mid-tournament @ epoch {epoch}: "

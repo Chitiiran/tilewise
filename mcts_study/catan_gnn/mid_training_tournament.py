@@ -148,15 +148,21 @@ def run_mid_training_tournament(
     seed_base: int = 20_000_000,
     max_seconds: float = 600.0,
     device: str = "auto",
+    workers: int = 8,
 ) -> MidTrainingTournamentResult:
     """Run one mid-training tournament with the given checkpoint.
 
     Default args produce a 120-game tournament (30 × 4 rotations) using
     seed_base=20M (fresh range, per plan; doesn't overlap pass-3's 19M).
 
-    workers=1: avoid nested multiprocessing pool contention with the
-    training process. Tournament is fast enough single-process for a
-    midcheck (~5-15 min at 30 games/rot on GPU).
+    workers default 8: e10_v3_tournament uses get_context("spawn"). Each
+    worker is a fresh Python process; the training process's CachedDataset
+    is NOT replicated (spawn re-imports modules from scratch). Each worker
+    loads the model checkpoint (~3-7 MB) and runs MCTS on CPU/GPU
+    independently. With sims=100 the bottleneck is PyO3 calls (CPU-bound),
+    so CPU workers parallelize ~linearly with cores. Use device=cpu for
+    max throughput at the mid-tournament. The training process itself is
+    paused during the tournament, so GPU contention is not a concern.
     """
     import time as _time
     # Import here so test files that only exercise the parser don't
@@ -178,7 +184,7 @@ def run_mid_training_tournament(
         vp_target=5,
         bonuses=False,
         resume=False,
-        workers=1,
+        workers=workers,
         device=device,
     )
     elapsed = _time.perf_counter() - t0
