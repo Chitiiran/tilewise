@@ -623,9 +623,18 @@ def train_main(
             mt_out_root = out_dir / "mid_tournaments"
             mt_out_root.mkdir(parents=True, exist_ok=True)
             try:
+                # Mid-tournament tests the CURRENT epoch's weights — not the
+                # "best by val_top1" weights. val_top1 stops tracking
+                # tournament strength once we're in the overfitting regime
+                # (cited v3.6: winrate doubled with flat val_top1). The
+                # whole point of the mid-tournament is to measure the
+                # current model's real strength, so we point at the
+                # current epoch's bundle (model_state is unwrapped by
+                # _load_model in e10_v3_tournament).
+                epoch_ckpt_path = out_dir / f"checkpoint_epoch{epoch:02d}.pt"
                 result = run_mid_training_tournament(
                     epoch=epoch,
-                    checkpoint_path=out_dir / "checkpoint_best.pt",
+                    checkpoint_path=epoch_ckpt_path,
                     out_root=mt_out_root,
                     hidden_dim=hidden_dim,
                     num_layers=num_layers,
