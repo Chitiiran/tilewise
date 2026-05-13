@@ -271,6 +271,7 @@ def train_main(
     w_policy: float = 1.0,
     lambda_vp: float = 0.0,
     vp_compare_rule: bool = False,
+    lambda_settle: float = 0.0,
     val_frac: float = 0.1,
     seed: int = 0,
     device: str = "auto",
@@ -497,6 +498,17 @@ def train_main(
                 vp_target = build_vp_prior_target(legal)
                 lvp = _vp_prior_loss(p_logits, vp_target, legal)
                 loss = loss + lambda_vp * lvp
+            # Cand 1: pure-pip settlement-vertex prior. Off by default
+            # (lambda_settle=0). Fires whenever any settlement action
+            # is legal in a sample. Per chat 2026-05-12: pure pip
+            # (no resource VP weighting); robber ignored (Option A);
+            # no phase gating.
+            if lambda_settle > 0.0:
+                from .settlement_vertex_prior import settlement_prior_loss
+                # Reshape PyG-concat hex features [B*19, 8] -> [B, 19, 8].
+                hex_features = batch["hex"].x.view(-1, 19, 8)
+                lsettle = settlement_prior_loss(p_logits, legal, hex_features)
+                loss = loss + lambda_settle * lsettle
             loss.backward()
             opt.step()
             tot += loss.item(); tv += lv.item(); tp += lp.item(); n += 1
