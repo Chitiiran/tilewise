@@ -91,6 +91,48 @@ def _collate(batch):
     )
 
 
+def class_balanced_target(target: torch.Tensor, legal: torch.Tensor) -> torch.Tensor:
+    """Cand 7: rebalance per-sample policy target so each action_class
+    contributes the same gradient share regardless of how many action_ids
+    it occupies.
+
+    For each sample s and each legal action a:
+        adjusted[s, a] = target[s, a] / class_count[s, class_of(a)]
+    where class_count[s, c] = number of legal action_ids in class c for sample s.
+    Then renormalize so each sample's adjusted target sums to 1.
+
+    Samples whose target is all-zero (degenerate) stay all-zero — the
+    masked policy loss handles zero targets without NaN.
+
+    Cited rationale: ProposeTrade spans 20 action_ids, BuildRoad spans 72.
+    Without rebalancing, the model's gradient share on roads/trades is
+    proportional to their action-id count rather than their decision
+    importance.
+    """
+    from .action_classes import ACTION_CLASS_ID, NUM_ACTION_CLASSES
+
+    cls_id = ACTION_CLASS_ID.to(target.device)            # (280,)
+    legal_f = legal.to(target.dtype)
+    # Per-sample per-class legal count via scatter_add.
+    # class_count[s, c] = sum_{a: ACTION_CLASS_ID[a]==c} legal[s, a]
+    batch_size = target.shape[0]
+    class_count = torch.zeros(
+        batch_size, NUM_ACTION_CLASSES, device=target.device, dtype=target.dtype,
+    )
+    class_count.scatter_add_(1, cls_id.unsqueeze(0).expand(batch_size, -1), legal_f)
+    # Per-action divisor: class_count[s, class_of(a)]. Clamp to avoid /0
+    # (those actions are illegal anyway and have target 0, so the result
+    # at those positions is 0/clamped = 0).
+    per_action_count = class_count.gather(1, cls_id.unsqueeze(0).expand(batch_size, -1))
+    divisor = per_action_count.clamp(min=1.0)
+    adjusted = target / divisor
+    # Renormalize per sample. Samples with all-zero target stay zero.
+    row_sum = adjusted.sum(dim=-1, keepdim=True)
+    safe_sum = row_sum.clamp(min=1e-12)
+    adjusted = torch.where(row_sum > 0, adjusted / safe_sum, adjusted)
+    return adjusted
+
+
 def _masked_policy_loss(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Cross-entropy where illegal logits are sent to -inf before softmax.
 
@@ -272,6 +314,7 @@ def train_main(
     lambda_vp: float = 0.0,
     vp_compare_rule: bool = False,
     lambda_settle: float = 0.0,
+    class_balanced_policy: bool = False,
     val_frac: float = 0.1,
     seed: int = 0,
     device: str = "auto",
@@ -488,6 +531,12 @@ def train_main(
                     )
                 vp_swap_total += swap_count
                 vp_swap_samples += policy_t.shape[0]
+            # Cand 7: action-class-balanced policy target. Rewrite target so
+            # each action_class gets equal gradient share regardless of how
+            # many action_ids it occupies. Applied AFTER Cand 10's swap so
+            # the rebalance operates on the final target.
+            if class_balanced_policy:
+                policy_t = class_balanced_target(policy_t, legal)
             lv = F.mse_loss(v_pred, value_t)
             lp = _masked_policy_loss(p_logits, policy_t, legal)
             loss = w_value * lv + w_policy * lp
@@ -529,8 +578,17 @@ def train_main(
                 policy_t = policy_t.to(dev)
                 legal = legal.to(dev)
                 v_pred, p_logits = model(batch)
+                # Cand 7: rebalance for the LOSS only. top1 uses the
+                # ORIGINAL teacher target so cross-cell val_top1 numbers
+                # remain comparable (val_top1 is "argmax of teacher" — that
+                # answer shouldn't depend on the loss reweighting).
+                policy_t_for_loss = (
+                    class_balanced_target(policy_t, legal)
+                    if class_balanced_policy
+                    else policy_t
+                )
                 lv = F.mse_loss(v_pred, value_t)
-                lp = _masked_policy_loss(p_logits, policy_t, legal)
+                lp = _masked_policy_loss(p_logits, policy_t_for_loss, legal)
                 vt += float(w_value * lv + w_policy * lp); vv += float(lv); vp_ += float(lp)
                 vmae += float((v_pred - value_t).abs().mean())
                 # Top-1: did argmax(masked logits) hit argmax(target)?

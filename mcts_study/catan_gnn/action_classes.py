@@ -121,6 +121,16 @@ def _build_action_class_table() -> list[ActionClass]:
 ACTION_CLASS: list[ActionClass] = _build_action_class_table()
 
 
+# Cand 7: integer class id per action, for fast batched scatter ops.
+# Each action_id (0..279) -> class index in [0, NUM_ACTION_CLASSES).
+NUM_ACTION_CLASSES = len(ActionClass)
+_CLASS_TO_IDX = {c: i for i, c in enumerate(ActionClass)}
+ACTION_CLASS_ID: torch.Tensor = torch.tensor(
+    [_CLASS_TO_IDX[ACTION_CLASS[a]] for a in range(280)],
+    dtype=torch.long,
+)
+
+
 # Precomputed VP-value vector indexed by action_id. Shape (280,) on CPU.
 # build_vp_prior_target uses this to mask & weight in one shot.
 _ACTION_VP_VALUE_TENSOR = torch.tensor(

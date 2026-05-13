@@ -165,6 +165,12 @@ def main() -> int:
                         "auxiliary CE term pulling policy toward higher-pip "
                         "settlement vertices whenever any BuildSettlement is legal. "
                         "Default 0 (off). Plan/Cell 2 first run uses 0.20.")
+    p.add_argument("--class-balanced-policy", action="store_true",
+                   help="Cand 7 (action-class-balanced policy CE). Reweight the "
+                        "supervised target so each action_class contributes equal "
+                        "gradient share regardless of how many action_ids it occupies. "
+                        "Stacks on top of Cand 8/10 per plan ordering for Cell 2. "
+                        "Default off.")
     args = p.parse_args()
 
     resume_map: dict[str, Path] = {}
@@ -268,6 +274,7 @@ def main() -> int:
                 lambda_vp=args.lambda_vp,
                 vp_compare_rule=args.vp_compare_rule,
                 lambda_settle=args.lambda_settle,
+                class_balanced_policy=args.class_balanced_policy,
             )
             elapsed = time.perf_counter() - t0
             print(f"[inproc] {label} done in {elapsed:.1f}s "
