@@ -3,7 +3,7 @@
 **Date:** 2026-05-25
 **Plan:** `docs/superpowers/plans/2026-05-25-road-pip-prior.md`
 **Spec sections:** Mathematical Specification (locked); Layer-1 KL, Gate A, λ_road=0.05.
-**Status:** RUNNING — launched 2026-05-25 with λ_road=0.05 per user decision
+**Status:** v1 KILLED (perf regression); v2 RUNNING — launched 2026-05-25 15:56 UTC with vectorized impl + per-batch observability, PID 584
 **Cell output (planned):** `runs/v3/loss_aug/05_cand_road_pip_h128_l4/`
 **Baseline for comparison:** Cell 0 vanilla (`runs/v3/loss_aug/00_baseline_h128_l4_pilot/`)
 
@@ -118,6 +118,41 @@ Expected timeline (per Cell 1 wall-clock 19.3h):
 **Early-kill rule (per plan §10.3):** if ep5 PureGnn ≤ 12 wins out of 120
 (≤10.0%, which is ≥1.5pp below Cell 0's 12.50% / 15 wins), kill the run
 and journal the result.
+
+## v1 → v2 — fix landed (2026-05-25 same day)
+
+v1 PID 569 was killed at ~5h elapsed without completing epoch 1, due to
+a per-sample Python loop in `road_pip_prior` that caused ~40× slowdown
+on GPU via CUDA pipeline stalls. See
+`docs/superpowers/journals/2026-05-25-cand11-perf-rca.md` for the
+evidence-based RCA and verified fix.
+
+Fix commits (all on v3):
+  - `5e311eb` feat(observability): per-batch progress + mid-epoch dashboard writes
+  - `fe72f4e` perf(cand11): batched road_pip_prior — eliminate per-sample Python loops
+  - `699aa8a` test(cand11): equivalence — 100 random samples + B=8 grad within 1e-6
+  - `540d6c4` docs(rca): post-fix verification
+
+Post-fix measured GPU per-batch (e1 fixture, B=256, real h128_l4 GNN):
+  - vanilla: 70.5 ms/batch
+  - Cand 11: 75.3 ms/batch (+7% overhead)
+  - Projected: 15.8 min/epoch, ~4h for full 15-epoch run.
+
+## v2 launch (2026-05-25 15:56 UTC)
+
+PID 584, detached. Output dir `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/`
+(v1 dir preserved as evidence). Same launch command as v1 except output
+paths suffixed `_v2`.
+
+Expected timeline:
+  - Cache load: ~40 min
+  - ep1 boundary: ~56 min post-launch (16 min training)
+  - ep5 mid-tournament: ~2.4h post-launch
+  - Full run: ~4h post-cache-load = ~4.7h total
+
+With per-batch observability, the launch log now emits a line every ~20s
+showing batch index, loss, ms/batch, and ETA. Any pathological slowness
+or wedge will be visible within ~5 min of training start.
 
 ## Per-epoch metrics
 
