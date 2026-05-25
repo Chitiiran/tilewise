@@ -3,7 +3,7 @@
 **Date:** 2026-05-25
 **Plan:** `docs/superpowers/plans/2026-05-25-road-pip-prior.md`
 **Spec sections:** Mathematical Specification (locked); Layer-1 KL, Gate A, λ_road=0.05.
-**Status:** STUB — code complete, calibration done, launch PAUSED for user decision on λ_road
+**Status:** RUNNING — launched 2026-05-25 with λ_road=0.05 per user decision
 **Cell output (planned):** `runs/v3/loss_aug/05_cand_road_pip_h128_l4/`
 **Baseline for comparison:** Cell 0 vanilla (`runs/v3/loss_aug/00_baseline_h128_l4_pilot/`)
 
@@ -80,16 +80,44 @@ Ratio prior/visits: 0.387
 
 3. **78% of no-settlement samples have no useful road choice either** — they're forced-action states (post-roll, post-robber, EndTurn-only). Gate A's `has_legal_road + has_score` checks correctly skip them.
 
-### Decision: PAUSED
+### Decision: λ_road = 0.05 (chosen 2026-05-25)
 
-User decision pending (chat 2026-05-25):
-- Lower λ_road from 0.05 → 0.025 (Recommended in light of Cand 7 regression precedent)?
-- Or stick with 0.05 as planned?
-- Or even more conservative 0.01?
+User chose 0.05 after reviewing the trade-off table. Rationale per chat:
+the script's <0.5 entropy ratio threshold is a heuristic; the plan's
+acceptance band (0.3-2.0) covers 0.387; and Cand 11's effective gradient
+share (λ × gate-firing rate) at 0.05 is **0.05 × 0.195 ≈ 0.010**, already
+7× weaker than Cand 8's effective share in Cell 1 (0.10 × 0.70 ≈ 0.070).
+Going lower risked a null Cell 5 (uninformative, costs 42h to resolve).
 
-The script's runtime threshold (<0.5 → lower λ) is stricter than the plan's
-written band (0.3-2.0). Calibration was designed to surface exactly this
-kind of tension, so we respect it and wait for the user's call before launch.
+## Launch (2026-05-25 10:06 UTC)
+
+PID 569, detached. Launch command:
+
+```bash
+nohup python scripts/train_grid_inproc.py \
+  --cache-path ~/catan_cache/cache_100k.pt \
+  --out-root runs/v3/loss_aug/05_cand_road_pip_h128_l4 \
+  --status-file runs/v3/dashboard/cell5.json \
+  --epochs 15 --batch-size 256 --device auto \
+  --rotate --rotate-mode random --cells h128_l4 --seed 0 \
+  --mid-tournament-every 5 \
+  --lambda-road 0.05 \
+  > runs/v3/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log 2>&1 &
+```
+
+Expected timeline (per Cell 1 wall-clock 19.3h):
+- Cache load: ~40 min
+- ep1-5: ~5h
+- ep5 mid-tournament: ~45 min → **first decision point**
+- ep5-10: ~5h
+- ep10 mid-tournament: ~45 min
+- ep10-15: ~5h
+- ep15 mid-tournament: ~45 min
+- Total: ~17-18h to completion
+
+**Early-kill rule (per plan §10.3):** if ep5 PureGnn ≤ 12 wins out of 120
+(≤10.0%, which is ≥1.5pp below Cell 0's 12.50% / 15 wins), kill the run
+and journal the result.
 
 ## Per-epoch metrics
 
