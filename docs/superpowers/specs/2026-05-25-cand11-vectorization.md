@@ -1,7 +1,23 @@
 # Cand 11 Vectorization — Performance Improvement Spec
 
 **Date:** 2026-05-25
-**Status:** Improvement suggestion, NOT yet implemented
+**Status:** Improvement suggestion, NOT yet implemented.
+**CORRECTION (2026-05-25, later same day):** This spec's impact estimate was wrong.
+See `docs/superpowers/journals/2026-05-25-cand11-perf-rca.md` for the
+evidence-based RCA. Headlines from that journal:
+
+- Real impact on GPU: **39.56× slowdown** at B=256 (not "10-20%" as estimated below).
+- Dominant mechanism: **CUDA→CPU sync stalls from `.item()` calls**, not per-batch CPU work.
+- On CPU the overhead is only 9% — the spec's estimate was for CPU but production runs on GPU.
+- Priority order in this spec is also wrong: `_viewer_frontier_vertices_from_edges`
+  (47% of cost) should be fix #1, not `compute_road_scores` outer loop.
+
+The proposed fix (batched scatter+gather) is structurally correct and would
+solve the problem. Only the analysis of impact + priority ordering needs
+correction; the code patterns are valid.
+
+---
+
 **Trigger:** Cell 5 launch (PID 569, 2026-05-25) ran 4h+ without completing
 epoch 1, vs Cell 1 baseline of ~63 min/epoch. Root cause analysis points
 to the per-sample Python loop in `compute_road_scores`.
