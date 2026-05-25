@@ -510,11 +510,18 @@ def train_main(
         except Exception:
             pass
 
+    # Per-batch observability cadence: log every N batches and update the
+    # dashboard so long epochs aren't silent. Per memory
+    # feedback_training_observability.md (2026-05-25 lesson from Cell 5).
+    batches_total = len(train_loader)
+    progress_every = max(1, batches_total // 50)  # ~50 lines/epoch
+
     for epoch in range(start_epoch, epochs + 1):
         # Train.
         model.train()
         tot, tv, tp, n = 0.0, 0.0, 0.0, 0
         t_train_start = _time.perf_counter()
+        last_progress_time = _time.perf_counter()
         # Track Cand 10 swap rate per epoch.
         vp_swap_total = 0
         vp_swap_samples = 0
@@ -586,6 +593,45 @@ def train_main(
             loss.backward()
             opt.step()
             tot += loss.item(); tv += lv.item(); tp += lp.item(); n += 1
+            # Per-batch progress (cadence: ~50 lines/epoch).
+            if n % progress_every == 0 or n == batches_total:
+                now = _time.perf_counter()
+                elapsed = now - t_train_start
+                ms_per_batch = elapsed / n * 1000
+                pct = 100 * n / batches_total
+                eta_s = (batches_total - n) * elapsed / n
+                print(
+                    f"[ep{epoch:>2} batch {n:>5}/{batches_total} "
+                    f"({pct:5.1f}%)] "
+                    f"loss={loss.item():.3f} "
+                    f"{ms_per_batch:6.1f} ms/batch "
+                    f"eta {eta_s/60:5.1f}min",
+                    flush=True,
+                )
+                last_progress_time = now
+                # Mid-epoch dashboard update so the dashboard isn't silent
+                # for hours between epoch boundaries.
+                if status_file is not None:
+                    try:
+                        _write_training_status(
+                            status_file=Path(status_file),
+                            label=status_label or out_dir.name,
+                            epoch=epoch,
+                            epochs_total=epochs,
+                            train_loss=tot / max(n, 1),
+                            val_loss=0.0,
+                            val_top1=0.0,
+                            per_game=(0.0, 0.0, 0.0, 0.0, 0.0),
+                            best_top1=best_top1,
+                            best_top1_epoch=best_top1_epoch,
+                            epochs_since_best=epochs_since_best,
+                            early_stop_patience=early_stop_patience,
+                            state=f"training_batch_{n}_of_{batches_total}",
+                            train_secs=elapsed,
+                            val_secs=0.0,
+                        )
+                    except Exception:
+                        pass
         train_secs = _time.perf_counter() - t_train_start
 
         # Val.
