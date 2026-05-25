@@ -165,6 +165,12 @@ def main() -> int:
                         "auxiliary CE term pulling policy toward higher-pip "
                         "settlement vertices whenever any BuildSettlement is legal. "
                         "Default 0 (off). Plan/Cell 2 first run uses 0.20.")
+    p.add_argument("--lambda-road", type=float, default=0.0,
+                   help="Cand 11 (pure-pip road prior). Weight on the auxiliary "
+                        "KL pulling the policy's softmax-over-legal-roads toward "
+                        "edges whose far endpoint is settlement-legal and "
+                        "high-pip. Gate A: fires only when no legal settlement "
+                        "exists. Default 0 (off). Cell 5 first run uses 0.05.")
     p.add_argument("--class-balanced-policy", action="store_true",
                    help="Cand 7 (action-class-balanced policy CE). Reweight the "
                         "supervised target so each action_class contributes equal "
@@ -274,6 +280,7 @@ def main() -> int:
                 lambda_vp=args.lambda_vp,
                 vp_compare_rule=args.vp_compare_rule,
                 lambda_settle=args.lambda_settle,
+                lambda_road=args.lambda_road,
                 class_balanced_policy=args.class_balanced_policy,
             )
             elapsed = time.perf_counter() - t0
