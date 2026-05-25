@@ -61,14 +61,70 @@ def _build_edge_to_vertices_tensor() -> torch.Tensor:
 EDGE_TO_VERTICES_TENSOR: torch.Tensor = _build_edge_to_vertices_tensor()
 
 
-# Forward declarations for Tasks 2-4. Tests import all symbols up front; the
-# stubs let Task 1's test run in isolation. They are overwritten in later tasks.
-def far_endpoint(*, edge_id: int, edge_features: torch.Tensor) -> int:  # noqa: D401
-    raise NotImplementedError("Implemented in Task 2.")
+def _viewer_frontier_vertices_from_edges(edge_features: torch.Tensor) -> set[int]:
+    """Return the set of vertex ids that are endpoints of any edge owned
+    by the viewer.
+
+    Args:
+        edge_features: shape [72, 6]. Col 2 = viewer's road flag.
+
+    Returns:
+        Python set of vertex ids (0..53).
+    """
+    viewer_owns = (edge_features[:, 2] >= 0.5)  # [72] bool
+    front: set[int] = set()
+    for e in range(72):
+        if viewer_owns[e].item():
+            v0, v1 = EDGE_TO_VERTICES[e]
+            front.add(int(v0))
+            front.add(int(v1))
+    return front
+
+
+def far_endpoint(*, edge_id: int, edge_features: torch.Tensor) -> int:
+    """For road action targeting edge_id, return the vertex id that is NOT
+    already in the viewer's road-network frontier. Returns -1 if both
+    endpoints are in the frontier or neither is (no clear "new" vertex).
+
+    Args:
+        edge_id: int in 0..71.
+        edge_features: shape [72, 6], single-sample tensor (no batch dim).
+
+    Returns:
+        int in 0..53, or -1 if no unambiguous far endpoint exists.
+    """
+    front = _viewer_frontier_vertices_from_edges(edge_features)
+    v0, v1 = EDGE_TO_VERTICES[edge_id]
+    v0_in = int(v0) in front
+    v1_in = int(v1) in front
+    if v0_in and not v1_in:
+        return int(v1)
+    if v1_in and not v0_in:
+        return int(v0)
+    return -1
 
 
 def settlement_legal_mask(vertex_features: torch.Tensor) -> torch.Tensor:
-    raise NotImplementedError("Implemented in Task 2.")
+    """Per-vertex boolean: True iff settlement-legal under the distance rule.
+
+    A vertex is settlement-legal iff (a) the vertex itself is empty AND
+    (b) every neighbor vertex (via VERTEX_NEIGHBORS) is empty.
+
+    Args:
+        vertex_features: shape [54, 13]. Col 0 = empty flag.
+
+    Returns:
+        Bool tensor of shape [54].
+    """
+    empty = (vertex_features[:, 0] >= 0.5)  # [54] bool
+    out = torch.zeros(NUM_VERTICES, dtype=torch.bool, device=vertex_features.device)
+    for v in range(NUM_VERTICES):
+        if not empty[v].item():
+            continue
+        nbrs = VERTEX_NEIGHBORS[v].to(vertex_features.device)
+        if bool(empty[nbrs].all().item()):
+            out[v] = True
+    return out
 
 
 def compute_road_scores(**kwargs) -> torch.Tensor:
