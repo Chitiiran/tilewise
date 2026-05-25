@@ -314,6 +314,7 @@ def train_main(
     lambda_vp: float = 0.0,
     vp_compare_rule: bool = False,
     lambda_settle: float = 0.0,
+    lambda_road: float = 0.0,
     class_balanced_policy: bool = False,
     val_frac: float = 0.1,
     seed: int = 0,
@@ -358,6 +359,13 @@ def train_main(
         Used by scripts/train_grid_inproc.py to share one loaded cache across
         multiple cells in a single Python process — saves the ~30-min cache
         deserialization cost per cell.
+    lambda_road: Cand 11 (pure-pip road prior). Weight on the auxiliary KL
+        pulling the model's softmax-over-legal-roads toward a distribution
+        proportional to pip(far endpoint of the road) when that endpoint
+        is settlement-legal. Gate A: fires only when NO legal settlement
+        action exists in the sample. Layer 1: independent softmax over
+        road slice (no global logit inflation). Default 0 (off). Cell 5
+        first run uses 0.05.
     mid_tournament_every: if > 0, run a PureGnn-vs-LookaheadV3 tournament
         every N epochs (after the per-epoch checkpoint save). Used as the
         early-stopping signal for the loss-augmentation roadmap, since
@@ -558,6 +566,23 @@ def train_main(
                 hex_features = batch["hex"].x.view(-1, 19, 8)
                 lsettle = settlement_prior_loss(p_logits, legal, hex_features)
                 loss = loss + lambda_settle * lsettle
+            # Cand 11: pure-pip road prior. Off by default (lambda_road=0).
+            # Gate A fires when no legal settlement exists. Layer 1 KL is
+            # over the road slice only (no global logit inflation).
+            if lambda_road > 0.0:
+                from .road_pip_prior import road_pip_prior_loss
+                # Reshape PyG-concat features [B*N, F] -> [B, N, F].
+                hex_feat_b = batch["hex"].x.view(-1, 19, 8)
+                vert_feat_b = batch["vertex"].x.view(-1, 54, 13)
+                edge_feat_b = batch["edge"].x.view(-1, 72, 6)
+                lroad = road_pip_prior_loss(
+                    p_logits=p_logits,
+                    legal_mask=legal,
+                    edge_features=edge_feat_b,
+                    vertex_features=vert_feat_b,
+                    hex_features=hex_feat_b,
+                )
+                loss = loss + lambda_road * lroad
             loss.backward()
             opt.step()
             tot += loss.item(); tv += lv.item(); tp += lp.item(); n += 1
