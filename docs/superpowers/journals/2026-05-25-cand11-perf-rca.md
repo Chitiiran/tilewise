@@ -3,7 +3,8 @@
 **Date:** 2026-05-25
 **Trigger:** Cell 5 (PID 569) launched 2026-05-25 10:06 UTC ran 4h+ without
 completing epoch 1; user instructed kill + RCA + observability injection.
-**Status:** RCA complete. Evidence below.
+**Status:** RCA complete, fix landed and verified. See "Post-fix verification"
+section at the end.
 
 ## Headline
 
@@ -202,3 +203,102 @@ Smoke test still green (`test_cell5_smoke.py` 2/2 PASS).
    guessed, harmless on CPU). The user explicitly asked for evidence-not-
    speculation; doing it that way the first time would have saved a
    committed-and-pushed wrong spec.
+
+---
+
+## Post-fix verification (2026-05-25, same day)
+
+Commits landed:
+
+  - `fe72f4e perf(cand11): batched road_pip_prior — eliminate per-sample Python loops`
+  - `699aa8a test(cand11): equivalence — loop vs batched on 100 random samples + gradient`
+
+### Approach
+
+Kept the original loop functions under `*_loop` suffix as the reference;
+added fully batched implementations:
+
+  - `settlement_legal_mask_batched`: builds `[B, 54]` directly via gather
+    over the precomputed `NBRS_PADDED` table (sentinel column makes the
+    coastal-vertex padding all-True). No Python loop, no `.item()`.
+  - `far_endpoint_batched`: scatters viewer-owned edge endpoints into a
+    `[B, 54]` frontier mask in one pass, then computes far-endpoint
+    via gather + `torch.where`. No Python loop.
+  - `compute_road_scores_batched`: composes the two above with a gather
+    on `vertex_pip[B, 54]` indexed by `far_safe`. No Python loop.
+  - `road_pip_prior_loss`: calls the batched scorer once on the full
+    batch instead of looping per sample. Also dropped the early-return
+    `if not candidates.any().item()` short-circuit, since `.item()`
+    forces a CUDA sync; the batched scoring on a no-firing batch is
+    cheap (one pass over zeros).
+
+Public API preserved via single-sample wrappers that call the batched
+version with an `unsqueeze(0)`. All 12 existing unit tests pass byte-
+identically.
+
+### Equivalence evidence
+
+`test_batched_matches_loop_100_random_samples` (commit 699aa8a):
+
+  - 100 random `(edge_features, vertex_features, hex_features, legal_mask)`
+    tuples drawn from realistic distributions (random occupied vertices,
+    random viewer roads, random dice + 1 desert, random legal-road subset
+    with no settlements legal).
+  - For each sample: `settlement_legal_mask`, `far_endpoint` (per edge),
+    and `compute_road_scores` outputs all byte-identical between loop and
+    batched. ✅ PASS
+
+`test_batched_road_loss_matches_loop_loss_grad_too` (commit 699aa8a):
+
+  - B=8 batch, fixed seed. Compares scalar loss and `logits.grad` from
+    a reconstructed loop-based `road_pip_prior_loss` vs the new batched
+    one.
+  - Loss diff: within 1e-6. Grad max abs diff: within 1e-6. ✅ PASS
+
+### Performance evidence (GPU, B=256, real GNN h128_l4, e1 fixture)
+
+Same harness as the original RCA measurement (`scratch_road_pip_timing.py`,
+CUDA, 3 warmup + 10 measured iterations with `torch.cuda.synchronize()`):
+
+| Config | Before fix | After fix |
+|---|---:|---:|
+| vanilla GPU | 60.4 ms/batch | 70.5 ms/batch (within noise) |
+| **Cand 11 GPU** | **2389.1 ms/batch** | **75.3 ms/batch** |
+| Overhead vs vanilla | **+3856%** | **+7%** |
+| Ratio | **39.56×** | **1.07×** |
+
+The fix dropped Cand 11's per-batch wall-clock by **31.7×**.
+
+### Projected impact on Cell 5 v2
+
+| Config | Before fix | After fix |
+|---|---:|---:|
+| min/epoch (12,627 batches @ B=256) | 502.8 min | 15.8 min |
+| Full 15-epoch run | ~126 hours | **~4 hours** |
+| Time to ep5 mid-tournament | ~42 hours | **~1.3 hours** (+ tournament ~45 min) |
+
+### What remains before Cell 5 v2 launch
+
+  1. ✅ Vectorize `road_pip_prior` (done, `fe72f4e`).
+  2. ✅ Equivalence test (done, `699aa8a`).
+  3. ⏸ Add a GPU perf-regression smoke test as a permanent guard
+     (`assert ms_cand11 / ms_vanilla < 1.5` on GPU at B=256). Currently
+     only `scratch_road_pip_timing.py` checks this and it's gitignored.
+     Optional but recommended before relaunching.
+  4. ⏸ Relaunch Cell 5 with new observability + vectorized impl.
+
+### Lesson — final form
+
+The CPU-vs-GPU asymmetry of `.item()` cost is the kind of trap that
+**only shows up at production scale on the production device**. The
+sequence that would have caught this earlier:
+
+  1. After implementing any new loss term, run a per-batch wall-clock
+     measurement on the production device (GPU) at the production batch
+     size (B=256), comparing `lambda=0` vs `lambda=production`.
+  2. If ratio > 1.5×, profile with cProfile on the synthetic batch to
+     identify hot paths, then look for `.item()` calls and Python loops
+     touching CUDA tensors.
+  3. Only commit + push once the perf measurement is in the journal.
+
+This is now standing guidance in `feedback_training_observability.md`.
