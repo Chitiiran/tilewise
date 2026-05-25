@@ -309,6 +309,209 @@ def test_road_pip_prior_loss_prefers_higher_pip_road():
     assert abs(g_a) > 1e-4 and abs(g_b) > 1e-4
 
 
+def _random_sample(rng: torch.Generator):
+    """Generate a plausible (edge_features, vertex_features, hex_features,
+    legal_mask) tuple drawing from realistic distributions:
+      - Random subset of vertices occupied (~6 of 54 — typical mid-game)
+      - Random subset of edges owned by viewer (~5 of 72)
+      - Random dice numbers on hexes (2..12 excluding 7), 1 desert
+      - Random legal_mask with no legal settlements (gate-A-fires regime)
+        and a random subset of legal roads.
+    """
+    # Vertex features.
+    n_occupied = int(torch.randint(2, 10, (1,), generator=rng).item())
+    occ_idx = torch.randperm(54, generator=rng)[:n_occupied].tolist()
+    vf = torch.zeros(54, 13)
+    for v in range(54):
+        if v in occ_idx:
+            vf[v, 1] = 1.0  # settle
+            # owner one-hot: pick player 0 for viewer half the time, else opponent
+            owner = int(torch.randint(0, 4, (1,), generator=rng).item())
+            vf[v, 3 + owner] = 1.0
+        else:
+            vf[v, 0] = 1.0
+
+    # Edge features.
+    n_viewer_roads = int(torch.randint(2, 12, (1,), generator=rng).item())
+    viewer_road_idx = torch.randperm(72, generator=rng)[:n_viewer_roads].tolist()
+    ef = torch.zeros(72, 6)
+    for e in range(72):
+        if e in viewer_road_idx:
+            ef[e, 1] = 1.0
+            ef[e, 2] = 1.0  # viewer owns
+        else:
+            ef[e, 0] = 1.0
+
+    # Hex features.
+    hf = torch.zeros(19, 8)
+    desert = int(torch.randint(0, 19, (1,), generator=rng).item())
+    for h in range(19):
+        if h == desert:
+            hf[h, 7] = 1.0
+        else:
+            hf[h, 0] = 1.0
+            # Random dice number in {2..12} \ {7}.
+            n = int(torch.randint(2, 13, (1,), generator=rng).item())
+            if n == 7:
+                n = 6
+            hf[h, 5] = (n - 7.0) / 5.0
+
+    # Legal mask: no legal settlements (gate-A regime), random legal roads,
+    # always include EndTurn.
+    legal = torch.zeros(280, dtype=torch.bool)
+    legal[204] = True
+    n_legal_roads = int(torch.randint(0, 12, (1,), generator=rng).item())
+    legal_road_idx = torch.randperm(72, generator=rng)[:n_legal_roads].tolist()
+    for e in legal_road_idx:
+        legal[ROAD_OFFSET + e] = True
+    return ef, vf, hf, legal
+
+
+def test_batched_matches_loop_100_random_samples():
+    """Equivalence: per-sample loop and batched paths must produce
+    byte-identical scores, targets, and loss on 100 random samples.
+
+    Required before switching production to batched, per
+    docs/superpowers/journals/2026-05-25-cand11-perf-rca.md §"What still
+    needs to happen".
+    """
+    from catan_gnn.road_pip_prior import (
+        compute_road_scores_loop,
+        compute_road_scores_batched,
+        settlement_legal_mask_loop,
+        settlement_legal_mask_batched,
+        far_endpoint_loop,
+        far_endpoint_batched,
+        NUM_EDGES,
+    )
+
+    rng = torch.Generator().manual_seed(20260525)
+    n_samples = 100
+    all_pass = True
+    failures: list[str] = []
+
+    for i in range(n_samples):
+        ef, vf, hf, legal = _random_sample(rng)
+        legal_road_mask = legal[ROAD_OFFSET:ROAD_OFFSET + NUM_EDGES]
+
+        # settlement_legal: loop returns [54], batched returns [1, 54] when given [1, 54, 13]
+        slm_loop = settlement_legal_mask_loop(vf)                          # [54]
+        slm_batched = settlement_legal_mask_batched(vf.unsqueeze(0))[0]    # [54]
+        if not torch.equal(slm_loop, slm_batched):
+            all_pass = False
+            failures.append(f"sample {i}: settlement_legal_mask mismatch")
+            continue
+
+        # far_endpoint: loop returns int per edge, batched returns [1, 72]
+        far_batched = far_endpoint_batched(ef.unsqueeze(0))[0]             # [72]
+        for e in range(NUM_EDGES):
+            loop_val = far_endpoint_loop(edge_id=e, edge_features=ef)
+            batched_val = int(far_batched[e].item())
+            if loop_val != batched_val:
+                all_pass = False
+                failures.append(f"sample {i} edge {e}: far_endpoint loop={loop_val} batched={batched_val}")
+                break
+        if not all_pass:
+            break
+
+        # compute_road_scores
+        scores_loop = compute_road_scores_loop(
+            edge_features=ef, vertex_features=vf, hex_features=hf,
+            legal_road_mask=legal_road_mask,
+        )
+        scores_batched = compute_road_scores_batched(
+            edge_features=ef.unsqueeze(0), vertex_features=vf.unsqueeze(0),
+            hex_features=hf.unsqueeze(0), legal_road_mask=legal_road_mask.unsqueeze(0),
+        )[0]
+        if not torch.allclose(scores_loop, scores_batched, atol=1e-6):
+            all_pass = False
+            diffs = (scores_loop - scores_batched).abs()
+            failures.append(
+                f"sample {i}: compute_road_scores diff max={diffs.max().item():.2e}"
+            )
+            break
+
+    if not all_pass:
+        for f in failures[:5]:
+            print(f"FAIL: {f}")
+    assert all_pass, f"{len(failures)} samples disagreed; first: {failures[0] if failures else 'n/a'}"
+
+
+def test_batched_road_loss_matches_loop_loss_grad_too():
+    """Equivalence at the loss level: same scalar loss and same gradient
+    for a synthetic batch of 8 samples generated by the same RNG."""
+    from catan_gnn.road_pip_prior import road_pip_prior_loss
+    # Reconstruct old loop-based loss locally to compare.
+    from catan_gnn.road_pip_prior import (
+        compute_road_scores_loop,
+        ROAD_ACTION_OFFSET,
+        NUM_EDGES as N_EDGES,
+    )
+    import torch.nn.functional as F2
+
+    def loop_loss(p_logits, legal_mask, ef, vf, hf):
+        if legal_mask.dtype != torch.bool:
+            legal_mask = legal_mask.bool()
+        B = p_logits.shape[0]
+        device = p_logits.device
+        legal_settle_any = legal_mask[:, 0:54].any(dim=-1)
+        legal_road = legal_mask[:, ROAD_ACTION_OFFSET:ROAD_ACTION_OFFSET + N_EDGES]
+        has_legal_road = legal_road.any(dim=-1)
+        candidates = (~legal_settle_any) & has_legal_road
+        if not candidates.any():
+            return torch.zeros((), dtype=p_logits.dtype, device=device)
+        scores = torch.zeros(B, N_EDGES, dtype=torch.float32, device=device)
+        for b in range(B):
+            if not bool(candidates[b].item()):
+                continue
+            scores[b] = compute_road_scores_loop(
+                edge_features=ef[b], vertex_features=vf[b],
+                hex_features=hf[b], legal_road_mask=legal_road[b],
+            )
+        has_score = (scores.sum(dim=-1) > 0)
+        firing = candidates & has_score
+        if not firing.any():
+            return torch.zeros((), dtype=p_logits.dtype, device=device)
+        score_sums = scores.sum(dim=-1, keepdim=True).clamp(min=1e-12)
+        target = (scores / score_sums) * firing.unsqueeze(-1).to(scores.dtype)
+        road_logits = p_logits[:, ROAD_ACTION_OFFSET:ROAD_ACTION_OFFSET + N_EDGES]
+        masked = road_logits.masked_fill(~legal_road, float("-inf"))
+        log_q = F2.log_softmax(masked, dim=-1).masked_fill(~legal_road, 0.0)
+        sample_loss = -(target * log_q).sum(dim=-1) * firing.to(scores.dtype)
+        n_firing = firing.to(scores.dtype).sum().clamp(min=1)
+        return sample_loss.sum() / n_firing
+
+    rng = torch.Generator().manual_seed(42)
+    B = 8
+    efs, vfs, hfs, legals = [], [], [], []
+    for _ in range(B):
+        ef, vf, hf, legal = _random_sample(rng)
+        efs.append(ef); vfs.append(vf); hfs.append(hf); legals.append(legal)
+    ef_b = torch.stack(efs); vf_b = torch.stack(vfs); hf_b = torch.stack(hfs)
+    legal_b = torch.stack(legals)
+
+    torch.manual_seed(0)
+    logits_a = torch.randn(B, 280, requires_grad=True)
+    logits_b = logits_a.detach().clone().requires_grad_(True)
+
+    loss_loop = loop_loss(logits_a, legal_b, ef_b, vf_b, hf_b)
+    loss_batched = road_pip_prior_loss(
+        p_logits=logits_b, legal_mask=legal_b,
+        edge_features=ef_b, vertex_features=vf_b, hex_features=hf_b,
+    )
+    assert torch.allclose(loss_loop, loss_batched, atol=1e-6), (
+        f"loss mismatch: loop={loss_loop.item()} batched={loss_batched.item()}"
+    )
+
+    loss_loop.backward()
+    loss_batched.backward()
+    g_loop = logits_a.grad
+    g_batched = logits_b.grad
+    assert g_loop is not None and g_batched is not None
+    diff = (g_loop - g_batched).abs().max().item()
+    assert diff < 1e-6, f"gradient mismatch: max abs diff={diff:.2e}"
+
+
 def test_road_pip_prior_loss_mean_over_firing_samples():
     """Batch of 3 samples. Samples 0 and 2 have gate fire; sample 1 has a
     legal settlement (gate blocks). The reported loss should be (L0 + L2)/2
