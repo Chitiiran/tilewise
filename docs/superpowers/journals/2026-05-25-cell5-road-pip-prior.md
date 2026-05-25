@@ -3,7 +3,7 @@
 **Date:** 2026-05-25
 **Plan:** `docs/superpowers/plans/2026-05-25-road-pip-prior.md`
 **Spec sections:** Mathematical Specification (locked); Layer-1 KL, Gate A, λ_road=0.05.
-**Status:** STUB — code complete, awaiting calibration + launch decision
+**Status:** STUB — code complete, calibration done, launch PAUSED for user decision on λ_road
 **Cell output (planned):** `runs/v3/loss_aug/05_cand_road_pip_h128_l4/`
 **Baseline for comparison:** Cell 0 vanilla (`runs/v3/loss_aug/00_baseline_h128_l4_pilot/`)
 
@@ -35,18 +35,61 @@
 
 ## Calibration result (Task 7, pre-launch)
 
-(paste output of scratch_road_pip_calibration.py here once it completes)
+Ran 2026-05-25, ~40 min cache load + ~5 min walk on 1000 random samples
+from `~/catan_cache/cache_100k.pt` (3,219,479 positions, 3 chunks, 29 GB).
 
 ```
-TODO: fill in once calibration finishes
+=== Cand 11 calibration on 1000 random cache samples ===
+Samples with NO legal settlement (Gate A part 1): 893 (89.3%)
+  Of those, with at least one nonzero road score (Gate A fully fires): 195 (21.8%)
+  All-zero road scores (gate part 3 blocks): 698 (78.2%)
+  OVERALL gate-firing rate: 195/1000 = 19.5%
+
+|L_R| histogram on Gate-A-part-1 samples:
+  |L_R| =  0:  618 samples
+  |L_R| =  2:   16 samples
+  |L_R| =  3:   52 samples
+  |L_R| =  4:    4 samples
+  |L_R| =  5:   15 samples
+  |L_R| =  6:   27 samples
+  |L_R| =  7:   49 samples
+  |L_R| =  8:   63 samples
+  |L_R| =  9:   34 samples
+  |L_R| = 10:   12 samples
+  |L_R| = 11:    3 samples
+
+Mean prior entropy (firing samples): 0.747
+Mean MCTS-visits entropy over legal roads (firing samples): 1.929
+Ratio prior/visits: 0.387
+  (1.0 = comparable sharpness; <0.5 = prior much sharper, consider lower lambda_road)
 ```
 
-Key numbers:
-- Gate-firing rate: __TODO__%
-- Prior/visits entropy ratio: __TODO__
+### Key numbers
 
-**Acceptance band (per plan):** gate-firing 5-60%, entropy ratio 0.3-2.0.
-**Decision:** TODO (launch / revise λ_road / abort).
+| Metric | Value | Plan band (per plan §9.2) | Status |
+|---|---:|---:|---|
+| Overall gate-firing rate | **19.5%** | 5-60% | ✅ in-band |
+| Prior/visits entropy ratio | **0.387** | 0.3-2.0 | ⚠ in-band but at low end (< 0.5 = prior much sharper than visits, per script) |
+| \|L_R\|=0 when no settlement | 618 / 893 (69%) | — | ℹ unexpected — most no-settlement states have no roads either (post-roll, post-robber, EndTurn-only) |
+
+### Interpretation
+
+1. **Gate A fires on 19.5% of samples** — comfortably in the design band. About 1 in 5 training samples gets a Cand 11 gradient signal. Enough to produce a learnable effect over 15 epochs × ~10k batches/epoch.
+
+2. **The prior is sharper than MCTS visits** (entropy 0.747 vs 1.929; ratio 0.387). With λ_road=0.05 this means the KL pulls the policy toward a near-one-hot target (highest-pip road) while MCTS visits spread mass across multiple roads. At the planned λ_road=0.05 this is a fairly aggressive pull.
+
+3. **78% of no-settlement samples have no useful road choice either** — they're forced-action states (post-roll, post-robber, EndTurn-only). Gate A's `has_legal_road + has_score` checks correctly skip them.
+
+### Decision: PAUSED
+
+User decision pending (chat 2026-05-25):
+- Lower λ_road from 0.05 → 0.025 (Recommended in light of Cand 7 regression precedent)?
+- Or stick with 0.05 as planned?
+- Or even more conservative 0.01?
+
+The script's runtime threshold (<0.5 → lower λ) is stricter than the plan's
+written band (0.3-2.0). Calibration was designed to surface exactly this
+kind of tension, so we respect it and wait for the user's call before launch.
 
 ## Per-epoch metrics
 
