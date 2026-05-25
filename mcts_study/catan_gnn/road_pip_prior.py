@@ -127,15 +127,73 @@ def settlement_legal_mask(vertex_features: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def compute_road_scores(**kwargs) -> torch.Tensor:
-    raise NotImplementedError("Implemented in Task 3.")
+def compute_road_scores(
+    *,
+    edge_features: torch.Tensor,
+    vertex_features: torch.Tensor,
+    hex_features: torch.Tensor,
+    legal_road_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Compute the per-road pip score for a single sample.
+
+    For each legal road action:
+        score(r) = pip(v_new) * 1[v_new >= 0] * 1[settlement_legal(v_new)]
+
+    Args:
+        edge_features:   shape [72, 6]
+        vertex_features: shape [54, 13]
+        hex_features:    shape [19, 8]
+        legal_road_mask: shape [72], bool. True if action 108+r is legal.
+
+    Returns:
+        Float tensor of shape [72]. Zero on illegal roads.
+    """
+    device = edge_features.device
+    out = torch.zeros(NUM_EDGES, dtype=torch.float32, device=device)
+
+    # Pip per vertex, from hex_features.
+    hex_pip = hex_features_to_pip(hex_features)         # [19]
+    vertex_pip = compute_vertex_score(hex_pip)          # [54]
+
+    # Settlement-legal mask per vertex.
+    settle_legal = settlement_legal_mask(vertex_features)  # [54] bool
+
+    # Iterate over legal roads. The loop is over <= 72 elements per sample;
+    # vectorizing across the batch happens in road_pip_prior_loss.
+    for e in range(NUM_EDGES):
+        if not bool(legal_road_mask[e].item()):
+            continue
+        v_new = far_endpoint(edge_id=e, edge_features=edge_features)
+        if v_new < 0:
+            continue
+        if not bool(settle_legal[v_new].item()):
+            continue
+        out[e] = vertex_pip[v_new]
+    return out
 
 
 def build_road_pip_target(
     road_scores: torch.Tensor,
     legal_road_mask: torch.Tensor,
 ) -> torch.Tensor:
-    raise NotImplementedError("Implemented in Task 3.")
+    """Linear normalization across legal roads.
+
+    target[e] = road_scores[e] / sum(road_scores[legal_road_mask])
+              = 0  on illegal roads or if all legal scores are zero.
+
+    Args:
+        road_scores: shape [72], float.
+        legal_road_mask: shape [72], bool.
+
+    Returns:
+        Float tensor shape [72]. Sums to 1.0 if any score > 0; else all zero.
+    """
+    legal_f = legal_road_mask.to(road_scores.dtype)
+    weighted = road_scores * legal_f
+    total = weighted.sum()
+    if float(total.item()) <= 0.0:
+        return torch.zeros_like(road_scores)
+    return weighted / total
 
 
 def road_pip_prior_loss(**kwargs) -> torch.Tensor:

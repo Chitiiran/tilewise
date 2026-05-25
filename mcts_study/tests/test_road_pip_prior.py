@@ -101,3 +101,75 @@ def test_settlement_legal_mask_distance_rule():
     assert not mask[3].item(), "v3 neighbor of occupied v0 → not legal"
     assert not mask[4].item(), "v4 neighbor of occupied v0 → not legal"
     assert mask[7].item(), "v7 neighbor of empty v3 (v3 itself empty) → legal"
+
+
+def _build_hex_features(dice_per_hex: list[int], desert_hexes: list[int] = ()) -> torch.Tensor:
+    """Helper: build [19, 8] hex_features matching observation.rs:75-86.
+    dice_per_hex must be length 19. Use 0 to mean "no number" (will be
+    treated as pip 0 via PIP_BY_DICE)."""
+    hf = torch.zeros(19, 8)
+    for h in range(19):
+        if h in desert_hexes:
+            hf[h, 7] = 1.0  # desert flag
+        else:
+            # Resource one-hot (any non-desert resource works for this test;
+            # we don't read resource type in road_pip_prior).
+            hf[h, 0] = 1.0  # wood
+        n = dice_per_hex[h]
+        hf[h, 5] = (n - 7.0) / 5.0
+    return hf
+
+
+def test_compute_road_scores_zero_when_far_endpoint_not_settlement_legal():
+    """Viewer owns edge 0 ([0,3]). Candidate edge 6 ([3,7]) has far endpoint
+    7. If vertex 7 is occupied, score = 0. If vertex 7 is empty AND all
+    neighbors empty AND non-desert pip on adjacent hexes, score > 0.
+    """
+    ef = _build_edge_features(viewer_road_edges=[0])
+    vf_occupied = _build_vertex_features(occupied_vertices=[7])
+    vf_empty = _build_vertex_features(occupied_vertices=[])
+    # All hexes have dice number 6 (highest pip = 5). Doesn't matter which
+    # hexes are adjacent to vertex 7 since pip is computed per hex.
+    hf = _build_hex_features(dice_per_hex=[6] * 19)
+
+    legal_road = torch.zeros(72, dtype=torch.bool)
+    legal_road[6] = True
+
+    scores_occ = compute_road_scores(
+        edge_features=ef, vertex_features=vf_occupied,
+        hex_features=hf, legal_road_mask=legal_road,
+    )
+    scores_emp = compute_road_scores(
+        edge_features=ef, vertex_features=vf_empty,
+        hex_features=hf, legal_road_mask=legal_road,
+    )
+    assert scores_occ[6].item() == 0.0, "v7 occupied → score 0"
+    assert scores_emp[6].item() > 0.0, "v7 empty + dice=6 hex → pip > 0"
+
+
+def test_build_road_pip_target_linear_normalization():
+    """Two legal roads with scores 5 and 10 → target [0, 0, ..., 1/3, 2/3, ...]."""
+    scores = torch.zeros(72)
+    scores[10] = 5.0
+    scores[20] = 10.0
+    legal_road = torch.zeros(72, dtype=torch.bool)
+    legal_road[10] = True
+    legal_road[20] = True
+    target = build_road_pip_target(scores, legal_road)
+    assert target.shape == (72,)
+    assert abs(target[10].item() - 1/3) < 1e-6
+    assert abs(target[20].item() - 2/3) < 1e-6
+    assert target.sum().item() == pytest.approx(1.0)
+    # Illegal entries are zero
+    assert target[0].item() == 0.0
+
+
+def test_build_road_pip_target_all_zero_returns_zeros():
+    """If all legal roads have score 0, target is all-zero (gate will
+    catch this upstream — we just need to not divide by zero)."""
+    scores = torch.zeros(72)
+    legal_road = torch.zeros(72, dtype=torch.bool)
+    legal_road[10] = True
+    legal_road[20] = True
+    target = build_road_pip_target(scores, legal_road)
+    assert target.sum().item() == 0.0
