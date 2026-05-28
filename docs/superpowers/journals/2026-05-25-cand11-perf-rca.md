@@ -179,7 +179,7 @@ Smoke test still green (`test_cell5_smoke.py` 2/2 PASS).
 - Profile script: `mcts_study/scratch_road_pip_profile.py` (gitignored)
 - Timing harness: `mcts_study/scratch_road_pip_timing.py` (gitignored)
 - Profile output (this journal embeds verbatim)
-- Cell 5 launch log: `mcts_study/runs/v3/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log` (preserved)
+- Cell 5 launch log: `mcts_study/runs/v3/training/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log` (preserved)
 - Observability commit: `5e311eb feat(observability): per-batch progress + mid-epoch dashboard writes`
 - Memory entry: `feedback_training_observability.md`
 - Earlier (now-corrected) spec: `docs/superpowers/specs/2026-05-25-cand11-vectorization.md`

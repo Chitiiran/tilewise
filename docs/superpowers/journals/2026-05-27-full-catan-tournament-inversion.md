@@ -7,10 +7,10 @@
 
 | Slot | Cell | Checkpoint |
 |---|---|---|
-| A | Cell 0 (vanilla) | `runs/v3/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt` |
-| B | Cell 1 (Cand 8 + Cand 10) | `runs/v3/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
-| C | Cell 5 v2 (Cand 11 alone) | `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` |
-| D | Cell 6 (Cand 11 + Cand 8 + Cand 10) | `runs/v3/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
+| A | Cell 0 (vanilla) | `runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt` |
+| B | Cell 1 (Cand 8 + Cand 10) | `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
+| C | Cell 5 v2 (Cand 11 alone) | `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` |
+| D | Cell 6 (Cand 11 + Cand 8 + Cand 10) | `runs/v3/training/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
 
 Engine flags: `--vp-target 10 --bonuses` (full Catan with longest road + largest army +2 VP each). All other settings match the v3 4-PureGnn tournament: `hidden_dim=128, num_layers=4, seed_base=19_000_000, workers=10, device=cuda, max_seconds=600s, 300 games × 4 rotations = 1200 games`.
 
@@ -130,7 +130,7 @@ The full-Catan behavioral analysis (city rate, road rate, etc.) would have requi
 
 ## Cited artefacts
 
-- New tournament: `runs/v3/e10d_4gnn_fullcatan_1200_2026_05_27/2026-05-27T19-52-e10d_quad_gnn/`
+- New tournament: `runs/v3/tournaments/e10d_4gnn_fullcatan_1200_2026_05_27/2026-05-27T19-52-e10d_quad_gnn/`
 - Launch log: `launch.log`
 - Tournament module: `mcts_study/catan_mcts/experiments/e10_quad_gnn.py` (commit `5d22713`)
 - Companion journals:

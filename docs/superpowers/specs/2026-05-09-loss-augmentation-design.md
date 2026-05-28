@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-09
 **Status:** Design exploration. NOT a commitment to implement yet.
-**Tournament evidence base:** `runs/v3/grid_pass100k_tournament/h32_l2_dual_best_1200/2026-05-09T03-43-e10b_dual_gnn/`
+**Tournament evidence base:** `runs/v3/tournaments/grid_pass100k_tournament/h32_l2_dual_best_1200/2026-05-09T03-43-e10b_dual_gnn/`
 
 ## Background — what the cited evidence shows
 
@@ -311,7 +311,7 @@ thinking." Some angles worth considering:
 training data because the recorded-player MCTS filter would skip them.
 
 **Evidence that refutes this** (`scratch_check_setup_samples.py` reading
-`runs/v3/2026-05-05T05-50-e9_v3_data_gen_100k_w12/.../worker0/moves.v3-final.parquet`):
+`runs/v3/data_gen/2026-05-05T05-50-e9_v3_data_gen_100k_w12/.../worker0/moves.v3-final.parquet`):
 
 ```
 === move_index=0 action distribution (n=7917) ===

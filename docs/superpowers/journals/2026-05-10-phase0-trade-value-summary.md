@@ -4,8 +4,8 @@
 **Plan:** `C:\Users\chiti\.claude\plans\let-s-read-for-context-humming-storm.md`
 **Script:** `mcts_study/scratch_trade_value.py` (new)
 **Tests:** `mcts_study/tests/test_scratch_trade_value.py` (new, 5 tests, all passing)
-**Raw output:** `runs/v3/trade_value_analysis_2026-05-10/summary.json` (gitignored, regenerable)
-**Corpus:** `runs/v3/2026-05-05T05-50-e9_v3_data_gen_100k_w12/2026-05-05T09-50-e9_v3_data_gen/worker0..11/`
+**Raw output:** `runs/v3/archive/trade_value_analysis_2026-05-10/summary.json` (gitignored, regenerable)
+**Corpus:** `runs/v3/data_gen/2026-05-05T05-50-e9_v3_data_gen_100k_w12/2026-05-05T09-50-e9_v3_data_gen/worker0..11/`
 
 ## Goal
 

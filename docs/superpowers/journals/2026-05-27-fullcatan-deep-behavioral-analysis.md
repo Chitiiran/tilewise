@@ -3,7 +3,7 @@
 **Date:** 2026-05-27
 **Trigger:** The full-Catan tournament journal (`2026-05-27-full-catan-tournament-inversion.md`) showed Cell 6 winning 54% and Cell 5 v2 collapsing to 0.75% when bonuses are on, the exact reverse of v3-rules ranking. The headline implicated LR + LA bonuses but didn't quantify the mechanism. This journal walks every action of all 1200 games and extracts the per-cell behavioral profile.
 
-**Method:** `scratch_fullcatan_deep_analysis.py` — replays all 1200 games of `runs/v3/e10d_4gnn_fullcatan_1200_2026_05_27/2026-05-27T19-52-e10d_quad_gnn/` through the engine, tallying build counts, bonus state, trade activity, resource flow, port usage, and robber moves per role. Stratified by overall / in-wins / in-losses. Single replay pass, ~25 min compute. **0 replay failures across 1200 games.**
+**Method:** `scratch_fullcatan_deep_analysis.py` — replays all 1200 games of `runs/v3/tournaments/e10d_4gnn_fullcatan_1200_2026_05_27/2026-05-27T19-52-e10d_quad_gnn/` through the engine, tallying build counts, bonus state, trade activity, resource flow, port usage, and robber moves per role. Stratified by overall / in-wins / in-losses. Single replay pass, ~25 min compute. **0 replay failures across 1200 games.**
 
 Plots in `figures/`. All numbers below are from the 1200-game tournament with `vp_target=10, bonuses=True`.
 
@@ -306,7 +306,7 @@ Cell 0 vanilla has the same closeout failure (mean loss VP = 5.12) for a differe
 
 ## Cited artefacts
 
-- Source data: `runs/v3/e10d_4gnn_fullcatan_1200_2026_05_27/2026-05-27T19-52-e10d_quad_gnn/`
+- Source data: `runs/v3/tournaments/e10d_4gnn_fullcatan_1200_2026_05_27/2026-05-27T19-52-e10d_quad_gnn/`
 - Analysis script: `mcts_study/scratch_fullcatan_deep_analysis.py` (gitignored per `scratch_*` convention)
 - Plotting script: `mcts_study/scratch_fullcatan_plots.py` (gitignored)
 - Figures: `docs/superpowers/journals/figures/{bonus_holding,knights_vs_roads,game_length_dist,winrate_by_rules,resource_specialization,bonus_contribution_to_wins}.png`

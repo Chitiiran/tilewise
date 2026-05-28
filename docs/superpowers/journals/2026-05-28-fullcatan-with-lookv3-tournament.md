@@ -11,9 +11,9 @@ Wall-clock: ~55 min (faster than the no-LookV3 full-Catan tournament at ~130 min
 
 | Slot | Role | Checkpoint |
 |---|---|---|
-| A | PureGnn (Cell 6 stack) | `runs/v3/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
-| B | PureGnn (Cell 5 v2) | `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` |
-| C | PureGnn (Cell 1) | `runs/v3/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
+| A | PureGnn (Cell 6 stack) | `runs/v3/training/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
+| B | PureGnn (Cell 5 v2) | `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` |
+| C | PureGnn (Cell 1) | `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` |
 | D | LookaheadMctsV3 | depth=10, base_sims=200 (engine-driven) |
 
 Note: Cell 0 (vanilla) is intentionally not in this lineup since the prior full-Catan tournament showed it at 1.08% — adding it would just waste a slot. The interesting comparison is the three loss-aug cells against LookV3.
@@ -148,7 +148,7 @@ The "Cand 8 + Cand 10 dev-card-spam degenerate equilibrium" that we'd diagnosed 
 
 ## Cited artefacts
 
-- Tournament dir: `runs/v3/e10c_fullcatan_lookv3_1200_2026_05_28/2026-05-28T09-29-e10c_triple_gnn/`
+- Tournament dir: `runs/v3/tournaments/e10c_fullcatan_lookv3_1200_2026_05_28/2026-05-28T09-29-e10c_triple_gnn/`
 - Launch log: `launch.log`
 - Module: `mcts_study/catan_mcts/experiments/e10_triple_gnn.py`
 - Plot script: `mcts_study/scratch_rules_matrix_plot.py` (gitignored)

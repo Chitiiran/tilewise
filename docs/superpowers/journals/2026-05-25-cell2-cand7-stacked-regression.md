@@ -3,8 +3,8 @@
 **Date:** 2026-05-25
 **Plan:** `C:\Users\chiti\.claude\plans\let-s-read-for-context-humming-storm.md` (Cell 2)
 **Spec:** `docs/superpowers/specs/2026-05-09-loss-augmentation-design.md` (Candidate 7)
-**Cell 2 output:** `runs/v3/loss_aug/04_cand7_on_cand8_10/`
-**Cell 1 baseline (cumulative best):** `runs/v3/loss_aug/01_cand8_cand10_h128_l4/`
+**Cell 2 output:** `runs/v3/training/loss_aug/04_cand7_on_cand8_10/`
+**Cell 1 baseline (cumulative best):** `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/`
 **Commit:** `3b0eacc` (feat: Cand 7 — action-class-balanced policy CE)
 **Status:** KILLED at epoch 6 after ep5 mid-tournament showed strong regression.
 
@@ -119,9 +119,9 @@ Cell 2's ep5 result (4/120) is **9 games below** Cell 1's ep5 (13/120) — **11�
 - CLI flag: `mcts_study/scripts/train_grid_inproc.py::--class-balanced-policy` (commit 3b0eacc)
 - Unit tests: `mcts_study/tests/test_action_class_balanced.py` — 9 tests, all green
 - Smoke tests: `mcts_study/tests/test_cand7_stack.py` — 2 tests, all green
-- Cell 2 training output: `runs/v3/loss_aug/04_cand7_on_cand8_10/training_h128_l4/`
-- Cell 2 launch log: `runs/v3/loss_aug/04_cand7_on_cand8_10/cell2_launch.log`
-- Cell 2 ep5 tournament parquets: `runs/v3/loss_aug/04_cand7_on_cand8_10/training_h128_l4/mid_tournaments/2026-05-13T22-12-e10_v3_tournament/` (10 workers × 4 rotations)
+- Cell 2 training output: `runs/v3/training/loss_aug/04_cand7_on_cand8_10/training_h128_l4/`
+- Cell 2 launch log: `runs/v3/training/loss_aug/04_cand7_on_cand8_10/cell2_launch.log`
+- Cell 2 ep5 tournament parquets: `runs/v3/training/loss_aug/04_cand7_on_cand8_10/training_h128_l4/mid_tournaments/2026-05-13T22-12-e10_v3_tournament/` (10 workers × 4 rotations)
 - Prior journal for comparison: `docs/superpowers/journals/2026-05-12-cell0-cell1-baseline-vs-cand8_10.md`
 
 ## Reproduction
@@ -130,7 +130,7 @@ Cell 2's ep5 result (4/120) is **9 games below** Cell 1's ep5 (13/120) — **11�
 # Cell 2 launch (this regression):
 python scripts/train_grid_inproc.py \
   --cache-path ~/catan_cache/cache_100k.pt \
-  --out-root runs/v3/loss_aug/04_cand7_on_cand8_10 \
+  --out-root runs/v3/training/loss_aug/04_cand7_on_cand8_10 \
   --status-file runs/v3/dashboard/cell3.json \
   --epochs 15 --batch-size 256 --device auto \
   --rotate --rotate-mode random --cells h128_l4 --seed 0 \
@@ -143,7 +143,7 @@ Killed at 07:11 wall-clock with SIGTERM; PID 550. Cache load 2484 s. Per-epoch ~
 
 ## Side issue: Cand 1 alone (off-plan) also regressed
 
-Earlier in this work block, a Cand 1 alone run (`runs/v3/loss_aug/03_cand1_only_h128_l4/`) was launched with `--lambda-settle 0.20` and no Cand 8/10 stack. Trained ep1 + did ep1 mid-tournament (Phase A), then a chain-script was set up to resume to ep10 with ep5/ep10 tournaments. The chain script never fired — WSL was restarted before it triggered. After the restart, Phase B was relaunched directly (without the chain). It got to ep5 + did ep5 mid-tournament before being killed for this Cell 2 work.
+Earlier in this work block, a Cand 1 alone run (`runs/v3/training/loss_aug/03_cand1_only_h128_l4/`) was launched with `--lambda-settle 0.20` and no Cand 8/10 stack. Trained ep1 + did ep1 mid-tournament (Phase A), then a chain-script was set up to resume to ep10 with ep5/ep10 tournaments. The chain script never fired — WSL was restarted before it triggered. After the restart, Phase B was relaunched directly (without the chain). It got to ep5 + did ep5 mid-tournament before being killed for this Cell 2 work.
 
 Cand 1 alone results (also a regression vs Cell 1 baseline):
 

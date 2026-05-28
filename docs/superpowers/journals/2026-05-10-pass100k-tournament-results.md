@@ -115,12 +115,12 @@ PureGnn's 8 wins explains the bulk of the 8-win Lookahead deficit.
 
 ## Files cited
 
-- `runs/v3/grid_pass100k_tournament/h32_l2_lastepoch/2026-05-08T22-20-e10_v3_tournament/` (n=120)
-- `runs/v3/grid_pass100k_tournament/h32_l2_best/2026-05-09T02-10-e10_v3_tournament/` (n=120)
-- `runs/v3/grid_pass100k_lastepoch_tournament/h64_l3/2026-05-10T13-25-e10_v3_tournament/` (n=120)
-- `runs/v3/grid_pass100k_lastepoch_tournament/h128_l4/2026-05-10T14-33-e10_v3_tournament/` (n=120)
-- `runs/v3/grid_pass100k_best_tournament/h64_l3/2026-05-10T15-23-e10_v3_tournament/` (n=120)
-- `runs/v3/grid_pass100k_best_tournament/h128_l4/2026-05-10T16-00-e10_v3_tournament/` (n=120)
+- `runs/v3/tournaments/grid_pass100k_tournament/h32_l2_lastepoch/2026-05-08T22-20-e10_v3_tournament/` (n=120)
+- `runs/v3/tournaments/grid_pass100k_tournament/h32_l2_best/2026-05-09T02-10-e10_v3_tournament/` (n=120)
+- `runs/v3/tournaments/grid_pass100k_lastepoch_tournament/h64_l3/2026-05-10T13-25-e10_v3_tournament/` (n=120)
+- `runs/v3/tournaments/grid_pass100k_lastepoch_tournament/h128_l4/2026-05-10T14-33-e10_v3_tournament/` (n=120)
+- `runs/v3/tournaments/grid_pass100k_best_tournament/h64_l3/2026-05-10T15-23-e10_v3_tournament/` (n=120)
+- `runs/v3/tournaments/grid_pass100k_best_tournament/h128_l4/2026-05-10T16-00-e10_v3_tournament/` (n=120)
 - `scratch_partial_results.py` — aggregator with the bug fix for double-counting per-seed/per-rot shards
 - `runs/v3/dashboard/grid_pass100k.json` — primary dashboard JSON (Comparison tab reads this)
 - `runs/v3/dashboard/grid_pass100k_lastepoch.json` — separate file for LASTEPOCH-only view

@@ -11,9 +11,9 @@ This journal documents the direct head-to-head experiment that resolved that que
 
 | Slot | Role | Checkpoint | What it tests |
 |---|---|---|---|
-| A | PureGnn | `runs/v3/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt` | Cell 0 vanilla peak (ep5 = best mid-tournament epoch) |
-| B | PureGnn | `runs/v3/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` | Cell 1 Cand 8+10 plateau midpoint |
-| C | PureGnn | `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` | Cell 5 v2 Cand 11 peak |
+| A | PureGnn | `runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt` | Cell 0 vanilla peak (ep5 = best mid-tournament epoch) |
+| B | PureGnn | `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` | Cell 1 Cand 8+10 plateau midpoint |
+| C | PureGnn | `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` | Cell 5 v2 Cand 11 peak |
 | D | LookaheadMctsV3 | (no checkpoint — depth=10, base_sims=200) | Strong baseline |
 
 Common config: `vp_target=5, bonuses=False, hidden_dim=128, num_layers=4`, `seed_base=19_000_000` (matches all prior mid-tournaments for cross-comparison), `workers=10`, `device=cuda`, `max_seconds=600s` per game.
@@ -133,12 +133,12 @@ This means: Cand 11's policy at ep10 is genuinely the strongest GNN we've traine
 ## Cited artefacts
 
 - New experiment module: `mcts_study/catan_mcts/experiments/e10_triple_gnn.py` (commit `b170835`)
-- 120-game pilot: `runs/v3/e10c_4way_2026_05_26/2026-05-26T15-34-e10c_triple_gnn/`
-- 1,200-game confirmation: `runs/v3/e10c_4way_1200_2026_05_26/2026-05-26T15-59-e10c_triple_gnn/`
+- 120-game pilot: `runs/v3/tournaments/e10c_4way_2026_05_26/2026-05-26T15-34-e10c_triple_gnn/`
+- 1,200-game confirmation: `runs/v3/tournaments/e10c_4way_1200_2026_05_26/2026-05-26T15-59-e10c_triple_gnn/`
 - Checkpoints used:
-  - Cell 0 ep5: `runs/v3/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt`
-  - Cell 1 ep10: `runs/v3/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt`
-  - Cell 5 v2 ep10: `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt`
+  - Cell 0 ep5: `runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt`
+  - Cell 1 ep10: `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt`
+  - Cell 5 v2 ep10: `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt`
 - Cand 11 training journal: `docs/superpowers/journals/2026-05-25-cell5-road-pip-prior.md`
 - Cand 11 perf RCA: `docs/superpowers/journals/2026-05-25-cand11-perf-rca.md`
 - Cand 11 implementation plan: `docs/superpowers/plans/2026-05-25-road-pip-prior.md`

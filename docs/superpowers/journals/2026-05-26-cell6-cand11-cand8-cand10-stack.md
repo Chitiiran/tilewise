@@ -45,7 +45,7 @@ Cand 11 reaches the city-ready state 11× more often than Cell 1; Cell 1 convert
 ```bash
 python scripts/train_grid_inproc.py \
   --cache-path ~/catan_cache/cache_100k.pt \
-  --out-root runs/v3/loss_aug/06_cand11_cand8_cand10_h128_l4 \
+  --out-root runs/v3/training/loss_aug/06_cand11_cand8_cand10_h128_l4 \
   --status-file runs/v3/dashboard/cell6.json \
   --epochs 15 --batch-size 256 --device auto \
   --rotate --rotate-mode random --cells h128_l4 --seed 0 \
@@ -251,12 +251,12 @@ Three options not yet tested:
 
 ## Cited artefacts
 
-- Cell output: `runs/v3/loss_aug/06_cand11_cand8_cand10_h128_l4/`
+- Cell output: `runs/v3/training/loss_aug/06_cand11_cand8_cand10_h128_l4/`
 - Launch log: `cell6_launch.log`
 - All 15 checkpoints: `training_h128_l4/checkpoint_epoch{01..15}.pt`
 - Mid-tournament parquets: `training_h128_l4/mid_tournaments/2026-05-26T*/`
-- 1200-game head-to-head: `runs/v3/e10c_cell6_1200_2026_05_27/2026-05-27T16-33-e10c_triple_gnn/`
-- Cell 5 v2 head-to-head (cumulative best, 16.83%): `runs/v3/e10c_4way_1200_2026_05_26/2026-05-26T15-59-e10c_triple_gnn/`
+- 1200-game head-to-head: `runs/v3/tournaments/e10c_cell6_1200_2026_05_27/2026-05-27T16-33-e10c_triple_gnn/`
+- Cell 5 v2 head-to-head (cumulative best, 16.83%): `runs/v3/tournaments/e10c_4way_1200_2026_05_26/2026-05-26T15-59-e10c_triple_gnn/`
 - Smoke test: `mcts_study/tests/test_cell6_smoke.py` (commit `f905930`)
 - Pre-launch GPU timing: `mcts_study/scratch_cell6_timing.py` (gitignored;
   showed 1.06× vanilla)

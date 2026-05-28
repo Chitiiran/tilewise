@@ -9,10 +9,10 @@
 
 | Slot | Role | Checkpoint |
 |---|---|---|
-| A | PureGnn | `runs/v3/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt` (Cell 0 vanilla peak) |
-| B | PureGnn | `runs/v3/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` (Cell 1 Cand 8+10) |
-| C | PureGnn | `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` (Cell 5 v2 Cand 11) |
-| D | PureGnn | `runs/v3/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` (Cell 6 stack) |
+| A | PureGnn | `runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt` (Cell 0 vanilla peak) |
+| B | PureGnn | `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` (Cell 1 Cand 8+10) |
+| C | PureGnn | `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt` (Cell 5 v2 Cand 11) |
+| D | PureGnn | `runs/v3/training/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt` (Cell 6 stack) |
 
 Common config: `vp_target=5, bonuses=False, hidden_dim=128, num_layers=4`, `seed_base=19_000_000`, `workers=10`, `device=cuda`, `max_seconds=600s` per game, 300 games × 4 rotations = **1,200 games**.
 
@@ -124,13 +124,13 @@ Cell 5 v2 dominates rot=0 (103/300) and rot=3 (99/300) — first-seat and last-s
 ## Cited artefacts
 
 - New module: `mcts_study/catan_mcts/experiments/e10_quad_gnn.py` (commit `5d22713`)
-- Tournament dir: `runs/v3/e10d_4gnn_1200_2026_05_27/2026-05-27T17-08-e10d_quad_gnn/`
+- Tournament dir: `runs/v3/tournaments/e10d_4gnn_1200_2026_05_27/2026-05-27T17-08-e10d_quad_gnn/`
 - Launch log: `launch.log`
 - Checkpoints used (all ep10 except Cell 0 which used ep5):
-  - Cell 0: `runs/v3/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt`
-  - Cell 1: `runs/v3/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt`
-  - Cell 5 v2: `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt`
-  - Cell 6: `runs/v3/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt`
+  - Cell 0: `runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/training_h128_l4/checkpoint_epoch05.pt`
+  - Cell 1: `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt`
+  - Cell 5 v2: `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/training_h128_l4/checkpoint_epoch10.pt`
+  - Cell 6: `runs/v3/training/loss_aug/06_cand11_cand8_cand10_h128_l4/training_h128_l4/checkpoint_epoch10.pt`
 - Companion journals:
   - `2026-05-26-cand11-headtohead-tournament.md` (Cell 5 v2 head-to-head, 16.83%)
   - `2026-05-26-cell6-cand11-cand8-cand10-stack.md` (Cell 6 head-to-head, 8.92%)

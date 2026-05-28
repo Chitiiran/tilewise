@@ -47,7 +47,7 @@ python -m catan_gnn.train --run-dirs runs/v3/2026-05-02T12-08-e9_v3_data_gen \
   --rotate --rotate-mode random --cache-path runs/v3/cache_validation.pt
 ```
 
-**Output:** `runs/v3/training_validation/checkpoint_best.pt` (epoch 2)
+**Output:** `runs/v3/training/training_validation/checkpoint_best.pt` (epoch 2)
 
 | Epoch | train_loss | val_loss | val_top1 |
 |---|---|---|---|
@@ -73,7 +73,7 @@ of positions is too small for the model to beat lookahead.
 
 ```
 python -m catan_mcts run e10 --out-root runs/v3 \
-  --checkpoint runs/v3/training_validation/checkpoint_best.pt \
+  --checkpoint runs/v3/training/training_validation/checkpoint_best.pt \
   --num-games-per-seating 5 --sims 100 --lookahead-depth 10 --base-sims-v3 200 \
   --workers 4 --device auto
 ```

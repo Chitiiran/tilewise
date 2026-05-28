@@ -2,8 +2,8 @@
 
 **Date:** 2026-05-12
 **Plan:** `C:\Users\chiti\.claude\plans\let-s-read-for-context-humming-storm.md`
-**Cell 0 output:** `runs/v3/loss_aug/00_baseline_h128_l4_pilot/`
-**Cell 1 output:** `runs/v3/loss_aug/01_cand8_cand10_h128_l4/`
+**Cell 0 output:** `runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/`
+**Cell 1 output:** `runs/v3/training/loss_aug/01_cand8_cand10_h128_l4/`
 
 ## Headline
 
@@ -141,7 +141,7 @@ So **±1 game out of 120** is the FP-non-determinism noise band. The Cell 1 ep10
 # Cell 0 (vanilla baseline)
 python scripts/train_grid_inproc.py \
   --cache-path ~/catan_cache/cache_100k.pt \
-  --out-root runs/v3/loss_aug/00_baseline_h128_l4_pilot \
+  --out-root runs/v3/training/loss_aug/00_baseline_h128_l4_pilot \
   --status-file runs/v3/dashboard/cell0.json \
   --epochs 10 --batch-size 256 --device auto \
   --rotate --rotate-mode random --cells h128_l4 --seed 0 \
@@ -150,7 +150,7 @@ python scripts/train_grid_inproc.py \
 # Cell 1 (Cand 8 + Cand 10)
 python scripts/train_grid_inproc.py \
   --cache-path ~/catan_cache/cache_100k.pt \
-  --out-root runs/v3/loss_aug/01_cand8_cand10_h128_l4 \
+  --out-root runs/v3/training/loss_aug/01_cand8_cand10_h128_l4 \
   --status-file runs/v3/dashboard/cell1.json \
   --epochs 15 --batch-size 256 --device auto \
   --rotate --rotate-mode random --cells h128_l4 --seed 0 \

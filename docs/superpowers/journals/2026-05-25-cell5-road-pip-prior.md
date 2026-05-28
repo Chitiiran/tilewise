@@ -4,8 +4,8 @@
 **Plan:** `docs/superpowers/plans/2026-05-25-road-pip-prior.md`
 **Spec sections:** Mathematical Specification (locked); Layer-1 KL, Gate A, λ_road=0.05.
 **Status:** COMPLETED — v2 ran 18h50m, all 15 epochs + 3 mid-tournaments; auto-stopped at ep15 via mid_tournament_drop_threshold rule (PureGnn 13→7 between ep10 and ep15)
-**Cell output (planned):** `runs/v3/loss_aug/05_cand_road_pip_h128_l4/`
-**Baseline for comparison:** Cell 0 vanilla (`runs/v3/loss_aug/00_baseline_h128_l4_pilot/`)
+**Cell output (planned):** `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4/`
+**Baseline for comparison:** Cell 0 vanilla (`runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/`)
 
 ## Setup
 
@@ -96,13 +96,13 @@ PID 569, detached. Launch command:
 ```bash
 nohup python scripts/train_grid_inproc.py \
   --cache-path ~/catan_cache/cache_100k.pt \
-  --out-root runs/v3/loss_aug/05_cand_road_pip_h128_l4 \
+  --out-root runs/v3/training/loss_aug/05_cand_road_pip_h128_l4 \
   --status-file runs/v3/dashboard/cell5.json \
   --epochs 15 --batch-size 256 --device auto \
   --rotate --rotate-mode random --cells h128_l4 --seed 0 \
   --mid-tournament-every 5 \
   --lambda-road 0.05 \
-  > runs/v3/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log 2>&1 &
+  > runs/v3/training/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log 2>&1 &
 ```
 
 Expected timeline (per Cell 1 wall-clock 19.3h):
@@ -140,7 +140,7 @@ Post-fix measured GPU per-batch (e1 fixture, B=256, real h128_l4 GNN):
 
 ## v2 launch (2026-05-25 15:56 UTC)
 
-PID 584, detached. Output dir `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/`
+PID 584, detached. Output dir `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/`
 (v1 dir preserved as evidence). Same launch command as v1 except output
 paths suffixed `_v2`.
 
@@ -355,8 +355,8 @@ argmax form, which is a different mechanism than Cand 8+10's effect.
 
 ## Cited artefacts
 
-- Cell output: `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/`
-- Launch log: `runs/v3/loss_aug/05_cand_road_pip_h128_l4_v2/cell5_v2_launch.log`
+- Cell output: `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/`
+- Launch log: `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4_v2/cell5_v2_launch.log`
 - Checkpoints: `training_h128_l4/checkpoint_epoch{01..15}.pt` (all saved)
 - Mid-tournament parquets: `training_h128_l4/mid_tournaments/2026-05-26T{01-53,07-57,13-56}-e10_v3_tournament/`
 - Code commits (v3 branch): `fe72f4e` (batched impl), `699aa8a` (equivalence test), `5e311eb` (observability), `824bdfd` (launch)

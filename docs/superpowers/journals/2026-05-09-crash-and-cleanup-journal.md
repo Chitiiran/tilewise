@@ -107,8 +107,8 @@ Project tree (`runs/v3/`):
 What's preserved:
 - `~/catan_cache/cache_100k*.pt` — active training cache (30 GB).
   /mnt/d/catan_v3_cache/ remains as backup copy (29 GB, untouched).
-- `runs/v3/grid_pass100k/training_*/` — all training checkpoints
-- `runs/v3/2026-05-05T05-50-e9_v3_data_gen_100k_w12/` — source data
+- `runs/v3/training/grid_pass100k/training_*/` — all training checkpoints
+- `runs/v3/data_gen/2026-05-05T05-50-e9_v3_data_gen_100k_w12/` — source data
   behind cache_100k.pt (cache rebuild target)
 - All `grid_pass3*` and `grid_full20/training_*` checkpoint dirs
 

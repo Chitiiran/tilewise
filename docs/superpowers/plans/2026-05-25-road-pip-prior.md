@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10, PyTorch, PyG HeteroData (already in use). No engine changes, no cache rebuild, no schema changes.
 
-**Naming:** Candidate is "Cand 11" in continuation of the existing Cand 1/2/3/7/8/10 numbering. Cell label is "Cell 5" (continues 00..04 under `runs/v3/loss_aug/`).
+**Naming:** Candidate is "Cand 11" in continuation of the existing Cand 1/2/3/7/8/10 numbering. Cell label is "Cell 5" (continues 00..04 under `runs/v3/training/loss_aug/`).
 
 **Decisions locked in chat 2026-05-25:**
 - Pure pip scoring; no port multiplier, no resource diversity, no resource-sufficiency check.
@@ -1263,7 +1263,7 @@ def toy_run_dir(tmp_path: Path) -> Path:
     candidates = [
         Path("runs/v3/smoke_5_games"),
         # Cited from existing journals: 100k data-gen worker dirs each have moves.parquet
-        Path("runs/v3/2026-05-05T05-50-e9_v3_data_gen_100k_w12/worker0"),
+        Path("runs/v3/data_gen/2026-05-05T05-50-e9_v3_data_gen_100k_w12/worker0"),
     ]
     for c in candidates:
         if c.exists():
@@ -1376,16 +1376,16 @@ wsl -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && \
   cd /mnt/c/dojo/catan_bot/.claude/worktrees/v3/mcts_study && \
   nohup python scripts/train_grid_inproc.py \
     --cache-path ~/catan_cache/cache_100k.pt \
-    --out-root runs/v3/loss_aug/05_cand_road_pip_h128_l4 \
+    --out-root runs/v3/training/loss_aug/05_cand_road_pip_h128_l4 \
     --status-file runs/v3/dashboard/cell5.json \
     --epochs 15 --batch-size 256 --device auto \
     --rotate --rotate-mode random --cells h128_l4 --seed 0 \
     --mid-tournament-every 5 \
     --lambda-road 0.05 \
-    > runs/v3/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log 2>&1 &"
+    > runs/v3/training/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log 2>&1 &"
 ```
 
-- [ ] Expected: process PID printed. The launch log path is `runs/v3/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log`. Note the PID; per memory `feedback_dont_kill_authorized_runs.md`, do NOT kill this run on "better idea" reasoning — only kill per the ep5 rule below.
+- [ ] Expected: process PID printed. The launch log path is `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4/cell5_launch.log`. Note the PID; per memory `feedback_dont_kill_authorized_runs.md`, do NOT kill this run on "better idea" reasoning — only kill per the ep5 rule below.
 
 ### Step 9.4 — Record the launch in the journal stub
 
@@ -1409,8 +1409,8 @@ wsl -- bash -lc "source ~/catan_mcts_venvs/mcts-study/bin/activate && \
 **Plan:** `docs/superpowers/plans/2026-05-25-road-pip-prior.md`
 **Spec sections:** Mathematical Specification (locked); Layer-1 KL, Gate A, λ_road=0.05.
 **Status:** RUNNING / KILLED / COMPLETED (update as appropriate)
-**Cell output:** `runs/v3/loss_aug/05_cand_road_pip_h128_l4/`
-**Baseline for comparison:** Cell 0 vanilla (`runs/v3/loss_aug/00_baseline_h128_l4_pilot/`)
+**Cell output:** `runs/v3/training/loss_aug/05_cand_road_pip_h128_l4/`
+**Baseline for comparison:** Cell 0 vanilla (`runs/v3/training/loss_aug/00_baseline_h128_l4_pilot/`)
 
 ## Setup
 
@@ -1485,7 +1485,7 @@ git commit -m "docs(cell5): journal stub for Cand 11 launch"
 - [ ] Wait for the ep5 mid-tournament to finish (~5h after launch per Cell 1 timing). Check:
 
 ```bash
-ls /mnt/c/dojo/catan_bot/.claude/worktrees/v3/mcts_study/runs/v3/loss_aug/05_cand_road_pip_h128_l4/training_h128_l4/mid_tournaments/
+ls /mnt/c/dojo/catan_bot/.claude/worktrees/v3/mcts_study/runs/v3/training/loss_aug/05_cand_road_pip_h128_l4/training_h128_l4/mid_tournaments/
 ```
 
 - [ ] Expected: a directory like `2026-05-XXT*-e10_v3_tournament/` with 10 worker subdirs.

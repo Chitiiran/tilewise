@@ -81,8 +81,8 @@ A custom 4-player tournament substituting the GnnMcts seat with a **second PureG
 
 ```
 python -m catan_mcts run e10b --out-root runs/v3 \
-  --checkpoint-a runs/v3/training_10k/checkpoint_epoch10.pt \
-  --checkpoint-b runs/v3/training_d500/checkpoint_best.pt \
+  --checkpoint-a runs/v3/training/training_10k/checkpoint_epoch10.pt \
+  --checkpoint-b runs/v3/training/training_d500/checkpoint_best.pt \
   --label-a "PureGnn-10k-ep10" --label-b "PureGnn-d500" \
   --num-games-per-seating 12 --lookahead-depth 10 --base-sims-v3 200 \
   --seed-base 17000000 --workers 4 --device auto
