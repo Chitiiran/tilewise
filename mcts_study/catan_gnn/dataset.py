@@ -197,6 +197,7 @@ class CachedDataset(Dataset):
         verbose: bool = True,
         chunk_size: int = 500_000,
         sparse: bool = True,
+        eager_load: bool = True,
     ) -> None:
         self._items: list[dict] = []
         # When True, items don't carry h2v_ei/v2h_ei/v2e_ei/e2v_ei; __getitem__
@@ -317,8 +318,11 @@ class CachedDataset(Dataset):
                 print(f"[CachedDataset] wrote {fmt_str} manifest to {cache_path} "
                       f"({len(chunk_paths)} chunks, {total} items)", flush=True)
             # Eager-load chunks back into one list so __getitem__ works in the
-            # same process. Each chunk is small enough not to spike memory.
-            self._load_chunks(chunk_paths, verbose=verbose)
+            # same process. Skip when eager_load=False (build-and-exit flow:
+            # the build script doesn't need a usable dataset, just files on
+            # disk). Skipping avoids a memory spike that has crashed WSL.
+            if eager_load:
+                self._load_chunks(chunk_paths, verbose=verbose)
         elif cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             # Monolithic save also tags sparse vs dense.

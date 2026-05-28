@@ -33,6 +33,10 @@ def main() -> int:
                    help="Flush a chunk every N positions (default 500k). Lower "
                         "values reduce peak RAM during build at the cost of more "
                         "small files. 0 disables chunking (monolithic save).")
+    p.add_argument("--dense", action="store_true",
+                   help="Build a legacy dense cache (per-sample edge_index). "
+                        "Default is sparse (~5x smaller, edge_index shared "
+                        "globally; see dataset.py:CachedDataset).")
     args = p.parse_args()
 
     if args.cache_path.exists() and not args.force:
@@ -52,7 +56,10 @@ def main() -> int:
     print(f"Building cache + saving to {args.cache_path} (chunk_size={args.chunk_size})...", flush=True)
     args.cache_path.parent.mkdir(parents=True, exist_ok=True)
     chunk_size = args.chunk_size if args.chunk_size > 0 else 10**12  # effectively disabled
-    cached = CachedDataset(source=source, cache_path=args.cache_path, chunk_size=chunk_size)
+    sparse = not args.dense
+    print(f"  format: {'sparse' if sparse else 'dense'}", flush=True)
+    cached = CachedDataset(source=source, cache_path=args.cache_path,
+                           chunk_size=chunk_size, sparse=sparse)
     t2 = time.perf_counter()
     print(f"  → {len(cached)} cached samples saved in {t2 - t1:.1f}s", flush=True)
     print(f"  total: {t2 - t0:.1f}s", flush=True)

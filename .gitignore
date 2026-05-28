@@ -44,3 +44,8 @@ replays/
 # Disposable status/analysis helpers used during interactive sessions
 scratch_*.sh
 scratch_*.py
+
+# Underscore-prefixed dirs/files = parking / archive (not for tracking)
+mcts_study/scripts/_archive/
+mcts_study/scripts/_*.py
+mcts_study/scripts/_*.sh

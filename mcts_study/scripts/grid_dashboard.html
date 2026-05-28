@@ -1080,11 +1080,12 @@ async function refresh() {
 // reusing the refresh() trigger (gets called whenever any source updates).
 async function refreshComparison() {
   const sources = [
-    {key: 'pass1',     file: 'grid_dashboard.json',           label: 'Pass 1', games: 48,  note: 'patience=3 early-stop · per-cell seeds'},
-    {key: 'pass2',     file: 'grid_full20.json',              label: 'Pass 2', games: 48,  note: 'full 20-epoch resume · per-cell seeds'},
-    {key: 'pass3',     file: 'grid_pass3.json',               label: 'Pass 3', games: 120, note: 'best.pt · shared seed_base=19M'},
-    {key: 'lastepoch', file: 'grid_pass3_lastepoch.json',     label: 'Last-epoch', games: 120, note: 'epoch20.pt · shared seed_base=19M'},
-    {key: 'pass100k',  file: 'grid_pass100k.json',             label: 'Pass-100k',  games: 120, note: '10× corpus · shared seed_base=19M'},
+    {key: 'pass1',          file: 'grid_dashboard.json',         label: 'Pass 1',           games: 48,  note: 'patience=3 early-stop · per-cell seeds'},
+    {key: 'pass2',          file: 'grid_full20.json',            label: 'Pass 2',           games: 48,  note: 'full 20-epoch resume · per-cell seeds'},
+    {key: 'pass3',          file: 'grid_pass3.json',             label: 'Pass 3',           games: 120, note: 'best.pt · shared seed_base=19M'},
+    {key: 'lastepoch',      file: 'grid_pass3_lastepoch.json',   label: 'Last-epoch',       games: 120, note: 'epoch20.pt · shared seed_base=19M'},
+    {key: 'pass100k_best',  file: 'grid_pass100k_best.json',     label: 'Pass-100k BEST',   games: 120, note: '10× corpus best.pt · shared seed_base=19M'},
+    {key: 'pass100k_last',  file: 'grid_pass100k_lastepoch.json', label: 'Pass-100k LAST',  games: 120, note: '10× corpus lastepoch.pt · shared seed_base=19M'},
   ];
   const blobs = {};
   for (const s of sources) {
