@@ -44,3 +44,7 @@ replays/
 # Disposable status/analysis helpers used during interactive sessions
 scratch_*.sh
 scratch_*.py
+
+# Claude Code worktree + scheduled tasks state (per-machine, not source)
+.claude/
+.superpowers/
