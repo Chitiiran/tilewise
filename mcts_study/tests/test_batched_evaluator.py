@@ -77,3 +77,31 @@ async def test_all_parked_flushes_immediately():
         assert len(results) == 3
     finally:
         await ev.stop()
+
+
+async def test_eval_leaf_helper_skips_model_for_terminal():
+    import random
+    # eval_leaf() returns state.returns() for terminals WITHOUT enqueuing a GPU request.
+    ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                             max_batch=8, window_ms=5)
+    ev.start()
+    try:
+        game = CatanGame(vp_target=10, bonuses=True)
+        # Drive a game to terminal with a seeded random policy (always-first loops forever).
+        rng = random.Random(7)
+        state = game.new_initial_state(seed=7)
+        steps = 0
+        while not state.is_terminal() and steps < 200000:
+            if state.is_chance_node():
+                state.apply_action(int(state.chance_outcomes()[0][0]))
+            else:
+                state.apply_action(int(rng.choice(state.legal_actions())))
+            steps += 1
+        assert state.is_terminal(), f"game did not terminate after {steps} steps"
+        before = ev.total_requests
+        value, priors = await ev.eval_leaf(state)
+        assert ev.total_requests == before  # no GPU request enqueued
+        assert priors is None
+        assert list(value) == state.returns()
+    finally:
+        await ev.stop()

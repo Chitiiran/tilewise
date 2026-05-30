@@ -53,11 +53,40 @@ class BatchedGnnEvaluator:
 
     @torch.no_grad()
     def _run_forward(self, features_list):
-        batch = Batch.from_data_list(features_list).to(self.device)
-        v, logits = self.model(batch)
-        v_np = v.cpu().numpy().astype(np.float32)
-        l_np = logits.cpu().numpy().astype(np.float32)
-        return v_np, l_np
+        try:
+            batch = Batch.from_data_list(features_list).to(self.device)
+            v, logits = self.model(batch)
+            return (v.cpu().numpy().astype(np.float32),
+                    logits.cpu().numpy().astype(np.float32))
+        except RuntimeError as e:
+            if "out of memory" not in str(e).lower() or len(features_list) <= 1:
+                raise
+            # Halve and retry once (recurse on each half).
+            torch.cuda.empty_cache()
+            half = len(features_list) // 2
+            v1, l1 = self._run_forward(features_list[:half])
+            v2, l2 = self._run_forward(features_list[half:])
+            return np.concatenate([v1, v2]), np.concatenate([l1, l2])
+
+    async def eval_leaf(self, state):
+        """MCTS-facing leaf evaluation.
+
+        Returns (value: np.ndarray[4], priors: list[(action,prob)] | None).
+        - terminal  -> (state.returns(), None), no GPU
+        - otherwise -> (value_head, policy-over-legal), via the batched model
+        Chance nodes are handled by AsyncMcts itself (it expands outcomes), so
+        eval_leaf is never called on a chance node.
+        """
+        if state.is_terminal():
+            return np.asarray(state.returns(), dtype=np.float32), None
+        value, logits = await self.eval(state)
+        legal = state.legal_actions()
+        if not legal:
+            return value, []
+        legal_arr = np.asarray(legal, dtype=np.int64)
+        probs = _softmax(logits[legal_arr])
+        priors = [(int(a), float(p)) for a, p in zip(legal, probs)]
+        return value, priors
 
     async def eval(self, state) -> tuple[np.ndarray, np.ndarray]:
         # Features built on the caller side (cheap, CPU).
