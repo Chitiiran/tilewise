@@ -40,3 +40,21 @@ def test_resume_skips_done_seeds(tmp_path):
                    ignore_index=True)
     assert df["seed"].nunique() == 4
     assert len(df) == 4
+
+
+def test_mean_batch_size_reported(tmp_path, capsys):
+    ckpt = _save_ckpt(tmp_path)
+    run_self_play(out_root=tmp_path / "runs", checkpoint=ckpt, num_games=8,
+                  n_sims=4, n_concurrent=8, hidden_dim=8, num_layers=2,
+                  vp_target=10, bonuses=True, device="cpu", max_batch=8,
+                  window_ms=5, seed_base=5_200_000)
+    assert "mean_batch" in capsys.readouterr().out
+
+
+def test_memory_budget_caps_concurrency(tmp_path, capsys):
+    ckpt = _save_ckpt(tmp_path)
+    run_self_play(out_root=tmp_path / "runs", checkpoint=ckpt, num_games=4,
+                  n_sims=4, n_concurrent=1000, hidden_dim=8, num_layers=2,
+                  vp_target=10, bonuses=True, device="cpu", max_batch=8,
+                  window_ms=5, seed_base=5_300_000, ram_budget_mb=64)
+    assert "concurrency capped" in capsys.readouterr().out.lower()

@@ -68,6 +68,10 @@ class BatchedGnnEvaluator:
             v2, l2 = self._run_forward(features_list[half:])
             return np.concatenate([v1, v2]), np.concatenate([l1, l2])
 
+    def mean_batch_size(self) -> float:
+        """Mean requests per forward pass — the headline batching health metric."""
+        return (self.total_requests / self.total_batches) if self.total_batches else 0.0
+
     async def eval_leaf(self, state):
         """MCTS-facing leaf evaluation.
 

@@ -95,9 +95,8 @@ async def _run_async(*, out, checkpoint, num_games, n_sims, n_concurrent,
     completed = len(seeds) - len(failures)
     if failures:
         print(f"[self_play] WARNING: {len(failures)}/{len(seeds)} games failed")
-    mean_batch = evaluator.total_requests / max(evaluator.total_batches, 1)
     print(f"[self_play] done: {completed}/{len(seeds)} games completed, "
-          f"mean_batch={mean_batch:.1f}, "
+          f"mean_batch={evaluator.mean_batch_size():.1f}, "
           f"total_batches={evaluator.total_batches}")
     await evaluator.stop()
     # Use a labeled checkpoint (config_id prefix) so multiple resume-runs into
