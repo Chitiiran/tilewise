@@ -10,6 +10,8 @@ argmax-visit final move. See spec 2026-05-30-batched-gnn-evaluator.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
+
 import numpy as np
 
 from catan_mcts import ACTION_SPACE_SIZE
@@ -114,9 +116,6 @@ class AsyncMcts:
         return int(np.argmax(visit_counts))
 
 
-from dataclasses import dataclass, field
-
-
 @dataclass
 class RecordedMove:
     current_player: int
@@ -132,14 +131,14 @@ class GameResult:
     seed: int
     terminal: bool
     winner: int
-    final_vp: list
+    final_vp: list[int]
     length_in_moves: int
-    action_history: list
-    moves: list = field(default_factory=list)
+    action_history: list[int]
+    moves: list = field(default_factory=list)  # list[RecordedMove]
 
 
 async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
-                              rng, max_steps: int = 200000):
+                              rng, max_steps: int = 200_000):  # ~20x observed game length; timeout guard
     state = game.new_initial_state(seed=seed)
     mcts = AsyncMcts(evaluator=evaluator, c=1.4, rng=rng)
     moves: list = []
@@ -184,8 +183,11 @@ async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
     try:
         stats = state._engine.stats()
         final_vp = [int(stats["players"][i]["vp_final"]) for i in range(4)]
-    except Exception:
-        pass
+    except Exception as exc:
+        import warnings
+        warnings.warn(f"stats() vp_final unavailable for seed={seed}: {exc}; "
+                      f"final_vp will be zeros", stacklevel=2)
     return GameResult(seed=seed, terminal=terminal, winner=winner,
-                      final_vp=final_vp, length_in_moves=steps,
+                      final_vp=final_vp,
+                      length_in_moves=steps,  # total engine steps (incl. chance/forced) — matches recorder schema
                       action_history=state.history(), moves=moves)
