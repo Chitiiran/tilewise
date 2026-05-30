@@ -34,6 +34,7 @@ class AsyncMcts:
         self.ev = evaluator
         self.c = float(c)
         self.rng = rng if rng is not None else np.random.default_rng(0)
+        self.last_root_value = 0.0
 
     def _ucb_score(self, parent: "Node", child: "Node") -> float:
         q = (child.value_sum / child.visit_count) if child.visit_count else 0.0
@@ -103,6 +104,7 @@ class AsyncMcts:
                 path.append(node)
             value_vec = await self._expand_and_evaluate(node)
             self._backup(path, value_vec)
+        self.last_root_value = (root.value_sum / root.visit_count) if root.visit_count else 0.0
         out = np.zeros(ACTION_SPACE_SIZE, dtype=np.int32)
         for a, child in root.children.items():
             out[a] = child.visit_count
@@ -168,7 +170,7 @@ async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
         moves.append(RecordedMove(
             current_player=int(state.current_player()), move_index=move_index,
             legal_mask=legal_mask, visit_counts=visit_counts,
-            action_taken=int(action), root_value=0.0))
+            action_taken=int(action), root_value=float(mcts.last_root_value)))
         state.apply_action(int(action))
         move_index += 1
         steps += 1
@@ -181,7 +183,7 @@ async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
     final_vp = [0, 0, 0, 0]
     try:
         stats = state._engine.stats()
-        final_vp = [int(x) for x in stats.get("final_vp", final_vp)]
+        final_vp = [int(stats["players"][i]["vp_final"]) for i in range(4)]
     except Exception:
         pass
     return GameResult(seed=seed, terminal=terminal, winner=winner,

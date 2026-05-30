@@ -81,5 +81,11 @@ async def test_play_full_game_terminates_and_records():
         m = result.moves[0]
         assert m.visit_counts.shape == (ACTION_SPACE_SIZE,)
         assert m.legal_mask.shape == (ACTION_SPACE_SIZE,)
+        # final_vp must populate for a finished game (not stay [0,0,0,0]).
+        assert len(result.final_vp) == 4
+        assert sum(result.final_vp) > 0, f"final_vp not populated: {result.final_vp}"
+        # the winner should have the most VP (>= vp_target if a real win)
+        if result.winner >= 0:
+            assert result.final_vp[result.winner] == max(result.final_vp)
     finally:
         await ev.stop()
