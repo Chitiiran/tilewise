@@ -53,16 +53,38 @@ _GAME_INFO = pyspiel.GameInfo(
 
 
 class CatanGame(pyspiel.Game):
-    """OpenSpiel-registered Catan game."""
+    """OpenSpiel-registered Catan game.
 
-    def __init__(self, params=None):
+    Defaults to v2 rules (vp_target=10, bonuses=True). Pass `vp_target=5,
+    bonuses=False` to construct a v3 game without rebuilding the engine.
+    The two extra params travel with serialized states so distributed
+    workers don't silently fall back to v2 on deserialize.
+    """
+
+    def __init__(self, params=None, vp_target: int = 10, bonuses: bool = True):
         params = params or {}
         super().__init__(_GAME_TYPE, _GAME_INFO, params)
         self._default_seed = int(params.get("seed", 0))
+        self._vp_target = int(vp_target)
+        self._bonuses = bool(bonuses)
+
+    @property
+    def vp_target(self) -> int:
+        return self._vp_target
+
+    @property
+    def bonuses(self) -> bool:
+        return self._bonuses
+
+    def _build_engine(self, seed: int):
+        # v2 default → cheaper Engine(seed) constructor; v3 → with_rules.
+        if self._vp_target == 10 and self._bonuses:
+            return _engine.Engine(seed)
+        return _engine.Engine.with_rules(seed, self._vp_target, self._bonuses)
 
     def new_initial_state(self, seed: int | None = None) -> "CatanState":
         s = self._default_seed if seed is None else int(seed)
-        return CatanState(self, _engine.Engine(s), initial_seed=s)
+        return CatanState(self, self._build_engine(s), initial_seed=s)
 
     def make_py_observer(self, iig_obs_type=None, params=None):
         # We don't expose observation tensors yet — MCTS doesn't need them.
@@ -73,16 +95,24 @@ class CatanGame(pyspiel.Game):
         data = json.loads(blob)
         seed = int(data["seed"])
         history = [int(x) for x in data["history"]]
-        engine = _engine.Engine(seed)
+        # Round-trip the v3 flags. Older (pre-v3) blobs lack these keys; fall
+        # back to v2 defaults so legacy serialized states still load.
+        vp_target = int(data.get("vp_target", 10))
+        bonuses = bool(data.get("bonuses", True))
+        if vp_target == 10 and bonuses:
+            engine = _engine.Engine(seed)
+        else:
+            engine = _engine.Engine.with_rules(seed, vp_target, bonuses)
         CHANCE_FLAG = 0x80000000
         for action_id in history:
             if action_id & CHANCE_FLAG:
                 engine.apply_chance_outcome(action_id & ~CHANCE_FLAG)
             else:
                 engine.step(action_id)
-        # Rebuild a state attached to a fresh game instance — callers using the
-        # static method don't have a CatanGame handy and that's fine for MCTS.
-        return CatanState(CatanGame(), engine, initial_seed=seed)
+        # Rebuild on a fresh game instance carrying the same flags so
+        # subsequent new_initial_state() calls keep behavior consistent.
+        game = CatanGame(vp_target=vp_target, bonuses=bonuses)
+        return CatanState(game, engine, initial_seed=seed)
 
 
 class CatanState(pyspiel.State):
@@ -165,7 +195,12 @@ class CatanState(pyspiel.State):
         return [int(x) for x in self._engine.action_history()]
 
     def serialize(self) -> str:
-        return json.dumps({"seed": self._initial_seed, "history": self.history()})
+        return json.dumps({
+            "seed": self._initial_seed,
+            "history": self.history(),
+            "vp_target": int(self._engine.vp_target()),
+            "bonuses": bool(self._engine.bonuses_enabled()),
+        })
 
 
 # Register the game with the OpenSpiel library so `pyspiel.load_game("catan_v1")`

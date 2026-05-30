@@ -211,6 +211,18 @@ pub struct GameState {
     /// where each state mutation flips only the affected bits directly.
     pub legal_mask_cached: crate::actions::LegalMask,
     pub legal_mask_dirty: bool,
+
+    // ---- v3 rule flags ----
+    /// VP threshold that ends the game. v2 default = WIN_VP = 10. v3 sets this
+    /// to 5 to make games shorter and the reward signal denser per game.
+    /// Immutable for the lifetime of the engine.
+    pub vp_target: u8,
+    /// When true, longest-road and largest-army each grant +2 transferable VP
+    /// (full Catan). When false, the holders are still tracked (length, who,
+    /// knights) but no VP is awarded — used by v3 training to remove a noisy
+    /// reward channel without hiding the GNN's observation features. Immutable
+    /// for the lifetime of the engine.
+    pub bonuses_enabled: bool,
 }
 
 pub const N_DEV_CARDS: usize = 5;
@@ -307,6 +319,8 @@ impl GameState {
             trades_this_turn: 0,
             legal_mask_cached: crate::actions::LegalMask::new(),
             legal_mask_dirty: true,
+            vp_target: WIN_VP,
+            bonuses_enabled: true,
         }
     }
 

@@ -91,6 +91,48 @@ def _collate(batch):
     )
 
 
+def class_balanced_target(target: torch.Tensor, legal: torch.Tensor) -> torch.Tensor:
+    """Cand 7: rebalance per-sample policy target so each action_class
+    contributes the same gradient share regardless of how many action_ids
+    it occupies.
+
+    For each sample s and each legal action a:
+        adjusted[s, a] = target[s, a] / class_count[s, class_of(a)]
+    where class_count[s, c] = number of legal action_ids in class c for sample s.
+    Then renormalize so each sample's adjusted target sums to 1.
+
+    Samples whose target is all-zero (degenerate) stay all-zero — the
+    masked policy loss handles zero targets without NaN.
+
+    Cited rationale: ProposeTrade spans 20 action_ids, BuildRoad spans 72.
+    Without rebalancing, the model's gradient share on roads/trades is
+    proportional to their action-id count rather than their decision
+    importance.
+    """
+    from .action_classes import ACTION_CLASS_ID, NUM_ACTION_CLASSES
+
+    cls_id = ACTION_CLASS_ID.to(target.device)            # (280,)
+    legal_f = legal.to(target.dtype)
+    # Per-sample per-class legal count via scatter_add.
+    # class_count[s, c] = sum_{a: ACTION_CLASS_ID[a]==c} legal[s, a]
+    batch_size = target.shape[0]
+    class_count = torch.zeros(
+        batch_size, NUM_ACTION_CLASSES, device=target.device, dtype=target.dtype,
+    )
+    class_count.scatter_add_(1, cls_id.unsqueeze(0).expand(batch_size, -1), legal_f)
+    # Per-action divisor: class_count[s, class_of(a)]. Clamp to avoid /0
+    # (those actions are illegal anyway and have target 0, so the result
+    # at those positions is 0/clamped = 0).
+    per_action_count = class_count.gather(1, cls_id.unsqueeze(0).expand(batch_size, -1))
+    divisor = per_action_count.clamp(min=1.0)
+    adjusted = target / divisor
+    # Renormalize per sample. Samples with all-zero target stay zero.
+    row_sum = adjusted.sum(dim=-1, keepdim=True)
+    safe_sum = row_sum.clamp(min=1e-12)
+    adjusted = torch.where(row_sum > 0, adjusted / safe_sum, adjusted)
+    return adjusted
+
+
 def _masked_policy_loss(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Cross-entropy where illegal logits are sent to -inf before softmax.
 
@@ -104,6 +146,25 @@ def _masked_policy_loss(logits: torch.Tensor, target: torch.Tensor, mask: torch.
     log_probs = log_probs.masked_fill(~mask, 0.0)
     # CE = -sum(target * log_probs) per sample, then mean.
     return -(target * log_probs).sum(dim=1).mean()
+
+
+def _vp_prior_loss(logits: torch.Tensor, vp_target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Cand 8 auxiliary loss: KL(policy || vp_prior) over legal actions.
+
+    Same form as _masked_policy_loss (cross-entropy against a target
+    distribution), but the target is the action-class VP prior from
+    catan_gnn.action_classes.build_vp_prior_target. Cited plan:
+        loss += lambda_vp * KL(softmax(logits over legal) || vp_target)
+
+    Since KL(p || q) = -sum(q * log(p)) + sum(q * log(q)), and the second
+    term has no gradient w.r.t. logits, we can use the cross-entropy
+    form -sum(vp_target * log_softmax(logits)) which is equivalent for
+    gradient purposes.
+    """
+    masked = logits.masked_fill(~mask, float("-inf"))
+    log_probs = F.log_softmax(masked, dim=1)
+    log_probs = log_probs.masked_fill(~mask, 0.0)
+    return -(vp_target * log_probs).sum(dim=1).mean()
 
 
 def _git_sha() -> str:
@@ -121,6 +182,72 @@ def _resolve_device(device: str) -> torch.device:
     if device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(device)
+
+
+def _write_training_status(
+    *,
+    status_file: Path,
+    label: str,
+    epoch: int,
+    epochs_total: int,
+    train_loss: float,
+    val_loss: float,
+    val_top1: float,
+    per_game: tuple,
+    best_top1: float,
+    best_top1_epoch: int,
+    epochs_since_best: int,
+    early_stop_patience: int,
+    state: str,
+    train_secs: float,
+    val_secs: float,
+) -> None:
+    """Write a per-cell training status block into a shared dashboard JSON.
+
+    Atomic via temp-file + rename so the dashboard never reads a partial write.
+    Layout: status_file is the path to a JSON file shared across all cells.
+    Each cell writes/updates `cells[label]` with its current state.
+    """
+    import json as _json
+    import os as _os
+    import time as _time2
+
+    status_file = Path(status_file)
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    # Read existing JSON (or start fresh).
+    if status_file.exists():
+        try:
+            blob = _json.loads(status_file.read_text())
+        except Exception:
+            blob = {}
+    else:
+        blob = {}
+    blob.setdefault("cells", {})
+    cell = blob["cells"].setdefault(label, {})
+    cell["training"] = {
+        "state": state,
+        "epoch": epoch,
+        "epochs_total": epochs_total,
+        "train_loss": float(train_loss),
+        "val_loss": float(val_loss),
+        "val_top1": float(val_top1),
+        "per_game_min": float(per_game[0]),
+        "per_game_p25": float(per_game[1]),
+        "per_game_median": float(per_game[2]),
+        "per_game_p75": float(per_game[3]),
+        "per_game_max": float(per_game[4]),
+        "best_top1": float(best_top1),
+        "best_top1_epoch": int(best_top1_epoch),
+        "epochs_since_best": int(epochs_since_best),
+        "early_stop_patience": int(early_stop_patience),
+        "train_secs": float(train_secs),
+        "val_secs": float(val_secs),
+        "updated_at": _time2.time(),
+    }
+    blob["updated_at"] = _time2.time()
+    tmp = status_file.with_suffix(status_file.suffix + ".tmp")
+    tmp.write_text(_json.dumps(blob, indent=2))
+    _os.replace(tmp, status_file)
 
 
 def _write_progress_plot(out_path: Path, log: dict, *, epochs_total: int,
@@ -184,17 +311,36 @@ def train_main(
     lr: float = 1e-3,
     w_value: float = 1.0,
     w_policy: float = 1.0,
+    lambda_vp: float = 0.0,
+    vp_compare_rule: bool = False,
+    lambda_settle: float = 0.0,
+    lambda_road: float = 0.0,
+    class_balanced_policy: bool = False,
     val_frac: float = 0.1,
     seed: int = 0,
     device: str = "auto",
     max_train_samples: int | None = None,
     num_workers: int = 0,
     cache_path: Path | None = None,
+    cache_dataset=None,
     resume_from: Path | None = None,
     init_from: Path | None = None,
     rotate: bool = False,
     rotate_mode: str = "fixed",
     rotate_k: int = 1,
+    early_stop_patience: int = 0,
+    status_file: Path | None = None,
+    status_label: str = "",
+    mid_tournament_every: int = 0,
+    mid_tournament_games_per_seating: int = 30,
+    mid_tournament_drop_threshold: int = 3,
+    mid_tournament_sims: int = 100,
+    mid_tournament_lookahead_depth: int = 10,
+    mid_tournament_base_sims_v3: int = 200,
+    mid_tournament_seed_base: int = 19_000_000,  # Phase 1 standard (pass-3 baseline range)
+    mid_tournament_max_seconds: float = 600.0,
+    mid_tournament_workers: int = 10,
+    mid_tournament_device: str = "cuda",
 ) -> Path:
     """
     max_train_samples: if set, subsample the training set to this many positions
@@ -208,6 +354,30 @@ def train_main(
         to cache_path. Subsequent calls load from disk and skip replay entirely.
         This is the GPU-utilization fix: replay-from-scratch is CPU-bound and
         starves the GPU; the cache puts all positions in RAM-resident tensors.
+    cache_dataset: pre-loaded CachedDataset instance. If provided, skips ALL
+        loading (cache_path AND run_dirs are ignored for dataset construction).
+        Used by scripts/train_grid_inproc.py to share one loaded cache across
+        multiple cells in a single Python process — saves the ~30-min cache
+        deserialization cost per cell.
+    lambda_road: Cand 11 (pure-pip road prior). Weight on the auxiliary KL
+        pulling the model's softmax-over-legal-roads toward a distribution
+        proportional to pip(far endpoint of the road) when that endpoint
+        is settlement-legal. Gate A: fires only when NO legal settlement
+        action exists in the sample. Layer 1: independent softmax over
+        road slice (no global logit inflation). Default 0 (off). Cell 5
+        first run uses 0.05.
+    mid_tournament_every: if > 0, run a PureGnn-vs-LookaheadV3 tournament
+        every N epochs (after the per-epoch checkpoint save). Used as the
+        early-stopping signal for the loss-augmentation roadmap, since
+        val_top1 is by-design pulled away from MCTS visits by Cands 8/10
+        and no longer correlates with tournament winrate. Default 0 (off).
+    mid_tournament_games_per_seating: per-rotation game count. 30 × 4
+        rotations = 120 games per tournament (the plan's standard).
+    mid_tournament_drop_threshold: stop iff PureGnn wins drop by this many
+        games vs the previous mid-training tournament. Default 3 (~2.5pp
+        at 120 games). First tournament always passes (no prior).
+    mid_tournament_sims / lookahead_depth / base_sims_v3 / seed_base /
+    max_seconds: pass-through to e10_v3_tournament.main.
     """
     import time as _time
     out_dir = Path(out_dir)
@@ -217,7 +387,9 @@ def train_main(
     np.random.seed(seed)
 
     t_load_start = _time.perf_counter()
-    if cache_path is not None:
+    if cache_dataset is not None:
+        full_ds = cache_dataset
+    elif cache_path is not None:
         cache_path = Path(cache_path)
         if cache_path.exists():
             full_ds = CachedDataset(source=None, cache_path=cache_path)
@@ -302,11 +474,57 @@ def train_main(
             model.load_state_dict(ck)
         print(f"[init_from] loaded model weights from {init_path} (fresh optimizer + log)", flush=True)
 
+    # Early-stopping counter: number of consecutive epochs with no improvement
+    # over best_top1. Resets to 0 whenever we set a new best.
+    epochs_since_best = 0
+
+    # Mid-training tournament history: list of PureGnn win counts (int)
+    # from past mid-training tournaments, oldest first. Used by the
+    # drop-based early-stop decision rule.
+    mid_tournament_history: list[int] = []
+    log.setdefault("mid_tournaments", [])
+
+    # Initial dashboard write so the dashboard knows training has begun
+    # the cache load + first epoch can be 10-20 min on big datasets, and
+    # without this write the dashboard sits on `training_starting` for
+    # that whole window.
+    if status_file is not None:
+        try:
+            _write_training_status(
+                status_file=status_file,
+                label=status_label,
+                epoch=0,
+                epochs_total=epochs,
+                train_loss=0.0,
+                val_loss=0.0,
+                val_top1=0.0,
+                per_game=(0.0, 0.0, 0.0, 0.0, 0.0),
+                best_top1=0.0,
+                best_top1_epoch=0,
+                epochs_since_best=0,
+                early_stop_patience=early_stop_patience,
+                state="warming_up",
+                train_secs=0.0,
+                val_secs=0.0,
+            )
+        except Exception:
+            pass
+
+    # Per-batch observability cadence: log every N batches and update the
+    # dashboard so long epochs aren't silent. Per memory
+    # feedback_training_observability.md (2026-05-25 lesson from Cell 5).
+    batches_total = len(train_loader)
+    progress_every = max(1, batches_total // 50)  # ~50 lines/epoch
+
     for epoch in range(start_epoch, epochs + 1):
         # Train.
         model.train()
         tot, tv, tp, n = 0.0, 0.0, 0.0, 0
         t_train_start = _time.perf_counter()
+        last_progress_time = _time.perf_counter()
+        # Track Cand 10 swap rate per epoch.
+        vp_swap_total = 0
+        vp_swap_samples = 0
         for batch, value_t, policy_t, legal in train_loader:
             batch = batch.to(dev)
             value_t = value_t.to(dev)
@@ -314,12 +532,106 @@ def train_main(
             legal = legal.to(dev)
             opt.zero_grad()
             v_pred, p_logits = model(batch)
+            # Cand 10: 1-step VP comparison target swap. Modifies policy_t
+            # in place for samples where the model's argmax is a strictly
+            # higher-VP action than the teacher's. Cited: in v3 with
+            # bonuses=False, vp-delta is fully determined by action_class.
+            if vp_compare_rule:
+                from .vp_compare import vp_compare_swap_target
+                # Detach: this is just a target rewrite, not a loss term;
+                # gradient should flow only through the CE on the new target.
+                with torch.no_grad():
+                    policy_t, swap_count = vp_compare_swap_target(
+                        p_logits.detach(), policy_t, legal,
+                    )
+                vp_swap_total += swap_count
+                vp_swap_samples += policy_t.shape[0]
+            # Cand 7: action-class-balanced policy target. Rewrite target so
+            # each action_class gets equal gradient share regardless of how
+            # many action_ids it occupies. Applied AFTER Cand 10's swap so
+            # the rebalance operates on the final target.
+            if class_balanced_policy:
+                policy_t = class_balanced_target(policy_t, legal)
             lv = F.mse_loss(v_pred, value_t)
             lp = _masked_policy_loss(p_logits, policy_t, legal)
             loss = w_value * lv + w_policy * lp
+            # Cand 8: action-class VP prior KL term. Off by default
+            # (lambda_vp=0). Enabled per Phase 1 cell config.
+            if lambda_vp > 0.0:
+                from .action_classes import build_vp_prior_target
+                vp_target = build_vp_prior_target(legal)
+                lvp = _vp_prior_loss(p_logits, vp_target, legal)
+                loss = loss + lambda_vp * lvp
+            # Cand 1: pure-pip settlement-vertex prior. Off by default
+            # (lambda_settle=0). Fires whenever any settlement action
+            # is legal in a sample. Per chat 2026-05-12: pure pip
+            # (no resource VP weighting); robber ignored (Option A);
+            # no phase gating.
+            if lambda_settle > 0.0:
+                from .settlement_vertex_prior import settlement_prior_loss
+                # Reshape PyG-concat hex features [B*19, 8] -> [B, 19, 8].
+                hex_features = batch["hex"].x.view(-1, 19, 8)
+                lsettle = settlement_prior_loss(p_logits, legal, hex_features)
+                loss = loss + lambda_settle * lsettle
+            # Cand 11: pure-pip road prior. Off by default (lambda_road=0).
+            # Gate A fires when no legal settlement exists. Layer 1 KL is
+            # over the road slice only (no global logit inflation).
+            if lambda_road > 0.0:
+                from .road_pip_prior import road_pip_prior_loss
+                # Reshape PyG-concat features [B*N, F] -> [B, N, F].
+                hex_feat_b = batch["hex"].x.view(-1, 19, 8)
+                vert_feat_b = batch["vertex"].x.view(-1, 54, 13)
+                edge_feat_b = batch["edge"].x.view(-1, 72, 6)
+                lroad = road_pip_prior_loss(
+                    p_logits=p_logits,
+                    legal_mask=legal,
+                    edge_features=edge_feat_b,
+                    vertex_features=vert_feat_b,
+                    hex_features=hex_feat_b,
+                )
+                loss = loss + lambda_road * lroad
             loss.backward()
             opt.step()
             tot += loss.item(); tv += lv.item(); tp += lp.item(); n += 1
+            # Per-batch progress (cadence: ~50 lines/epoch).
+            if n % progress_every == 0 or n == batches_total:
+                now = _time.perf_counter()
+                elapsed = now - t_train_start
+                ms_per_batch = elapsed / n * 1000
+                pct = 100 * n / batches_total
+                eta_s = (batches_total - n) * elapsed / n
+                print(
+                    f"[ep{epoch:>2} batch {n:>5}/{batches_total} "
+                    f"({pct:5.1f}%)] "
+                    f"loss={loss.item():.3f} "
+                    f"{ms_per_batch:6.1f} ms/batch "
+                    f"eta {eta_s/60:5.1f}min",
+                    flush=True,
+                )
+                last_progress_time = now
+                # Mid-epoch dashboard update so the dashboard isn't silent
+                # for hours between epoch boundaries.
+                if status_file is not None:
+                    try:
+                        _write_training_status(
+                            status_file=Path(status_file),
+                            label=status_label or out_dir.name,
+                            epoch=epoch,
+                            epochs_total=epochs,
+                            train_loss=tot / max(n, 1),
+                            val_loss=0.0,
+                            val_top1=0.0,
+                            per_game=(0.0, 0.0, 0.0, 0.0, 0.0),
+                            best_top1=best_top1,
+                            best_top1_epoch=best_top1_epoch,
+                            epochs_since_best=epochs_since_best,
+                            early_stop_patience=early_stop_patience,
+                            state=f"training_batch_{n}_of_{batches_total}",
+                            train_secs=elapsed,
+                            val_secs=0.0,
+                        )
+                    except Exception:
+                        pass
         train_secs = _time.perf_counter() - t_train_start
 
         # Val.
@@ -337,8 +649,17 @@ def train_main(
                 policy_t = policy_t.to(dev)
                 legal = legal.to(dev)
                 v_pred, p_logits = model(batch)
+                # Cand 7: rebalance for the LOSS only. top1 uses the
+                # ORIGINAL teacher target so cross-cell val_top1 numbers
+                # remain comparable (val_top1 is "argmax of teacher" — that
+                # answer shouldn't depend on the loss reweighting).
+                policy_t_for_loss = (
+                    class_balanced_target(policy_t, legal)
+                    if class_balanced_policy
+                    else policy_t
+                )
                 lv = F.mse_loss(v_pred, value_t)
-                lp = _masked_policy_loss(p_logits, policy_t, legal)
+                lp = _masked_policy_loss(p_logits, policy_t_for_loss, legal)
                 vt += float(w_value * lv + w_policy * lp); vv += float(lv); vp_ += float(lp)
                 vmae += float((v_pred - value_t).abs().mean())
                 # Top-1: did argmax(masked logits) hit argmax(target)?
@@ -391,9 +712,14 @@ def train_main(
             val_n_games=n_games,
         )
         log["epochs"].append(asdict(stats))
+        vp_swap_str = ""
+        if vp_compare_rule and vp_swap_samples > 0:
+            vp_swap_rate = vp_swap_total / vp_swap_samples
+            vp_swap_str = f" vp_swap={vp_swap_total}/{vp_swap_samples} ({100*vp_swap_rate:.2f}%)"
         print(f"[epoch {epoch}/{epochs}] train_loss={stats.train_loss_total:.3f} "
               f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f} "
-              f"per_game[{pg_min:.2f}|{pg_p25:.2f}|{pg_p50:.2f}|{pg_p75:.2f}|{pg_max:.2f}] "
+              f"per_game[{pg_min:.2f}|{pg_p25:.2f}|{pg_p50:.2f}|{pg_p75:.2f}|{pg_max:.2f}]"
+              f"{vp_swap_str} "
               f"[timing] train={train_secs:.1f}s ({n} batches, "
               f"{train_secs * 1000 / max(1, n):.0f}ms/batch) val={val_secs:.1f}s",
               flush=True)
@@ -418,12 +744,28 @@ def train_main(
         # bench-2, etc.) that expect torch.save(model.state_dict()).
         torch.save(cpu_state, out_dir / "checkpoint.pt")
         # Best-checkpoint tracking.
+        # We track two notions of "best":
+        #   - best_top1 (strict): saved checkpoint, used by downstream code.
+        #   - For early-stop "improvement" we require a small margin (0.005)
+        #     over the best so noise-spikes from a single early epoch don't
+        #     wedge the patience counter. Without the margin we observed
+        #     val_top1 oscillating ±0.01 between epochs (true noise) and
+        #     patience=3 firing too early — see `feedback_early_stop_margin`.
+        EARLY_STOP_MARGIN = 0.005
         if stats.val_policy_top1_acc > best_top1:
             best_top1 = stats.val_policy_top1_acc
             best_top1_epoch = epoch
             torch.save(cpu_state, out_dir / "checkpoint_best.pt")
             print(f"  ↳ new best_top1={best_top1:.3f} at epoch {epoch} (saved checkpoint_best.pt)",
                   flush=True)
+        # Early-stop counter: increment unless this epoch's val_top1 is
+        # within EARLY_STOP_MARGIN of the running best. This treats epochs
+        # that nearly match the high as "still trending toward improvement"
+        # rather than as a regression.
+        if stats.val_policy_top1_acc >= best_top1 - EARLY_STOP_MARGIN:
+            epochs_since_best = 0
+        else:
+            epochs_since_best += 1
         # Append-only training log (so a kill mid-run still has all stats).
         (out_dir / "training_log.json").write_text(json.dumps(log, indent=2))
         # Live progress plot.
@@ -435,6 +777,141 @@ def train_main(
         except Exception as e:
             # Plot is non-critical; don't crash training.
             print(f"  (progress.png write failed: {e})", flush=True)
+
+        # Live dashboard status write — atomic via tmp + rename.
+        if status_file is not None:
+            try:
+                _write_training_status(
+                    status_file=status_file,
+                    label=status_label,
+                    epoch=epoch,
+                    epochs_total=epochs,
+                    train_loss=stats.train_loss_total,
+                    val_loss=stats.val_loss_total,
+                    val_top1=stats.val_policy_top1_acc,
+                    per_game=(pg_min, pg_p25, pg_p50, pg_p75, pg_max),
+                    best_top1=best_top1,
+                    best_top1_epoch=best_top1_epoch,
+                    epochs_since_best=epochs_since_best,
+                    early_stop_patience=early_stop_patience,
+                    state="training",
+                    train_secs=train_secs,
+                    val_secs=val_secs,
+                )
+            except Exception as e:
+                print(f"  (status_file write failed: {e})", flush=True)
+
+        # === Mid-training tournament hook (loss-augmentation roadmap) ===
+        # Runs after the per-epoch checkpoint save; uses the just-saved
+        # checkpoint_best.pt (= the running highest val_top1 so far). On a
+        # >= drop_threshold-game drop in PureGnn winrate vs the previous
+        # mid-training tournament, request stop.
+        mid_tournament_stop = False
+        if mid_tournament_every > 0 and (epoch % mid_tournament_every == 0):
+            from .mid_training_tournament import (
+                run_mid_training_tournament, should_stop_for_drop,
+            )
+            mt_out_root = out_dir / "mid_tournaments"
+            mt_out_root.mkdir(parents=True, exist_ok=True)
+            try:
+                # Mid-tournament tests the CURRENT epoch's weights — not the
+                # "best by val_top1" weights. val_top1 stops tracking
+                # tournament strength once we're in the overfitting regime
+                # (cited v3.6: winrate doubled with flat val_top1). The
+                # whole point of the mid-tournament is to measure the
+                # current model's real strength, so we point at the
+                # current epoch's bundle (model_state is unwrapped by
+                # _load_model in e10_v3_tournament).
+                epoch_ckpt_path = out_dir / f"checkpoint_epoch{epoch:02d}.pt"
+                result = run_mid_training_tournament(
+                    epoch=epoch,
+                    checkpoint_path=epoch_ckpt_path,
+                    out_root=mt_out_root,
+                    hidden_dim=hidden_dim,
+                    num_layers=num_layers,
+                    num_games_per_seating=mid_tournament_games_per_seating,
+                    sims=mid_tournament_sims,
+                    lookahead_depth=mid_tournament_lookahead_depth,
+                    base_sims_v3=mid_tournament_base_sims_v3,
+                    seed_base=mid_tournament_seed_base,
+                    max_seconds=mid_tournament_max_seconds,
+                    device=mid_tournament_device,
+                    workers=mid_tournament_workers,
+                )
+                s = result.summary
+                print(f"  ↳ mid-tournament @ epoch {epoch}: "
+                      f"PureGnn={s['pure_gnn_wins']}/{s['total_games']} "
+                      f"({100 * s['pure_gnn_winrate']:.1f}%); "
+                      f"GnnMcts={s['gnn_mcts_wins']}, "
+                      f"LookaheadV3={s['lookahead_v3_wins']}, "
+                      f"Random={s['random_wins']}, "
+                      f"draws={s['no_winner_games']}; "
+                      f"{result.elapsed_seconds:.0f}s",
+                      flush=True)
+                log["mid_tournaments"].append({
+                    "epoch": epoch,
+                    "pure_gnn_wins": s["pure_gnn_wins"],
+                    "pure_gnn_winrate": s["pure_gnn_winrate"],
+                    "gnn_mcts_wins": s["gnn_mcts_wins"],
+                    "lookahead_v3_wins": s["lookahead_v3_wins"],
+                    "random_wins": s["random_wins"],
+                    "no_winner_games": s["no_winner_games"],
+                    "total_games": s["total_games"],
+                    "run_dir": str(result.run_dir),
+                    "elapsed_seconds": result.elapsed_seconds,
+                })
+                (out_dir / "training_log.json").write_text(json.dumps(log, indent=2))
+                if should_stop_for_drop(
+                    history=mid_tournament_history,
+                    current_wins=s["pure_gnn_wins"],
+                    total_games=s["total_games"],
+                    drop_threshold=mid_tournament_drop_threshold,
+                ):
+                    prev = mid_tournament_history[-1] if mid_tournament_history else 0
+                    print(f"  ↳ mid-tournament early-stop: "
+                          f"PureGnn wins dropped {prev} → {s['pure_gnn_wins']} "
+                          f"(>= {mid_tournament_drop_threshold}-game threshold); "
+                          f"stopping at epoch {epoch}",
+                          flush=True)
+                    mid_tournament_stop = True
+                mid_tournament_history.append(s["pure_gnn_wins"])
+            except Exception as e:
+                # Tournament infra failure should not kill training — log and
+                # continue. The next mid-tournament will retry.
+                print(f"  ↳ mid-tournament @ epoch {epoch} FAILED: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+
+        if mid_tournament_stop:
+            break
+
+        # Early-stop check: if patience set and we've not improved for N epochs, stop.
+        if early_stop_patience > 0 and epochs_since_best >= early_stop_patience:
+            print(f"  ↳ early-stop: val_top1 not improved for {epochs_since_best} epochs "
+                  f"(best={best_top1:.3f} at epoch {best_top1_epoch}); stopping at epoch {epoch}",
+                  flush=True)
+            if status_file is not None:
+                try:
+                    _write_training_status(
+                        status_file=status_file,
+                        label=status_label,
+                        epoch=epoch,
+                        epochs_total=epochs,
+                        train_loss=stats.train_loss_total,
+                        val_loss=stats.val_loss_total,
+                        val_top1=stats.val_policy_top1_acc,
+                        per_game=(pg_min, pg_p25, pg_p50, pg_p75, pg_max),
+                        best_top1=best_top1,
+                        best_top1_epoch=best_top1_epoch,
+                        epochs_since_best=epochs_since_best,
+                        early_stop_patience=early_stop_patience,
+                        state="early_stopped",
+                        train_secs=train_secs,
+                        val_secs=val_secs,
+                    )
+                except Exception:
+                    pass
+            break
 
     # Per-epoch artifacts already wrote checkpoint.pt + training_log.json
     # after the final epoch. Just write the run config below.
@@ -498,6 +975,14 @@ def cli_main() -> None:
                         "hex symmetry augmentation).")
     p.add_argument("--rotate-k", type=int, default=1,
                    help="If --rotate-mode=fixed, apply this many 60° rotations (0..5).")
+    p.add_argument("--early-stop-patience", type=int, default=0,
+                   help="Stop training when val_top1 hasn't beaten best for N epochs in a row. "
+                        "0 disables early stopping (default; preserves prior --epochs behavior).")
+    p.add_argument("--status-file", type=Path, default=None,
+                   help="If set, write a per-epoch dashboard JSON entry to this file. Used by "
+                        "the grid-experiment orchestrator (grid_dashboard.py).")
+    p.add_argument("--status-label", type=str, default="",
+                   help="Cell label to use when writing status (e.g. 'h64_l3'). Required with --status-file.")
     args = p.parse_args()
     train_main(
         run_dirs=args.run_dirs, out_dir=args.out_dir,
@@ -511,6 +996,9 @@ def cli_main() -> None:
         rotate=args.rotate,
         rotate_mode=args.rotate_mode,
         rotate_k=args.rotate_k,
+        early_stop_patience=args.early_stop_patience,
+        status_file=args.status_file,
+        status_label=args.status_label,
     )
 
 

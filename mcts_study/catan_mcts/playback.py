@@ -569,6 +569,14 @@ INDEX_HTML = r"""<!doctype html>
   table.vp th, table.vp td { border: 1px solid #ddd; padding: 3px 6px; vertical-align: top;
                               overflow: hidden; text-overflow: ellipsis; word-wrap: break-word; }
   table.vp th { background: #f0f0f0; text-align: left; }
+  table.vp tr.cp-row td { background: linear-gradient(90deg, #fff7c4 0%, #fffae0 100%) !important;
+                          border-top: 2px solid #f5b800; border-bottom: 2px solid #f5b800;
+                          font-weight: 600; }
+  table.vp tr.cp-row td:first-child { border-left: 4px solid #f5b800; }
+  @keyframes turnPulse { 0%,100% { box-shadow: 0 0 6px 1px #ffd633; }
+                          50% { box-shadow: 0 0 14px 3px #ffe97a; } }
+  .seat-chip.cp { outline: 2px solid #ffd633; outline-offset: 1px;
+                  animation: turnPulse 1.6s ease-in-out infinite; }
   .swatch { display: inline-block; width: 12px; height: 12px; vertical-align: middle;
             margin-right: 6px; border: 1px solid #333; border-radius: 2px; }
   .key-hint { color: #888; font-size: 11px; }
@@ -583,7 +591,6 @@ INDEX_HTML = r"""<!doctype html>
     color: white; font-weight: 600; display: flex; justify-content: space-between;
     align-items: center; min-width: 0;
   }
-  .seat-chip.cp { outline: 2px solid #ffd633; outline-offset: 1px; }
   .seat-chip .vp { background: rgba(255,255,255,0.25); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
   .seat-chip .ttl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dim { color: #999; }
@@ -704,7 +711,28 @@ function renderState() {
   svg.setAttribute('width', img.clientWidth);
   svg.setAttribute('height', img.clientHeight);
   svg.setAttribute('viewBox', `0 0 ${img.clientWidth} ${img.clientHeight}`);
-  let body = '';
+
+  // Diff against the previous state to find "newly built this step" assets.
+  // Each of (s, c, r) is a list of [id, owner] pairs. We treat a vertex/edge
+  // as newly built if it didn't appear with the same owner in prev.s/.c/.r.
+  // A settlement→city upgrade flashes the new city, not the old settlement.
+  const prev = (cur > 0) ? overlays.states[cur - 1] : null;
+  function asKeySet(arr) { const s = new Set(); for (const [id, o] of arr) s.add(`${id}:${o}`); return s; }
+  const prevSettleKeys = prev ? asKeySet(prev.s) : new Set();
+  const prevCityKeys   = prev ? asKeySet(prev.c) : new Set();
+  const prevRoadKeys   = prev ? asKeySet(prev.r) : new Set();
+  const isNewSettle = ([vid, owner]) => prev && !prevSettleKeys.has(`${vid}:${owner}`);
+  const isNewCity   = ([vid, owner]) => prev && !prevCityKeys.has(`${vid}:${owner}`);
+  const isNewRoad   = ([eid, owner]) => prev && !prevRoadKeys.has(`${eid}:${owner}`);
+
+  // "Newly built" pop colors. We swap the asset's fill (or stroke for roads)
+  // from the player palette to a bright amber for ONE step, with a thicker
+  // outline. Avoids SVG filters entirely — no flicker, no Chromium quirks,
+  // no double-rendering — just a clean color change for one frame that
+  // catches the eye when scrubbing or auto-playing.
+  const POP_FILL = "#ffd633";        // bright amber
+  const POP_STROKE = "#a86b00";      // dark amber
+  let body = "";
 
   if (st.rh >= 0) {
     const [hx, hy] = layout.hex_centers[st.rh];
@@ -721,30 +749,49 @@ function renderState() {
     body += `</g>`;
   }
 
-  for (const [eid, owner] of st.r) {
+  // Roads. Newly built this step swap to bright amber + thicker stroke;
+  // every other road keeps the player color, no filter, no halo.
+  for (const pair of st.r) {
+    const [eid, owner] = pair;
+    const isNew = isNewRoad(pair);
     const e = layout.edges[eid];
     const [x1, y1] = dataToPx(e[0], e[1]);
     const [x2, y2] = dataToPx(e[2], e[3]);
-    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="white" stroke-width="7" stroke-linecap="round"/>`;
-    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${PLAYER_COLORS[owner]}" stroke-width="4.5" stroke-linecap="round"/>`;
+    const stroke = isNew ? POP_FILL : PLAYER_COLORS[owner];
+    const sw = isNew ? 6 : 4.5;
+    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="white" stroke-width="${sw + 2.5}" stroke-linecap="round"/>`;
+    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round"/>`;
   }
 
-  for (const [vid, owner] of st.s) {
+  // Settlements. Newly built fills with amber; existing keep player color.
+  for (const pair of st.s) {
+    const [vid, owner] = pair;
+    const isNew = isNewSettle(pair);
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 11;
     const path = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/3} L ${px} ${py - sz} L ${px - sz} ${py - sz/3} Z`;
-    body += `<path d="${path}" fill="${PLAYER_COLORS[owner]}" stroke="${PLAYER_COLORS_DARK[owner]}" stroke-width="1.8" stroke-linejoin="round"/>`;
+    const fill = isNew ? POP_FILL : PLAYER_COLORS[owner];
+    const stroke = isNew ? POP_STROKE : PLAYER_COLORS_DARK[owner];
+    const sw = isNew ? 2.6 : 1.8;
+    body += `<path d="${path}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>`;
     body += `<rect x="${px - 2.5}" y="${py + sz/3}" width="5" height="${sz - sz/3 - 1}" fill="${PLAYER_COLORS_DARK[owner]}"/>`;
   }
 
-  for (const [vid, owner] of st.c) {
+  // Cities. Same color-swap on the body; the door rectangle stays
+  // player-colored so the asset still reads as belonging to a player.
+  for (const pair of st.c) {
+    const [vid, owner] = pair;
+    const isNew = isNewCity(pair);
     const v = layout.vertices[String(vid)];
     const [px, py] = dataToPx(v[0], v[1]);
     const sz = 14;
     const dark = PLAYER_COLORS_DARK[owner];
     const base = `M ${px - sz} ${py + sz} L ${px + sz} ${py + sz} L ${px + sz} ${py - sz/2} L ${px} ${py - sz - 3} L ${px - sz} ${py - sz/2} Z`;
-    body += `<path d="${base}" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.8" stroke-linejoin="round"/>`;
+    const fill = isNew ? POP_FILL : PLAYER_COLORS[owner];
+    const stroke = isNew ? POP_STROKE : dark;
+    const sw = isNew ? 2.6 : 1.8;
+    body += `<path d="${base}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>`;
     body += `<rect x="${px + sz/2}" y="${py - sz - 1}" width="4" height="7" fill="${PLAYER_COLORS[owner]}" stroke="${dark}" stroke-width="1.2"/>`;
     body += `<rect x="${px - sz + 3}" y="${py - 1}" width="${sz * 2 - 6}" height="3.5" fill="${dark}" opacity="0.55"/>`;
     body += `<rect x="${px - 3}" y="${py + sz/3}" width="6" height="${sz - sz/3}" fill="${dark}" opacity="0.7"/>`;
@@ -759,7 +806,7 @@ function renderState() {
   // Locked column widths so the table doesn't reflow as hand contents change.
   // Hand gets the widest slot since it grows the most; ports/dev are tighter.
   let html = '<colgroup>' +
-             '<col style="width:90px">' +    // seat (wide enough for "P0 LR LA" badges)
+             '<col style="width:130px">' +    // seat (now includes role label like "P0 LookV3")
              '<col style="width:32px">' +    // VP
              '<col style="width:200px">' +   // hand
              '<col style="width:108px">' +   // dev cards
@@ -769,11 +816,12 @@ function renderState() {
              '</colgroup>';
   html += '<tr><th>seat</th><th>VP</th><th>hand</th><th>dev cards</th><th>built (S/C/R)</th><th>LR / Knights</th><th>ports</th></tr>';
   for (let i = 0; i < 4; i++) {
-    const isCp = (st.cp === i) ? 'background:#ffffaa;' : '';
+    const cpClass = (st.cp === i) ? 'cp-row' : '';
     const h = st.hands[i];
     let badges = '';
     if (st.lr_holder === i) badges += '<span class="badge lr">LR</span>';
     if (st.la_holder === i) badges += '<span class="badge la">LA</span>';
+    const turnIcon = (st.cp === i) ? '<span title="Current turn" style="margin-right:3px">▶</span>' : '';
     const handStr = `${fmtBreakdown(h.breakdown)} <span class="dim">(${h.total})</span>`;
     let devStr = fmtDev(st.dev_held[i]);
     const vpcPlayed = (st.vp_played && st.vp_played[i]) || 0;
@@ -785,8 +833,11 @@ function renderState() {
     const builtStr = `${built.settle}/${built.city}/${built.road}`;
     const lrK = `${st.lr_len[i]} / ${st.knights[i]}`;
     const portStr = fmtPorts(st.ports[i]);
-    html += `<tr style="${isCp}">` +
-            `<td style="white-space:nowrap"><span class="swatch" style="background:${PLAYER_COLORS[i]}"></span>${i} ${badges}</td>` +
+    // Seat label: colored swatch + role name (e.g. "P0 LookV3"). The full
+    // SEAT_NAMES entry is already prefixed with "P{i}", so we don't repeat it.
+    const seatLabel = SEAT_NAMES[i] || `P${i}`;
+    html += `<tr class="${cpClass}">` +
+            `<td style="white-space:nowrap">${turnIcon}<span class="swatch" style="background:${PLAYER_COLORS[i]}"></span><b>${seatLabel}</b> ${badges}</td>` +
             `<td style="text-align:right;font-weight:bold">${st.vp[i]}</td>` +
             `<td>${handStr}</td>` +
             `<td>${devStr}</td>` +
@@ -811,8 +862,11 @@ function renderState() {
     if (vpc > 0) badges += ` <span title="VP cards played">⭐×${vpc}</span>`;
     // Emit literal `class="seat-chip"` so static-HTML scanners can match the
     // base class; the `cp` modifier is added via classList below.
+    // Use SEAT_NAMES[i] which includes the role (e.g. "P0 LookV3").
+    // Falls back to "P{i}" when role data isn't available.
+    const stripLabel = SEAT_NAMES[i] || `P${i}`;
     stripHtml += `<div class="seat-chip" style="background:${PLAYER_COLORS[i]}">` +
-                 `<span class="ttl">P${i}${badges}</span>` +
+                 `<span class="ttl">${stripLabel}${badges}</span>` +
                  `<span class="vp">${st.vp[i]} VP</span>` +
                  `</div>`;
   }
@@ -877,6 +931,58 @@ if (img.complete) renderState();
 """
 
 
+def _derive_seat_names(run_dir: Path, seed: int) -> list[str]:
+    """Look up the 4-player seating + per-seed rotation so we can label each
+    seat with its role (e.g., "P0 LookaheadV3", "P1 PureGnn"). Falls back to
+    plain "P0..P3" if no config or seating is found.
+
+    Reads worker*/config.json for `seating` (base order), then derives
+    `seed_base` from the smallest seed in this run's parquet shards
+    (e10 doesn't write seed_base into config). Rotation = (seed-seed_base)//10000.
+    """
+    fallback = [f"P{i}" for i in range(4)]
+    try:
+        cfg_files = list(run_dir.glob("worker*/config.json"))
+        if not cfg_files:
+            cfg_files = list(run_dir.glob("config.json"))
+        if not cfg_files:
+            return fallback
+        import json as _json
+        cfg = _json.loads(cfg_files[0].read_text())
+        seating = cfg.get("seating")
+        if not seating or len(seating) != 4:
+            return fallback
+        # Derive seed_base from min seed in parquet (e10 doesn't write it).
+        try:
+            import pyarrow.parquet as pq
+            import pandas as pd
+            game_files = list(run_dir.glob("worker*/games.*.parquet"))
+            if not game_files:
+                game_files = list(run_dir.glob("games.*.parquet"))
+            if not game_files:
+                seed_base = seed - (seed % 10000)
+            else:
+                games = pd.concat([pq.read_table(f).to_pandas() for f in game_files], ignore_index=True)
+                seed_base = int(games.seed.min()) if len(games) else seed
+        except Exception:
+            seed_base = seed - (seed % 10000)
+        rot = (seed - seed_base) // 10000
+        # role at slot s for this rotation = seating[(s + rot) % 4]
+        # Short labels to fit the seat-strip and side panel.
+        short = {
+            "GnnMcts": "GnnMcts",
+            "PureGnn": "PureGnn",
+            "LookaheadMctsV3": "LookV3",
+            "Random": "Random",
+        }
+        return [
+            f"P{s} " + short.get(seating[(s + rot) % 4], seating[(s + rot) % 4])
+            for s in range(4)
+        ]
+    except Exception:
+        return fallback
+
+
 def render(run_dir: Path, seed: int, out_dir: Path | None = None) -> Path:
     """Replay seed from run_dir's parquet and emit a self-contained HTML viewer.
 
@@ -915,7 +1021,7 @@ def render(run_dir: Path, seed: int, out_dir: Path | None = None) -> Path:
         "states": states,
     }
 
-    seat_names = [f"P{i}" for i in range(4)]
+    seat_names = _derive_seat_names(run_dir, seed)
     board_b64 = base64.b64encode(board_png.read_bytes()).decode("ascii")
     html = (INDEX_HTML
             .replace("{{SEED}}", str(seed))

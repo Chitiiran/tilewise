@@ -1,0 +1,318 @@
+"""In-process grid trainer: load cache once, train all cells back-to-back.
+
+Subprocess-per-cell (the existing grid_orchestrator.py model) does one cache
+load per cell. For the 100k corpus that's ~30 min × 9 cells = ~4.5h of
+redundant loads. This driver loads the CachedDataset ONCE, then loops over
+the cells calling train_main(cache_dataset=ds, ...) — saves ~4h.
+
+Phase 0 of the pass-100k roadmap v3.
+
+Status JSON has the same shape as the existing grid_orchestrator output
+so the dashboard's "Pass 100k" tab reads it unchanged.
+
+Usage:
+    python scripts/train_grid_inproc.py \\
+        --cache-path /home/chitii/catan_cache/cache_100k.pt \\
+        --out-root runs/v3/grid_pass100k \\
+        --status-file runs/v3/dashboard/grid_pass100k.json \\
+        --epochs 20 --early-stop-patience 0 --batch-size 256 \\
+        --device auto --rotate --rotate-mode random \\
+        --cells "h32_l2,h64_l3,h128_l4,h32_l3,h32_l4,h64_l2,h64_l4,h128_l2,h128_l3"
+"""
+from __future__ import annotations
+import argparse
+import gc
+import json
+import os
+import sys
+import time
+import traceback
+from pathlib import Path
+
+import torch
+
+from catan_gnn.dataset import CachedDataset
+from catan_gnn.train import train_main
+
+
+DEFAULT_GRID = [
+    {"hidden_dim": 32,  "num_layers": 2, "label": "h32_l2"},
+    {"hidden_dim": 32,  "num_layers": 3, "label": "h32_l3"},
+    {"hidden_dim": 32,  "num_layers": 4, "label": "h32_l4"},
+    {"hidden_dim": 64,  "num_layers": 2, "label": "h64_l2"},
+    {"hidden_dim": 64,  "num_layers": 3, "label": "h64_l3"},
+    {"hidden_dim": 64,  "num_layers": 4, "label": "h64_l4"},
+    {"hidden_dim": 128, "num_layers": 2, "label": "h128_l2"},
+    {"hidden_dim": 128, "num_layers": 3, "label": "h128_l3"},
+    {"hidden_dim": 128, "num_layers": 4, "label": "h128_l4"},
+]
+
+
+def _atomic_write_json(path: Path, blob: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(blob, indent=2))
+    os.replace(tmp, path)
+
+
+def _read_json(path: Path) -> dict:
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _write_orchestrator_state(status_file: Path, **kwargs) -> None:
+    blob = _read_json(status_file)
+    orch = blob.setdefault("orchestrator", {})
+    orch.update(kwargs)
+    orch["updated_at"] = time.time()
+    blob["updated_at"] = time.time()
+    _atomic_write_json(status_file, blob)
+
+
+def _write_cell_state(status_file: Path, label: str, **kwargs) -> None:
+    blob = _read_json(status_file)
+    blob.setdefault("cells", {})
+    cell = blob["cells"].setdefault(label, {})
+    cell.update(kwargs)
+    cell["updated_at"] = time.time()
+    blob["updated_at"] = time.time()
+    _atomic_write_json(status_file, blob)
+
+
+def _resolve_cells(cells_arg: str) -> list[dict]:
+    by_label = {c["label"]: c for c in DEFAULT_GRID}
+    if cells_arg == "all":
+        return list(DEFAULT_GRID)
+    wanted = [c.strip() for c in cells_arg.split(",")]
+    out = []
+    for w in wanted:
+        if w in by_label:
+            out.append(by_label[w])
+        else:
+            print(f"[inproc] WARNING: unknown cell '{w}' skipped", flush=True)
+    return out
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--cache-path", type=Path, required=True,
+                   help="Path to the pre-built CachedDataset (chunked manifest or monolithic)")
+    p.add_argument("--out-root", type=Path, required=True,
+                   help="Root for per-cell training out-dirs (training_<label>/)")
+    p.add_argument("--status-file", type=Path, required=True,
+                   help="Dashboard JSON file (single source of truth)")
+    p.add_argument("--epochs", type=int, default=20)
+    p.add_argument("--early-stop-patience", type=int, default=0)
+    p.add_argument("--batch-size", type=int, default=256)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument("--rotate", action="store_true", default=True)
+    p.add_argument("--no-rotate", dest="rotate", action="store_false")
+    p.add_argument("--rotate-mode", type=str, default="random")
+    p.add_argument("--num-workers", type=int, default=0,
+                   help="DataLoader workers (default 0 = main proc)")
+    p.add_argument("--cells", type=str, default="all",
+                   help="Comma-separated cell labels in execution order, or 'all'")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--resume-cell", action="append", default=[],
+                   metavar="LABEL=PATH",
+                   help="Resume a cell from a checkpoint bundle. Repeatable. "
+                        "Example: --resume-cell h64_l3=runs/v3/grid_pass100k/training_h64_l3/checkpoint_epoch10.pt")
+    # Mid-training tournament gating (loss-augmentation roadmap Phase 1).
+    p.add_argument("--mid-tournament-every", type=int, default=0,
+                   help="Run 120-game PureGnn-vs-LookaheadV3 tournament every N epochs. "
+                        "Set to 5 for the standard Phase 1 cell. Default 0 = off.")
+    p.add_argument("--mid-tournament-games-per-seating", type=int, default=30,
+                   help="Per-rotation game count; 30*4=120. Default 30.")
+    p.add_argument("--mid-tournament-drop-threshold", type=int, default=3,
+                   help="Stop iff PureGnn wins drop by >= this many games "
+                        "vs the previous mid-tournament. Default 3.")
+    p.add_argument("--mid-tournament-sims", type=int, default=100,
+                   help="MCTS sims for GnnMcts in mid-tournaments. Default 100.")
+    p.add_argument("--mid-tournament-lookahead-depth", type=int, default=10,
+                   help="Lookahead depth for LookaheadV3 in mid-tournaments. Default 10.")
+    p.add_argument("--mid-tournament-base-sims-v3", type=int, default=200,
+                   help="Base sims for LookaheadV3 in mid-tournaments. Default 200.")
+    p.add_argument("--mid-tournament-seed-base", type=int, default=19_000_000,
+                   help="Seed base for mid-tournament games. Default 19M to match the "
+                        "pass-3 baseline range (apples-to-apples comparison).")
+    p.add_argument("--mid-tournament-max-seconds", type=float, default=600.0,
+                   help="Max wall-clock seconds per mid-tournament game. Default 600.")
+    p.add_argument("--mid-tournament-workers", type=int, default=10,
+                   help="Multiprocessing pool size for mid-tournament. spawn-based. "
+                        "Verified end-to-end 2026-05-11: 10 workers x 150 MB VRAM each = "
+                        "1.5 GB on GTX 1650 4GB; ~30-40 min for 120 games. Default 10.")
+    p.add_argument("--mid-tournament-device", type=str, default="cuda",
+                   choices=["auto", "cpu", "cuda"],
+                   help="Device for mid-tournament. Default cuda (verified faster than "
+                        "cpu+10 on GTX 1650 with the GnnEvaluator forward pass).")
+    # Loss-augmentation flags (Phase 1 cells).
+    p.add_argument("--lambda-vp", type=float, default=0.0,
+                   help="Cand 8 (action-class VP prior). Weight on the auxiliary KL "
+                        "term toward the VP-yielding-actions target. Default 0 (off). "
+                        "Plan recommends 0.10 for Cell 1.")
+    p.add_argument("--vp-compare-rule", action="store_true",
+                   help="Cand 10 (1-step VP comparison). For each training sample, "
+                        "if the model's argmax is a strictly higher-VP action than "
+                        "the teacher's, swap the supervised target to one-hot(a_model). "
+                        "Otherwise keep teacher. Default off.")
+    p.add_argument("--lambda-settle", type=float, default=0.0,
+                   help="Cand 1 (pure-pip settlement vertex prior). Weight on the "
+                        "auxiliary CE term pulling policy toward higher-pip "
+                        "settlement vertices whenever any BuildSettlement is legal. "
+                        "Default 0 (off). Plan/Cell 2 first run uses 0.20.")
+    p.add_argument("--lambda-road", type=float, default=0.0,
+                   help="Cand 11 (pure-pip road prior). Weight on the auxiliary "
+                        "KL pulling the policy's softmax-over-legal-roads toward "
+                        "edges whose far endpoint is settlement-legal and "
+                        "high-pip. Gate A: fires only when no legal settlement "
+                        "exists. Default 0 (off). Cell 5 first run uses 0.05.")
+    p.add_argument("--class-balanced-policy", action="store_true",
+                   help="Cand 7 (action-class-balanced policy CE). Reweight the "
+                        "supervised target so each action_class contributes equal "
+                        "gradient share regardless of how many action_ids it occupies. "
+                        "Stacks on top of Cand 8/10 per plan ordering for Cell 2. "
+                        "Default off.")
+    args = p.parse_args()
+
+    resume_map: dict[str, Path] = {}
+    for spec in args.resume_cell:
+        if "=" not in spec:
+            print(f"[inproc] bad --resume-cell spec '{spec}', expected LABEL=PATH", flush=True)
+            return 2
+        lbl, pth = spec.split("=", 1)
+        resume_map[lbl.strip()] = Path(pth.strip())
+
+    args.out_root.mkdir(parents=True, exist_ok=True)
+    args.status_file.parent.mkdir(parents=True, exist_ok=True)
+
+    cells = _resolve_cells(args.cells)
+    if not cells:
+        print(f"[inproc] no cells matched '{args.cells}'", flush=True)
+        return 1
+
+    # Initial orchestrator state.
+    _write_orchestrator_state(
+        args.status_file,
+        status="loading_cache",
+        cells_total=len(cells),
+        cells_done=0,
+        started_at=time.time(),
+        config={
+            "cache_path": str(args.cache_path),
+            "epochs": args.epochs,
+            "early_stop_patience": args.early_stop_patience,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "rotate": args.rotate,
+            "rotate_mode": args.rotate_mode,
+            "cells_order": [c["label"] for c in cells],
+            "driver": "train_grid_inproc.py",
+        },
+    )
+
+    # ============== Load the cache ONCE ==============
+    print(f"[inproc] loading cache: {args.cache_path}", flush=True)
+    t_load = time.perf_counter()
+    cache_ds = CachedDataset(source=None, cache_path=args.cache_path, verbose=True)
+    load_secs = time.perf_counter() - t_load
+    print(f"[inproc] cache loaded in {load_secs:.1f}s ({len(cache_ds)} positions)", flush=True)
+    _write_orchestrator_state(args.status_file, status="running",
+                               cache_load_secs=load_secs)
+
+    # ============== Loop over cells ==============
+    cells_done = 0
+    for cell_idx, cell in enumerate(cells):
+        label = cell["label"]
+        hidden_dim = cell["hidden_dim"]
+        num_layers = cell["num_layers"]
+        cell_out = args.out_root / f"training_{label}"
+        cell_out.mkdir(parents=True, exist_ok=True)
+        print(f"\n[inproc] === cell {cell_idx + 1}/{len(cells)}: {label} "
+              f"(h={hidden_dim}, l={num_layers}) ===", flush=True)
+
+        _write_cell_state(
+            args.status_file, label,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            cell_idx=cell_idx,
+            state="training_starting",
+            started_at=time.time(),
+        )
+
+        try:
+            t0 = time.perf_counter()
+            resume_path = resume_map.get(label)
+            if resume_path is not None:
+                print(f"[inproc] {label} resuming from {resume_path}", flush=True)
+            train_main(
+                run_dirs=[],  # not used when cache_dataset is provided
+                out_dir=cell_out,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                lr=args.lr,
+                device=args.device,
+                num_workers=args.num_workers,
+                cache_dataset=cache_ds,  # ← shared, NO reload
+                resume_from=resume_path,
+                rotate=args.rotate,
+                rotate_mode=args.rotate_mode,
+                early_stop_patience=args.early_stop_patience,
+                status_file=args.status_file,
+                status_label=label,
+                seed=args.seed,
+                mid_tournament_every=args.mid_tournament_every,
+                mid_tournament_games_per_seating=args.mid_tournament_games_per_seating,
+                mid_tournament_drop_threshold=args.mid_tournament_drop_threshold,
+                mid_tournament_sims=args.mid_tournament_sims,
+                mid_tournament_lookahead_depth=args.mid_tournament_lookahead_depth,
+                mid_tournament_base_sims_v3=args.mid_tournament_base_sims_v3,
+                mid_tournament_seed_base=args.mid_tournament_seed_base,
+                mid_tournament_max_seconds=args.mid_tournament_max_seconds,
+                mid_tournament_workers=args.mid_tournament_workers,
+                mid_tournament_device=args.mid_tournament_device,
+                lambda_vp=args.lambda_vp,
+                vp_compare_rule=args.vp_compare_rule,
+                lambda_settle=args.lambda_settle,
+                lambda_road=args.lambda_road,
+                class_balanced_policy=args.class_balanced_policy,
+            )
+            elapsed = time.perf_counter() - t0
+            print(f"[inproc] {label} done in {elapsed:.1f}s "
+                  f"({elapsed/60:.1f} min)", flush=True)
+            _write_cell_state(args.status_file, label,
+                              state="training_done",
+                              training_secs=elapsed)
+        except Exception as e:
+            print(f"[inproc] {label} FAILED: {e}", flush=True)
+            traceback.print_exc()
+            _write_cell_state(args.status_file, label,
+                              state="training_failed",
+                              error=str(e))
+            # Keep going to the next cell — one failure shouldn't kill the
+            # whole batch since we've already paid the cache load cost.
+
+        # Free GPU + CPU state between cells. Critical: torch caches and
+        # Python references can leak across iterations and trigger OOM
+        # halfway through the grid.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        cells_done += 1
+        _write_orchestrator_state(args.status_file, cells_done=cells_done)
+
+    _write_orchestrator_state(args.status_file, status="finished",
+                               finished_at=time.time())
+    print(f"\n[inproc] all {cells_done}/{len(cells)} cells complete.", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

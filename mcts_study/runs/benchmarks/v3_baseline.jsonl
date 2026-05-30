@@ -1,0 +1,2 @@
+{"label":"v2","n_games":200,"timeouts":0,"cap_hits":0,"length_p25":780,"length_median":997,"length_mean":1024.3,"length_p75":1193,"length_max":2910,"wins_by_seat":[45,51,45,59],"mean_winner_vp":10.05,"mean_max_vp_at_end":10.05,"wall_clock_sec":0.24,"ms_per_game":1.2,"games_per_sec":820.2}
+{"label":"v3","n_games":200,"timeouts":0,"cap_hits":0,"length_p25":437,"length_median":570,"length_mean":590.9,"length_p75":728,"length_max":1449,"wins_by_seat":[45,53,45,57],"mean_winner_vp":5.00,"mean_max_vp_at_end":5.00,"wall_clock_sec":0.13,"ms_per_game":0.7,"games_per_sec":1522.6}

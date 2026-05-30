@@ -33,10 +33,26 @@ impl Engine {
     /// Construct an engine with the **balanced (ABC) board layout** seeded by `seed`.
     /// Phase 2.6: ABC is the v2 default. Use `Engine::with_standard_board(seed)` for
     /// the canonical fixed layout (only used by older tests).
+    ///
+    /// Equivalent to `Engine::with_rules(seed, WIN_VP, true)` — full v2 Catan.
     pub fn new(seed: u64) -> Self {
+        Self::with_rules(seed, crate::state::WIN_VP, true)
+    }
+
+    /// Construct an engine with v3 rule flags. `vp_target` sets the
+    /// game-ending VP threshold; `bonuses_enabled=false` disables the +2 VP
+    /// awards for longest road and largest army (the holders are still
+    /// tracked so observation features stay populated).
+    ///
+    /// Defaults from `Engine::new` are `(WIN_VP=10, true)` — pass these
+    /// explicitly to opt out of v3 mode.
+    pub fn with_rules(seed: u64, vp_target: u8, bonuses_enabled: bool) -> Self {
         let board = Arc::new(Board::generate_abc(seed));
+        let mut state = GameState::new(board);
+        state.vp_target = vp_target;
+        state.bonuses_enabled = bonuses_enabled;
         Self {
-            state: GameState::new(board),
+            state,
             rng: Rng::from_seed(seed),
             events: EventLog::new(),
             stats: GameStats::new(),

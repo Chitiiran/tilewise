@@ -45,6 +45,7 @@ replays/
 scratch_*.sh
 scratch_*.py
 
-# Claude Code worktree + scheduled tasks state (per-machine, not source)
-.claude/
-.superpowers/
+# Underscore-prefixed dirs/files = parking / archive (not for tracking)
+mcts_study/scripts/_archive/
+mcts_study/scripts/_*.py
+mcts_study/scripts/_*.sh
