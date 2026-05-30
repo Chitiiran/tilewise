@@ -73,7 +73,8 @@ class BatchedGnnEvaluator:
 
         Returns (value: np.ndarray[4], priors: list[(action,prob)] | None).
         - terminal  -> (state.returns(), None), no GPU
-        - otherwise -> (value_head, policy-over-legal), via the batched model
+        - otherwise -> (value_head, non-empty list[(action,prob)]), via the
+          batched model; priors is None only for terminals.
         Chance nodes are handled by AsyncMcts itself (it expands outcomes), so
         eval_leaf is never called on a chance node.
         """
@@ -81,8 +82,7 @@ class BatchedGnnEvaluator:
             return np.asarray(state.returns(), dtype=np.float32), None
         value, logits = await self.eval(state)
         legal = state.legal_actions()
-        if not legal:
-            return value, []
+        assert legal, f"non-terminal state has no legal actions: {state}"
         legal_arr = np.asarray(legal, dtype=np.int64)
         probs = _softmax(logits[legal_arr])
         priors = [(int(a), float(p)) for a, p in zip(legal, probs)]

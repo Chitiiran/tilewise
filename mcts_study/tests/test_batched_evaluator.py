@@ -1,5 +1,6 @@
 # tests/test_batched_evaluator.py
 import asyncio
+import random
 import numpy as np
 import torch
 from catan_gnn.gnn_model import GnnModel
@@ -80,7 +81,6 @@ async def test_all_parked_flushes_immediately():
 
 
 async def test_eval_leaf_helper_skips_model_for_terminal():
-    import random
     # eval_leaf() returns state.returns() for terminals WITHOUT enqueuing a GPU request.
     ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
                              max_batch=8, window_ms=5)
@@ -103,5 +103,22 @@ async def test_eval_leaf_helper_skips_model_for_terminal():
         assert ev.total_requests == before  # no GPU request enqueued
         assert priors is None
         assert list(value) == state.returns()
+    finally:
+        await ev.stop()
+
+
+async def test_eval_leaf_non_terminal_returns_normalized_priors():
+    ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                             max_batch=8, window_ms=5)
+    ev.start()
+    try:
+        state = _leaf_state()
+        assert not state.is_terminal()
+        value, priors = await ev.eval_leaf(state)
+        assert value.shape == (4,)
+        assert priors is not None and len(priors) > 0
+        legal = state.legal_actions()
+        assert [a for a, _ in priors] == legal
+        assert abs(sum(p for _, p in priors) - 1.0) < 1e-5
     finally:
         await ev.stop()
