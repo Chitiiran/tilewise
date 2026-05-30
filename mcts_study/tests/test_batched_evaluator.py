@@ -122,3 +122,21 @@ async def test_eval_leaf_non_terminal_returns_normalized_priors():
         assert abs(sum(p for _, p in priors) - 1.0) < 1e-5
     finally:
         await ev.stop()
+
+
+async def test_watchdog_flags_stuck_game(capsys):
+    # active_game_count says 2 games alive, but only 1 ever enqueues a request.
+    # The watchdog must log a warning naming the stall after K idle windows.
+    ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                             max_batch=8, window_ms=5, watchdog_windows=3)
+    ev.active_game_count = 2
+    ev.start()
+    try:
+        # Only ONE request ever arrives; the "second game" never asks.
+        await ev.eval(_leaf_state())
+        # Give the watchdog a few windows to notice running>0 with tiny batches.
+        await asyncio.sleep(0.1)
+    finally:
+        await ev.stop()
+    out = capsys.readouterr().out.lower()
+    assert "watchdog" in out and "stuck" in out

@@ -67,7 +67,8 @@ async def _run_async(*, out, checkpoint, num_games, n_sims, n_concurrent,
             n_concurrent = cap
     model = _load_model(checkpoint, hidden_dim, num_layers, device)
     evaluator = BatchedGnnEvaluator(model=model, device=device,
-                                    max_batch=max_batch, window_ms=window_ms)
+                                    max_batch=max_batch, window_ms=window_ms,
+                                    watchdog_windows=10)
     evaluator.start()
     rec = SelfPlayRecorder(out, config={
         "experiment": "self_play_async", "n_sims": n_sims,

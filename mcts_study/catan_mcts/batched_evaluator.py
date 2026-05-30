@@ -24,11 +24,17 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 
 class BatchedGnnEvaluator:
     def __init__(self, model: GnnModel, device: str = "cpu",
-                 max_batch: int = 64, window_ms: float = 5.0) -> None:
+                 max_batch: int = 64, window_ms: float = 5.0,
+                 watchdog_windows: int = 0) -> None:
         self.model = model.to(device).eval()
         self.device = device
         self.max_batch = int(max_batch)
         self.window_s = float(window_ms) / 1000.0
+        # watchdog_windows > 0 enables the stuck-game detector: after this many
+        # consecutive window-fired partial batches where some live game is not
+        # parked, a warning is printed naming the stall.
+        self.watchdog_windows = int(watchdog_windows)
+        self._idle_windows = 0  # consecutive idle-window counter for watchdog
         self._pending: list[tuple] = []   # (features, future)
         self._wakeup: asyncio.Event | None = None
         self._batcher_task: asyncio.Task | None = None
@@ -111,11 +117,34 @@ class BatchedGnnEvaluator:
         loop = asyncio.get_running_loop()
         while not self._stopped:
             if not self._pending:
-                await self._wakeup.wait()
-                self._wakeup.clear()
+                if self.watchdog_windows > 0 and self.active_game_count < 10 ** 9:
+                    # Watchdog path: timed wait so we can notice when live games
+                    # stop sending eval requests entirely (empty queue for a full
+                    # window while active_game_count > 0).
+                    try:
+                        await asyncio.wait_for(
+                            self._wakeup.wait(), timeout=self.window_s)
+                    except asyncio.TimeoutError:
+                        pass
+                    self._wakeup.clear()
+                    if not self._pending and not self._stopped:
+                        # Queue still empty but games are live: idle window.
+                        self._idle_windows += 1
+                        if self._idle_windows >= self.watchdog_windows:
+                            print(f"[watchdog] stuck game suspected: "
+                                  f"{self.active_game_count} live game(s) not parked "
+                                  f"across {self._idle_windows} windows "
+                                  f"(mean_batch={self.mean_batch_size():.1f})")
+                            self._idle_windows = 0
+                    else:
+                        self._idle_windows = 0
+                else:
+                    await self._wakeup.wait()
+                    self._wakeup.clear()
                 continue
             # Decide whether to flush now or wait for more requests.
             window_start = loop.time()
+            window_fired = False  # set True only when the time window expires
             while not self._stopped:
                 n = len(self._pending)
                 flush_now = (
@@ -123,9 +152,11 @@ class BatchedGnnEvaluator:
                     or n >= self.active_game_count
                 )
                 if flush_now:
+                    window_fired = False
                     break
                 remaining = self.window_start_remaining(window_start, loop)
                 if remaining <= 0:
+                    window_fired = True
                     break  # window fired -> flush partial
                 # Sleep until the window elapses or a new request wakes us.
                 # Floor the wait so a tiny window_ms can't busy-spin the loop.
@@ -140,6 +171,8 @@ class BatchedGnnEvaluator:
                 self._wakeup.clear()
             if not self._pending:
                 continue
+            # Capture pending count BEFORE drain for watchdog comparison.
+            n_before = len(self._pending)
             drained = self._pending[: self.max_batch]
             self._pending = self._pending[self.max_batch :]
             feats = [f for f, _ in drained]
@@ -148,3 +181,17 @@ class BatchedGnnEvaluator:
             for i, (_, fut) in enumerate(drained):
                 if not fut.done():
                     fut.set_result((v_np[i], l_np[i]))
+            # Watchdog: detect a live game that stopped enqueueing eval requests.
+            # A window-fired partial batch where some live game isn't parked is a
+            # candidate stall.  After K consecutive such windows, emit a warning.
+            if self.watchdog_windows > 0:
+                if window_fired and n_before < self.active_game_count:
+                    self._idle_windows += 1
+                    if self._idle_windows >= self.watchdog_windows:
+                        not_parked = self.active_game_count - n_before
+                        print(f"[watchdog] stuck game suspected: {not_parked} "
+                              f"live game(s) not parked across {self._idle_windows} "
+                              f"windows (mean_batch={self.mean_batch_size():.1f})")
+                        self._idle_windows = 0  # reset to avoid spamming every window
+                else:
+                    self._idle_windows = 0
