@@ -15,7 +15,7 @@
 ## Environment notes (read before starting)
 
 - **Run Python in WSL Ubuntu**, venv at `~/catan_mcts_venvs/mcts-study/bin/python`. From Windows: `wsl.exe -d Ubuntu -- bash -c 'cd /mnt/c/dojo/catan_bot/.claude/worktrees/v4/mcts_study && ~/catan_mcts_venvs/mcts-study/bin/python -m pytest ...'`.
-- **No engine (Rust) changes in this plan** — pure Python. `maturin develop` is NOT needed.
+- **No engine (Rust) changes in this plan** — pure Python. BUT the editable `catan_bot` PyO3 install was tied to the old v3 worktree path; after the v3→v4 worktree swap it must be rebuilt ONCE so `import catan_bot` works. Run from the v4 root: `source ~/.cargo/env && source ~/catan_mcts_venvs/mcts-study/bin/activate && maturin develop --release`. (Done in Task 0. WSL may also need `wsl.exe --shutdown` + reinvoke if the distro fails to start with error code 6.)
 - **`pytest-asyncio` may need installing.** Task 0 checks/installs it.
 - All paths below are relative to `mcts_study/` unless stated.
 
