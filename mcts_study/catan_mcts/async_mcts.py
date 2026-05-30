@@ -110,3 +110,80 @@ class AsyncMcts:
 
     def best_action(self, visit_counts: np.ndarray) -> int:
         return int(np.argmax(visit_counts))
+
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class RecordedMove:
+    current_player: int
+    move_index: int
+    legal_mask: np.ndarray
+    visit_counts: np.ndarray
+    action_taken: int
+    root_value: float
+
+
+@dataclass
+class GameResult:
+    seed: int
+    terminal: bool
+    winner: int
+    final_vp: list
+    length_in_moves: int
+    action_history: list
+    moves: list = field(default_factory=list)
+
+
+async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
+                              rng, max_steps: int = 200000):
+    state = game.new_initial_state(seed=seed)
+    mcts = AsyncMcts(evaluator=evaluator, c=1.4, rng=rng)
+    moves: list = []
+    move_index = 0
+    steps = 0
+    while not state.is_terminal() and steps < max_steps:
+        if state.is_chance_node():
+            outcomes = state.chance_outcomes()
+            r = float(rng.random())
+            cum, chosen = 0.0, outcomes[-1][0]
+            for v, p in outcomes:
+                cum += p
+                if r <= cum:
+                    chosen = v
+                    break
+            state.apply_action(int(chosen))
+            steps += 1
+            continue
+        legal = state.legal_actions()
+        if len(legal) == 1:
+            state.apply_action(int(legal[0]))
+            steps += 1
+            continue
+        visit_counts = await mcts.search(state, n_sims=n_sims)
+        action = mcts.best_action(visit_counts)
+        legal_mask = np.zeros(ACTION_SPACE_SIZE, dtype=np.int8)
+        legal_mask[np.asarray(legal, dtype=np.int64)] = 1
+        moves.append(RecordedMove(
+            current_player=int(state.current_player()), move_index=move_index,
+            legal_mask=legal_mask, visit_counts=visit_counts,
+            action_taken=int(action), root_value=0.0))
+        state.apply_action(int(action))
+        move_index += 1
+        steps += 1
+    terminal = state.is_terminal()
+    if terminal:
+        rets = state.returns()
+        winner = int(np.argmax(rets)) if max(rets) > 0 else -1
+    else:
+        winner = -1
+    final_vp = [0, 0, 0, 0]
+    try:
+        stats = state._engine.stats()
+        final_vp = [int(x) for x in stats.get("final_vp", final_vp)]
+    except Exception:
+        pass
+    return GameResult(seed=seed, terminal=terminal, winner=winner,
+                      final_vp=final_vp, length_in_moves=steps,
+                      action_history=state.history(), moves=moves)

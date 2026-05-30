@@ -62,3 +62,24 @@ async def test_value_rotated_to_absolute_seat():
                 f"seat {seat}: abs={value_abs[seat]} != ego[{offset}]={ego_value[offset]}")
     finally:
         await ev.stop()
+
+
+async def test_play_full_game_terminates_and_records():
+    from catan_mcts.async_mcts import play_one_async_game
+    ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                             max_batch=4, window_ms=5)
+    ev.start()
+    try:
+        game = CatanGame(vp_target=10, bonuses=True)
+        result = await play_one_async_game(
+            game=game, seed=123, evaluator=ev, n_sims=8,
+            rng=np.random.default_rng(123), max_steps=200000)
+        assert result.terminal is True
+        assert -1 <= result.winner <= 3
+        assert result.length_in_moves > 0
+        assert len(result.moves) > 0
+        m = result.moves[0]
+        assert m.visit_counts.shape == (ACTION_SPACE_SIZE,)
+        assert m.legal_mask.shape == (ACTION_SPACE_SIZE,)
+    finally:
+        await ev.stop()
