@@ -92,7 +92,7 @@ async def _run_async(*, out, checkpoint, num_games, n_sims, n_concurrent,
     # the same dir each produce a distinct games.<label>.parquet rather than
     # overwriting a shared games.parquet. rglob("games*.parquet") in tests
     # and downstream tooling finds all shards transparently.
-    rec.checkpoint(rec._config_id[:8])
+    rec.checkpoint(rec.config_id[:8])
 
 
 def run_self_play(*, out_root: Path, checkpoint: Path, num_games: int = 64,
