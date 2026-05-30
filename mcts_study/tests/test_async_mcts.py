@@ -1,5 +1,4 @@
 # tests/test_async_mcts.py
-import asyncio
 import numpy as np
 import torch
 from catan_gnn.gnn_model import GnnModel
@@ -31,7 +30,7 @@ async def test_search_returns_visit_counts():
         state = _leaf_state()
         visits = await mcts.search(state, n_sims=16)
         assert visits.shape == (ACTION_SPACE_SIZE,)
-        assert 0 < int(visits.sum()) <= 16
+        assert 0 < int(visits.sum()) <= 15
         legal = set(state.legal_actions())
         assert all(visits[a] == 0 for a in range(ACTION_SPACE_SIZE) if a not in legal)
     finally:

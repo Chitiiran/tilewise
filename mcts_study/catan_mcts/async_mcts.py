@@ -49,9 +49,10 @@ class AsyncMcts:
         return best_a, best_child
 
     async def _expand_and_evaluate(self, node: "Node"):
-        state = node.state
-        if state.is_chance_node():
-            outcomes = state.chance_outcomes()
+        # Resolve any run of chance nodes iteratively (Catan's setup phase can
+        # chain many), sampling each via the per-game rng. No GPU calls here.
+        while node.state.is_chance_node():
+            outcomes = node.state.chance_outcomes()
             r = float(self.rng.random())
             cum, chosen = 0.0, outcomes[-1][0]
             for v, p in outcomes:
@@ -59,11 +60,11 @@ class AsyncMcts:
                 if r <= cum:
                     chosen = v
                     break
-            nxt = state.clone()
+            nxt = node.state.clone()
             nxt.apply_action(int(chosen))
             node.state = nxt
             node.to_play = nxt.current_player() if not nxt.is_terminal() else -1
-            return await self._expand_and_evaluate(node)
+        state = node.state
         value, priors = await self.ev.eval_leaf(state)
         if priors is None:
             # Terminal leaf: state.returns() is ALREADY absolute-seat-indexed.
