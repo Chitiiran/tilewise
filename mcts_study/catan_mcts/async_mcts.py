@@ -65,13 +65,23 @@ class AsyncMcts:
             node.to_play = nxt.current_player() if not nxt.is_terminal() else -1
             return await self._expand_and_evaluate(node)
         value, priors = await self.ev.eval_leaf(state)
-        if priors is not None:
-            for a, p in priors:
-                child_state = state.clone()
-                child_state.apply_action(int(a))
-                node.children[a] = Node(child_state, prior=p)
-            node.is_expanded = True
-        return np.asarray(value, dtype=np.float32)
+        if priors is None:
+            # Terminal leaf: state.returns() is ALREADY absolute-seat-indexed.
+            return np.asarray(value, dtype=np.float32)
+        # Non-terminal GNN leaf: value is EGO-relative (value[offset] is the
+        # value for player (leaf_mover + offset) % 4). Rotate to absolute-seat
+        # order so backup can index by node.to_play uniformly.
+        leaf_mover = state.current_player()
+        value = np.asarray(value, dtype=np.float32)
+        value_abs = np.empty(4, dtype=np.float32)
+        for offset in range(4):
+            value_abs[(leaf_mover + offset) % 4] = value[offset]
+        for a, p in priors:
+            child_state = state.clone()
+            child_state.apply_action(int(a))
+            node.children[a] = Node(child_state, prior=p)
+        node.is_expanded = True
+        return value_abs
 
     def _backup(self, path, value_vec: np.ndarray) -> None:
         for node in path:
