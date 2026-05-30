@@ -42,7 +42,7 @@ class BatchedGnnEvaluator:
 
     def start(self) -> None:
         self._wakeup = asyncio.Event()
-        self._batcher_task = asyncio.ensure_future(self._batcher_loop())
+        self._batcher_task = asyncio.create_task(self._batcher_loop(), name="batcher")
 
     async def stop(self) -> None:
         self._stopped = True
@@ -59,12 +59,11 @@ class BatchedGnnEvaluator:
         l_np = logits.cpu().numpy().astype(np.float32)
         return v_np, l_np
 
-    async def eval(self, state):
+    async def eval(self, state) -> tuple[np.ndarray, np.ndarray]:
         # Features built on the caller side (cheap, CPU).
         obs = state._engine.observation()
         features = state_to_pyg(obs)
-        loop = asyncio.get_event_loop()
-        fut = loop.create_future()
+        fut = asyncio.get_running_loop().create_future()
         self._pending.append((features, fut))
         self.total_requests += 1
         if self._wakeup is not None:

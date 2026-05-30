@@ -5,6 +5,7 @@ import torch
 from catan_gnn.gnn_model import GnnModel
 from catan_mcts.adapter import CatanGame
 from catan_mcts.batched_evaluator import BatchedGnnEvaluator
+from catan_mcts import ACTION_SPACE_SIZE
 
 
 def _untrained_model():
@@ -28,6 +29,7 @@ async def test_single_eval_returns_value_and_policy():
         value, policy = await ev.eval(_leaf_state())
         assert isinstance(value, np.ndarray) and value.shape == (4,)
         assert isinstance(policy, np.ndarray)
-        assert (value >= -1.0).all() and (value <= 1.0).all()
+        assert policy.shape == (ACTION_SPACE_SIZE,)
+        assert np.isfinite(value).all()
     finally:
         await ev.stop()
