@@ -24,7 +24,7 @@ from .common import make_run_dir
 
 def _load_model(checkpoint: Path, hidden_dim: int, num_layers: int, device: str):
     model = GnnModel(hidden_dim=hidden_dim, num_layers=num_layers)
-    obj = torch.load(checkpoint, map_location=device, weights_only=False)
+    obj = torch.load(checkpoint, map_location=device, weights_only=False)  # weights_only=False: checkpoint is ours, safe for internal use
     state = obj["model_state"] if isinstance(obj, dict) and "model_state" in obj else obj
     model.load_state_dict(state)
     return model.to(device).eval()
@@ -58,7 +58,7 @@ async def _play_and_record(*, game, seed, evaluator, n_sims, rec, sem, active):
 async def _run_async(*, out, checkpoint, num_games, n_sims, n_concurrent,
                      hidden_dim, num_layers, vp_target, bonuses, device,
                      max_batch, window_ms, seed_base, resume,
-                     ram_budget_mb, per_game_mb):
+                     ram_budget_mb, per_game_mb, max_seconds):
     if ram_budget_mb is not None:
         cap = max(1, int(ram_budget_mb / per_game_mb))
         if cap < n_concurrent:
@@ -82,9 +82,21 @@ async def _run_async(*, out, checkpoint, num_games, n_sims, n_concurrent,
     tasks = [_play_and_record(game=game, seed=s, evaluator=evaluator,
                               n_sims=n_sims, rec=rec, sem=sem, active=active)
              for s in seeds]
-    await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=max_seconds)
+    except asyncio.TimeoutError:
+        print(f"[self_play] WARNING: wall-clock cap {max_seconds}s hit; "
+              f"some games unfinished (their per-seed shards are already on disk)")
+        results = []
+    failures = [(seeds[i], r) for i, r in enumerate(results) if isinstance(r, BaseException)]
+    for seed, exc in failures:
+        print(f"[self_play] game seed={seed} FAILED: {type(exc).__name__}: {exc}")
+    completed = len(seeds) - len(failures)
+    if failures:
+        print(f"[self_play] WARNING: {len(failures)}/{len(seeds)} games failed")
     mean_batch = evaluator.total_requests / max(evaluator.total_batches, 1)
-    print(f"[self_play] done: {len(seeds)} games, "
+    print(f"[self_play] done: {completed}/{len(seeds)} games completed, "
           f"mean_batch={mean_batch:.1f}, "
           f"total_batches={evaluator.total_batches}")
     await evaluator.stop()
@@ -110,7 +122,8 @@ def run_self_play(*, out_root: Path, checkpoint: Path, num_games: int = 64,
         n_concurrent=n_concurrent, hidden_dim=hidden_dim, num_layers=num_layers,
         vp_target=vp_target, bonuses=bonuses, device=device, max_batch=max_batch,
         window_ms=window_ms, seed_base=seed_base, resume=resume_dir is not None,
-        ram_budget_mb=ram_budget_mb, per_game_mb=per_game_mb))
+        ram_budget_mb=ram_budget_mb, per_game_mb=per_game_mb,
+        max_seconds=max_seconds))
     return out
 
 
@@ -131,13 +144,15 @@ def cli_main():
     p.add_argument("--window-ms", type=float, default=5.0)
     p.add_argument("--seed-base", type=int, default=20_000_000)
     p.add_argument("--ram-budget-mb", type=float, default=None)
+    p.add_argument("--per-game-mb", type=float, default=50.0)
     args = p.parse_args()
     out = run_self_play(
         out_root=args.out_root, checkpoint=args.checkpoint, num_games=args.num_games,
         n_sims=args.n_sims, n_concurrent=args.n_concurrent, hidden_dim=args.hidden_dim,
         num_layers=args.num_layers, vp_target=args.vp_target, bonuses=args.bonuses,
         device=args.device, max_batch=args.max_batch, window_ms=args.window_ms,
-        seed_base=args.seed_base, ram_budget_mb=args.ram_budget_mb)
+        seed_base=args.seed_base, ram_budget_mb=args.ram_budget_mb,
+        per_game_mb=args.per_game_mb)
     print(f"self_play_async wrote to {out}")
 
 

@@ -39,3 +39,4 @@ def test_resume_skips_done_seeds(tmp_path):
     df = pd.concat([pd.read_parquet(p) for p in out2.rglob("games*.parquet")],
                    ignore_index=True)
     assert df["seed"].nunique() == 4
+    assert len(df) == 4
