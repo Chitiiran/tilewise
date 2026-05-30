@@ -89,3 +89,22 @@ async def test_play_full_game_terminates_and_records():
             assert result.final_vp[result.winner] == max(result.final_vp)
     finally:
         await ev.stop()
+
+
+async def test_per_game_rng_reproducible():
+    from catan_mcts.async_mcts import play_one_async_game
+    async def run():
+        ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                                 max_batch=4, window_ms=5)
+        ev.start()
+        try:
+            res = await play_one_async_game(
+                game=CatanGame(vp_target=10, bonuses=True), seed=999,
+                evaluator=ev, n_sims=8, rng=np.random.default_rng(999),
+                max_steps=200000)
+            return res.action_history
+        finally:
+            await ev.stop()
+    h1 = await run()
+    h2 = await run()
+    assert h1 == h2, "same seed produced different play"
