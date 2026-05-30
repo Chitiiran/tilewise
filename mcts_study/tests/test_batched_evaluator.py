@@ -33,3 +33,47 @@ async def test_single_eval_returns_value_and_policy():
         assert np.isfinite(value).all()
     finally:
         await ev.stop()
+
+
+async def test_batch_fills_to_max_in_one_forward():
+    ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                             max_batch=8, window_ms=50)
+    ev.start()
+    try:
+        states = [_leaf_state() for _ in range(8)]
+        results = await asyncio.gather(*[ev.eval(s) for s in states])
+        assert len(results) == 8
+        # 8 requests, max_batch 8 -> exactly one batch.
+        assert ev.total_batches == 1
+    finally:
+        await ev.stop()
+
+
+async def test_window_fires_partial_batch():
+    # 3 requests < max_batch 8: must still resolve via the time window, not hang.
+    ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                             max_batch=8, window_ms=20)
+    ev.start()
+    try:
+        states = [_leaf_state() for _ in range(3)]
+        results = await asyncio.wait_for(
+            asyncio.gather(*[ev.eval(s) for s in states]), timeout=2.0)
+        assert len(results) == 3
+    finally:
+        await ev.stop()
+
+
+async def test_all_parked_flushes_immediately():
+    # When pending >= active_game_count, flush without waiting for the window.
+    ev = BatchedGnnEvaluator(model=_untrained_model(), device="cpu",
+                             max_batch=64, window_ms=10_000)  # huge window
+    ev.active_game_count = 3
+    ev.start()
+    try:
+        states = [_leaf_state() for _ in range(3)]
+        # If the all-parked clause works, this resolves well under the 10s window.
+        results = await asyncio.wait_for(
+            asyncio.gather(*[ev.eval(s) for s in states]), timeout=2.0)
+        assert len(results) == 3
+    finally:
+        await ev.stop()

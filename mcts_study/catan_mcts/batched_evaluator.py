@@ -71,10 +71,33 @@ class BatchedGnnEvaluator:
         return await fut
 
     async def _batcher_loop(self):
+        loop = asyncio.get_running_loop()
         while not self._stopped:
             if not self._pending:
                 await self._wakeup.wait()
                 self._wakeup.clear()
+                continue
+            # Decide whether to flush now or wait for more requests.
+            first_arrival = loop.time()
+            while not self._stopped:
+                n = len(self._pending)
+                flush_now = (
+                    n >= self.max_batch
+                    or n >= self.active_game_count
+                )
+                if flush_now:
+                    break
+                elapsed = loop.time() - first_arrival
+                if elapsed >= self.window_s:
+                    break  # window fired -> flush partial
+                # Sleep a short slice to let more requests arrive.
+                try:
+                    await asyncio.wait_for(self._wakeup.wait(),
+                                           timeout=self.window_s - elapsed)
+                except asyncio.TimeoutError:
+                    pass
+                self._wakeup.clear()
+            if not self._pending:
                 continue
             drained = self._pending[: self.max_batch]
             self._pending = self._pending[self.max_batch :]
