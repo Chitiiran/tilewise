@@ -70,6 +70,10 @@ class BatchedGnnEvaluator:
             self._wakeup.set()
         return await fut
 
+    def window_start_remaining(self, window_start: float, loop) -> float:
+        """Seconds left in the current batch window (<= 0 means flush now)."""
+        return self.window_s - (loop.time() - window_start)
+
     async def _batcher_loop(self):
         loop = asyncio.get_running_loop()
         while not self._stopped:
@@ -78,7 +82,7 @@ class BatchedGnnEvaluator:
                 self._wakeup.clear()
                 continue
             # Decide whether to flush now or wait for more requests.
-            first_arrival = loop.time()
+            window_start = loop.time()
             while not self._stopped:
                 n = len(self._pending)
                 flush_now = (
@@ -87,15 +91,19 @@ class BatchedGnnEvaluator:
                 )
                 if flush_now:
                     break
-                elapsed = loop.time() - first_arrival
-                if elapsed >= self.window_s:
+                remaining = self.window_start_remaining(window_start, loop)
+                if remaining <= 0:
                     break  # window fired -> flush partial
-                # Sleep a short slice to let more requests arrive.
+                # Sleep until the window elapses or a new request wakes us.
+                # Floor the wait so a tiny window_ms can't busy-spin the loop.
                 try:
                     await asyncio.wait_for(self._wakeup.wait(),
-                                           timeout=self.window_s - elapsed)
+                                           timeout=max(remaining, 0.001))
                 except asyncio.TimeoutError:
                     pass
+                # Clearing here is safe even if a request was just enqueued: the
+                # inner loop re-reads len(self._pending) at the top of the next
+                # iteration, so a lost wakeup signal never loses a pending item.
                 self._wakeup.clear()
             if not self._pending:
                 continue
