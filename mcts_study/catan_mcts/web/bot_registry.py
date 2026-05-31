@@ -54,13 +54,34 @@ def build(spec: dict, *, game, seed: int):
 
 
 def list_checkpoints(checkpoints_dir) -> list[dict]:
-    """Recursively list *.pt files under `checkpoints_dir` (sorted by name)."""
+    """Recursively list *.pt files under `checkpoints_dir`.
+
+    Many runs reuse the same filename (e.g. dozens of `checkpoint_best.pt`),
+    so the bare filename is not enough to tell them apart in the lobby. Each
+    entry carries:
+      - name:  the bare filename (kept for back-compat),
+      - path:  absolute path (what build() loads),
+      - label: the path RELATIVE to the checkpoints root (POSIX slashes) — this
+               disambiguates same-named files across run dirs, and
+      - dir:   the relative parent dir ("" for a top-level file) — used to
+               group the dropdown by run via <optgroup>.
+    Sorted by label so checkpoints from the same run cluster together.
+    """
     root = Path(checkpoints_dir)
     if not root.exists():
         return []
     out = []
     for p in sorted(root.rglob("*.pt")):
-        out.append({"name": p.name, "path": str(p)})
+        rel = p.relative_to(root)
+        label = rel.as_posix()
+        parent = rel.parent.as_posix()
+        out.append({
+            "name": p.name,
+            "path": str(p),
+            "label": label,
+            "dir": "" if parent == "." else parent,
+        })
+    out.sort(key=lambda c: c["label"])
     return out
 
 

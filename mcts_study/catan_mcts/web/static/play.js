@@ -45,13 +45,36 @@ function syncHumanSeat() {
   }
 }
 
+// Build the checkpoint dropdown options once, grouped by run directory via
+// <optgroup>, labeled with the dir-qualified relative path so the many
+// same-named files (dozens of checkpoint_best.pt) are distinguishable.
+function checkpointOptionsHtml() {
+  const cks = BOTS.checkpoints || [];
+  if (!cks.length) return '<option value="">(no .pt found)</option>';
+  const groups = new Map();   // dir -> [checkpoint, ...]
+  for (const c of cks) {
+    const g = c.dir || '(top level)';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(c);
+  }
+  let html = '';
+  for (const [dir, items] of groups) {
+    const opts = items.map(c => {
+      // Within a group, show just the filename; the group header carries the dir.
+      const shown = c.name || c.label;
+      return `<option value="${c.path}" title="${escapeHtml(c.label)}">${escapeHtml(shown)}</option>`;
+    }).join('');
+    html += `<optgroup label="${escapeHtml(dir)}">${opts}</optgroup>`;
+  }
+  return html;
+}
+
 function syncCkpt(sel) {
   const seat = sel.dataset.seat;
   const ck = PLAY.querySelector(`.bot-ckpt[data-seat="${seat}"]`);
   const type = BOTS.types.find(t => t.id === sel.value);
   if (type && type.needs_checkpoint) {
-    ck.innerHTML = BOTS.checkpoints.map(c => `<option value="${c.path}">${c.name}</option>`).join('')
-                   || '<option value="">(no .pt found)</option>';
+    ck.innerHTML = checkpointOptionsHtml();
     ck.style.display = '';
   } else {
     ck.style.display = 'none';

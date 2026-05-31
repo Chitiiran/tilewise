@@ -49,6 +49,28 @@ def test_list_checkpoints_scans_dir(tmp_path):
     assert not any(c["name"] == "notes.txt" for c in cps)
 
 
+def test_list_checkpoints_label_disambiguates_by_dir(tmp_path):
+    """Same filename in different run dirs must get distinct labels + a dir tag."""
+    from catan_mcts.web import bot_registry
+    (tmp_path / "runA").mkdir()
+    (tmp_path / "runB").mkdir()
+    (tmp_path / "runA" / "checkpoint_best.pt").write_bytes(b"x")
+    (tmp_path / "runB" / "checkpoint_best.pt").write_bytes(b"y")
+    (tmp_path / "top.pt").write_bytes(b"z")
+    cps = bot_registry.list_checkpoints(tmp_path)
+    labels = {c["label"] for c in cps}
+    # The two same-named checkpoints are distinguishable by their dir-qualified label.
+    assert "runA/checkpoint_best.pt" in labels
+    assert "runB/checkpoint_best.pt" in labels
+    # A top-level checkpoint's label is just its filename; its dir tag is "" (root).
+    top = next(c for c in cps if c["name"] == "top.pt")
+    assert top["label"] == "top.pt"
+    assert top["dir"] == ""
+    # Each entry carries a `dir` group tag for the dropdown's optgroup.
+    a = next(c for c in cps if c["label"] == "runA/checkpoint_best.pt")
+    assert a["dir"] == "runA"
+
+
 def test_build_gnn_bad_checkpoint_raises(tmp_path):
     from catan_mcts.web import bot_registry
     from catan_mcts.adapter import CatanGame
