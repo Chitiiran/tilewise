@@ -64,8 +64,40 @@ def list_checkpoints(checkpoints_dir) -> list[dict]:
     return out
 
 
-def _load_gnn_model(checkpoint: str, *, hidden_dim: int, num_layers: int, device: str):
-    """Load a GnnModel from a .pt checkpoint (handles {'model_state': ...} wrappers)."""
+def _infer_arch(state) -> tuple[int, int]:
+    """Infer (hidden_dim, num_layers) from a GnnModel state_dict.
+
+    The training library holds checkpoints of varying architectures (h16/h32/
+    h64/h128, 2-4 layers), so we can't assume the GnnModel defaults. We read:
+      - num_layers from the highest `body.convs.<N>.` index (+1), and
+      - hidden_dim from `body.proj_hex.weight` (shape [hidden_dim, F_HEX]).
+    Returns (hidden_dim, num_layers); raises KeyError/ValueError if the keys
+    aren't present (caller treats that as a bad checkpoint).
+    """
+    import re
+
+    layer_idxs = set()
+    for k in state:
+        m = re.match(r"body\.convs\.(\d+)\.", k)
+        if m:
+            layer_idxs.add(int(m.group(1)))
+    if not layer_idxs:
+        raise ValueError("no body.convs.* layers found in state_dict")
+    num_layers = max(layer_idxs) + 1
+    proj = state.get("body.proj_hex.weight")
+    if proj is None:
+        raise ValueError("missing body.proj_hex.weight in state_dict")
+    hidden_dim = int(proj.shape[0])
+    return hidden_dim, num_layers
+
+
+def _load_gnn_model(checkpoint: str, *, hidden_dim=None, num_layers=None, device: str):
+    """Load a GnnModel from a .pt checkpoint (handles {'model_state': ...} wrappers).
+
+    When hidden_dim/num_layers are None (the default), the architecture is
+    inferred from the checkpoint's state_dict so checkpoints of any trained
+    size load without the caller knowing their shape. Explicit values override.
+    """
     if not Path(checkpoint).exists():
         raise ValueError(f"checkpoint not found: {checkpoint}")
     import torch
@@ -73,7 +105,10 @@ def _load_gnn_model(checkpoint: str, *, hidden_dim: int, num_layers: int, device
     try:
         obj = torch.load(checkpoint, map_location=device, weights_only=False)
         state = obj["model_state"] if isinstance(obj, dict) and "model_state" in obj else obj
-        model = GnnModel(hidden_dim=hidden_dim, num_layers=num_layers)
+        inferred_dim, inferred_layers = _infer_arch(state)
+        h = int(hidden_dim) if hidden_dim is not None else inferred_dim
+        n = int(num_layers) if num_layers is not None else inferred_layers
+        model = GnnModel(hidden_dim=h, num_layers=n)
         model.load_state_dict(state)
     except Exception as e:
         raise ValueError(f"failed to load checkpoint {checkpoint!r}: {e}") from e
@@ -85,8 +120,10 @@ def _build_gnn_bot(spec, *, game, seed):
     if not checkpoint:
         raise ValueError("GNN bot requires a 'checkpoint' path")
     device = spec.get("device", "cpu")
-    hidden_dim = int(spec.get("hidden_dim", 32))
-    num_layers = int(spec.get("num_layers", 2))
+    # Default to inferring the architecture from the checkpoint; only override
+    # if the spec explicitly carries hidden_dim/num_layers.
+    hidden_dim = spec.get("hidden_dim")
+    num_layers = spec.get("num_layers")
     model = _load_gnn_model(checkpoint, hidden_dim=hidden_dim,
                             num_layers=num_layers, device=device)
     if spec["type"] == "PureGnn":

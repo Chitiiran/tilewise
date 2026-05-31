@@ -69,3 +69,33 @@ def test_build_gnn_missing_checkpoint_raises(tmp_path):
             {"type": "PureGnn", "checkpoint": str(tmp_path / "nope.pt")},
             game=CatanGame(), seed=0,
         )
+
+
+def test_infer_arch_reads_layers_and_hidden_dim():
+    """Architecture (hidden_dim, num_layers) is inferred from a state_dict."""
+    import torch
+    from catan_gnn.gnn_model import GnnModel
+    from catan_mcts.web import bot_registry
+    model = GnnModel(hidden_dim=64, num_layers=3)
+    hidden_dim, num_layers = bot_registry._infer_arch(model.state_dict())
+    assert hidden_dim == 64
+    assert num_layers == 3
+
+
+def test_build_pure_gnn_loads_nondefault_arch(tmp_path):
+    """A checkpoint trained with non-default hidden_dim/num_layers loads
+    without the caller specifying the architecture."""
+    import torch
+    from catan_gnn.gnn_model import GnnModel
+    from catan_mcts.web import bot_registry
+    from catan_mcts.adapter import CatanGame
+    # Save a model whose architecture differs from the old hardcoded 32/2.
+    model = GnnModel(hidden_dim=64, num_layers=3)
+    ckpt = tmp_path / "h64l3.pt"
+    torch.save(model.state_dict(), ckpt)
+    bot = bot_registry.build(
+        {"type": "PureGnn", "checkpoint": str(ckpt)},
+        game=CatanGame(), seed=0,
+    )
+    # It built a usable PureGnnBot (has a .step) without an arch in the spec.
+    assert hasattr(bot, "step")
