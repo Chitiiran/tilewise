@@ -339,11 +339,26 @@ function renderStatus(g) {
   const map = { your_turn: 'Your turn', bot_thinking: 'Bot thinking…',
                 trade_offer: 'Trade offer', game_over: 'Game over', error: 'Error' };
   let txt = map[g.status] || g.status;
+  let cls = '';   // extra class for attention-grabbing phases
   if (g.status === 'game_over' && g.returns) {
     const w = g.returns.indexOf(1);
     txt = (w === g.human_seat) ? 'You win 🎉' : `${g.seat_names[w]} wins`;
   }
-  document.getElementById('status').innerHTML = `<b>${txt}</b>`;
+  // Make the robber / discard prompts unmistakable — these are the moments the
+  // game looks "hung" if the player doesn't realize it's waiting on them.
+  if (g.status === 'your_turn' && g.legal_actions) {
+    const kinds = new Set(g.legal_actions.map(a => a.kind));
+    if (kinds.has('move_robber')) {
+      txt = '🦹 Move the robber — click a highlighted hex';
+      cls = 'status-alert';
+    } else if (kinds.has('discard')) {
+      txt = '⚠️ You rolled a 7 — discard cards (pick below)';
+      cls = 'status-alert';
+    }
+  }
+  const el = document.getElementById('status');
+  el.className = cls;
+  el.innerHTML = `<b>${txt}</b>`;
 }
 
 // ---- Interaction (Task 19) ------------------------------------------------
@@ -360,11 +375,22 @@ function spatialTargetsSvg(g) {
   let out = '';
   for (const a of g.legal_actions) {
     if (a.target === null) continue;
+    if (a.kind === 'move_robber') {
+      // Robber targets get a big, pulsing, unmistakable marker covering the
+      // whole hex with a 🦹 glyph — so it's obvious the game is waiting on you
+      // to move the robber (otherwise it reads as "hung").
+      const c = G.layout.hex_centers[a.target];
+      const [px,py] = dataToPx(c[0],c[1]);
+      out += `<circle class="robber-target clickable" cx="${px}" cy="${py}" r="26"
+               fill="#ff5252" fill-opacity="0.30" stroke="#b00020" stroke-width="3"
+               style="pointer-events:all" onclick="postAction(${a.id})"/>`;
+      out += `<text x="${px}" y="${py+6}" text-anchor="middle" font-size="20"
+               style="pointer-events:none">🦹</text>`;
+      continue;
+    }
     let px, py;
     if (a.kind === 'build_road') {
       const e = G.layout.edges[a.target]; [px,py] = dataToPx((e[0]+e[2])/2,(e[1]+e[3])/2);
-    } else if (a.kind === 'move_robber') {
-      const c = G.layout.hex_centers[a.target]; [px,py] = dataToPx(c[0],c[1]);
     } else {
       const v = G.layout.vertices[String(a.target)]; [px,py] = dataToPx(v[0],v[1]);
     }
@@ -478,23 +504,64 @@ function renderDevCards(g, legalDevIds) {
     legalDevIds.has(229 + r)
       ? `<button class="dev-pick" onclick="postAction(${229 + r})">${res(r)}</button>`
       : `<button class="dev-pick" disabled>${res(r)}</button>`).join(' ');
-  const yopOpts = r =>
-    [0,1,2,3,4].map(i => `<option value="${i}">${RES_LETTER[i]}</option>`).join('');
   const picker = `
     <div id="devPicker-mono" class="dev-picker" style="display:none">
       <span class="dev-pick-label">Monopolize:</span> ${monoBtns}</div>
     <div id="devPicker-yop" class="dev-picker" style="display:none">
-      <span class="dev-pick-label">Year of Plenty:</span>
-      <select id="yopR1">${yopOpts()}</select>
-      <select id="yopR2">${yopOpts()}</select>
-      <button class="dev-pick" onclick="playYearOfPlenty()">Play</button>
+      <span class="dev-pick-label">Year of Plenty — pick 2 resources:</span>
+      <div id="yopIcons"></div>
       <span id="yopErr" class="dev-pick-err"></span></div>`;
   el.innerHTML = `<div class="trade-grid-label">Dev Cards</div>` +
                  `<div class="dev-hand">${cards}</div>` + picker;
+  renderYopIcons();   // (re)draw the icon picker for the current selection
 }
+
+// Year of Plenty via clickable resource icons (two clicks), not dropdowns.
+// G._yopFirst holds the first picked resource (or null). Clicking a second
+// resource plays 234 + r1*5 + r2 if that combo is legal this turn.
+function yopLegalIds() {
+  return new Set((G.state.legal_actions || [])
+    .filter(a => a.id >= 234 && a.id < 259).map(a => a.id));
+}
+
+function renderYopIcons() {
+  const box = document.getElementById('yopIcons');
+  if (!box) return;
+  const legal = yopLegalIds();
+  const first = (G && G._yopFirst != null) ? G._yopFirst : null;
+  // A resource is a valid SECOND pick (given first=r1) iff 234+r1*5+r2 is legal.
+  // A resource is a valid FIRST pick iff some r2 makes 234+r1*5+r2 legal.
+  const validFirst = r => [0,1,2,3,4].some(r2 => legal.has(234 + r*5 + r2));
+  const validSecond = r2 => first != null && legal.has(234 + first*5 + r2);
+  let html = '';
+  for (let r = 0; r < 5; r++) {
+    const enabled = first == null ? validFirst(r) : validSecond(r);
+    const sel = (first === r) ? ' yop-sel' : '';
+    html += enabled
+      ? `<button class="dev-pick yop-icon${sel}" onclick="pickYop(${r})">${res(r)}</button>`
+      : `<button class="dev-pick yop-icon" disabled>${res(r)}</button>`;
+  }
+  const hint = first == null ? 'Click the 1st resource' : 'Now click the 2nd resource';
+  box.innerHTML = `<span class="yop-hint">${hint}</span> ${html}` +
+    (first != null ? ` <button class="dev-pick" onclick="resetYop()">↺</button>` : '');
+}
+
+function pickYop(r) {
+  if (G._yopFirst == null) { G._yopFirst = r; renderYopIcons(); return; }
+  const id = 234 + G._yopFirst * 5 + r;
+  if (!yopLegalIds().has(id)) {
+    document.getElementById('yopErr').textContent = 'illegal pair';
+    return;
+  }
+  G._yopFirst = null;     // reset selection before the state refreshes
+  postAction(id);
+}
+
+function resetYop() { G._yopFirst = null; renderYopIcons(); }
 
 // Show one picker at a time; clicking the same card again hides it.
 function toggleDevPicker(which) {
+  if (which === 'yop') { G._yopFirst = null; renderYopIcons(); }  // fresh selection
   for (const w of ['mono', 'yop']) {
     const p = document.getElementById('devPicker-' + w);
     if (!p) continue;
@@ -503,18 +570,6 @@ function toggleDevPicker(which) {
 }
 
 // Year of Plenty: post 234 + r1*5 + r2 iff that id is legal for this turn.
-function playYearOfPlenty() {
-  const r1 = +document.getElementById('yopR1').value;
-  const r2 = +document.getElementById('yopR2').value;
-  const id = 234 + r1 * 5 + r2;
-  const legal = (G.state.legal_actions || []).some(a => a.id === id);
-  if (!legal) {
-    document.getElementById('yopErr').textContent = 'illegal pair';
-    return;
-  }
-  postAction(id);
-}
-
 // Map each legal trade id to its [give,get] cell and render a 5×5 give→get
 // matrix into containerId. Off-diagonal cells with no legal action are
 // disabled. Shared by both the bank-trade and propose-trade grids.
