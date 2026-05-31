@@ -78,3 +78,15 @@ def test_root_serves_index(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+def test_missing_seat_returns_400(client):
+    bad = {"human_seat": 0, "seats": {"1": {"type": "Random"}}, "rules": {"vp_target": 10, "bonuses": True}, "seed": 4242}
+    r = client.post("/api/games", json=bad)
+    assert r.status_code == 400
+
+
+def test_bad_human_seat_returns_400(client):
+    bad = {"human_seat": 9, "seats": {str(s): {"type": "Random"} for s in range(4)}, "rules": {}, "seed": 1}
+    r = client.post("/api/games", json=bad)
+    assert r.status_code == 400

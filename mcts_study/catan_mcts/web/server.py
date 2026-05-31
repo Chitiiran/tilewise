@@ -5,11 +5,13 @@ parameters (no hardcoded WSL paths) so the same code runs locally or deployed.
 """
 from __future__ import annotations
 
+import json
+import time
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -78,10 +80,11 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
 
     @app.post("/api/games/{gid}/trade-response")
     def post_trade(gid: str, body: TradeBody):
-        return _get(gid).respond_to_trade(accept=body.accept)
-
-    import json as _json
-    from fastapi.responses import StreamingResponse
+        sess = _get(gid)
+        try:
+            return sess.respond_to_trade(accept=body.accept)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
     @app.get("/api/games/{gid}/events")
     def events(gid: str):
@@ -90,18 +93,17 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
         def gen():
             last = None
             snap = sess.state_json()
-            yield f"data: {_json.dumps(snap)}\n\n"
+            yield f"data: {json.dumps(snap)}\n\n"
             last = snap["status"]
-            import time
             for _ in range(600):
                 if not sess.is_advancing():
                     final = sess.state_json()
                     if final["status"] != last:
-                        yield f"data: {_json.dumps(final)}\n\n"
+                        yield f"data: {json.dumps(final)}\n\n"
                     break
                 cur = sess.state_json()
                 if cur["status"] != last:
-                    yield f"data: {_json.dumps(cur)}\n\n"
+                    yield f"data: {json.dumps(cur)}\n\n"
                     last = cur["status"]
                 time.sleep(0.05)
 
@@ -109,7 +111,10 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
 
     @app.get("/")
     def index():
-        return FileResponse(_STATIC / "index.html")
+        idx = _STATIC / "index.html"
+        if not idx.exists():
+            raise HTTPException(status_code=404, detail="frontend not built")
+        return FileResponse(idx)
 
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")

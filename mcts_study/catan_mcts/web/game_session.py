@@ -43,6 +43,8 @@ END_TURN = 204
 class GameSession:
     def __init__(self, setup: dict) -> None:
         self.human_seat = int(setup["human_seat"])
+        if not (0 <= self.human_seat <= 3):
+            raise ValueError(f"human_seat must be 0..3, got {self.human_seat}")
         rules = setup.get("rules", {})
         self._vp_target = int(rules.get("vp_target", 10))
         self._bonuses = bool(rules.get("bonuses", True))
@@ -57,6 +59,9 @@ class GameSession:
             seat = int(seat_str)
             self._bots[seat] = bot_registry.build(spec, game=self._game, seed=self.seed + seat)
             self._seat_specs[seat] = spec
+        missing = [s for s in range(4) if s != self.human_seat and s not in self._seat_specs]
+        if missing:
+            raise ValueError(f"missing bot spec for seat(s) {missing}")
         self._pending_trade = None
         self._last_narration = "(game start)"
         self._error = None
