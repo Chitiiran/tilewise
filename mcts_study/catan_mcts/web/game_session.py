@@ -39,6 +39,32 @@ class _MaskedLegalView:
 
 END_TURN = 204
 
+# Per-type persona name pools so duplicate bots of the same type read as
+# distinct characters (three Randoms -> Randy / Rusty / Roxy ...).
+_PERSONA_POOL = {
+    "Random": ["Randy", "Rusty", "Roxy", "Rhea"],
+    "Greedy": ["Greedy Gus", "Grabby Gail", "Gordon", "Gemma"],
+    "LookaheadMctsV3": ["Skye", "Scout", "Sage", "Sven"],
+    "PureGnn": ["Neura", "Nova", "Nyx", "Nero"],
+    "GnnMcts": ["Cortex", "Cypher", "Cole", "Cassia"],
+}
+# Short, human-friendly type label shown in parentheses after the persona.
+_TYPE_LABEL = {
+    "Random": "Random",
+    "Greedy": "Greedy",
+    "LookaheadMctsV3": "LookaheadV3",
+    "PureGnn": "PureGnn",
+    "GnnMcts": "GnnMcts",
+}
+
+
+def _checkpoint_stem(spec: dict) -> str | None:
+    """Filename stem of a GNN checkpoint, e.g. '.../round0_Cell6.pt' -> 'round0_Cell6'."""
+    ck = spec.get("checkpoint")
+    if not ck:
+        return None
+    return Path(ck).stem
+
 
 class GameSession:
     def __init__(self, setup: dict) -> None:
@@ -63,6 +89,7 @@ class GameSession:
         if missing:
             raise ValueError(f"missing bot spec for seat(s) {missing}")
         self._pending_trade = None
+        self._last_action = None
         self._last_narration = "(game start)"
         self._error = None
         self._thread = None
@@ -72,12 +99,26 @@ class GameSession:
         self._lock = threading.RLock()
 
     def seat_names(self) -> list[str]:
+        """Distinct, characterful names: 'You' for the human, 'Persona (Type)'
+        per bot. Same-type bots get different personas (by seat order); GNN bots
+        also carry their checkpoint stem so the net is identifiable."""
+        used_by_type: dict[str, int] = {}
         names = []
         for s in range(4):
             if s == self.human_seat:
                 names.append("You")
-            else:
-                names.append(f"P{s} {self._seat_specs[s]['type']}")
+                continue
+            spec = self._seat_specs[s]
+            t = spec["type"]
+            pool = _PERSONA_POOL.get(t)
+            i = used_by_type.get(t, 0)
+            used_by_type[t] = i + 1
+            persona = pool[i % len(pool)] if pool else f"P{s}"
+            label = _TYPE_LABEL.get(t, t)
+            stem = _checkpoint_stem(spec)
+            if stem:
+                label = f"{label}·{stem}"
+            names.append(f"{persona} ({label})")
         return names
 
     def board_payload(self) -> dict:
@@ -114,6 +155,7 @@ class GameSession:
                 "narration": self._last_narration,
                 "state": serializers.serialize_state(eng, self._last_narration),
                 "seat_names": self.seat_names(),
+                "last_action": self._last_action,
             }
             out["phase"] = out["state"]["phase"]
             if status == "your_turn":
@@ -191,6 +233,7 @@ class GameSession:
 
     def _apply_and_narrate(self, action: int, player: int) -> None:
         self._last_narration = f"P{player} {serializers.action_desc(action)}"
+        self._last_action = {"action": int(action), "player": int(player)}
         self._state.apply_action(int(action))
 
     def apply_human_action(self, action: int) -> dict:

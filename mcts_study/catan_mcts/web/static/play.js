@@ -122,6 +122,8 @@ function startGame(body) {
 function onResize() { if (G && G.state) renderGame(); }
 
 const PLAYER_COLORS = ["#cc3333", "#3366cc", "#33aa55", "#cc8833"];
+// Darker strokes for the house/city glyphs (ported from playback.py).
+const PLAYER_COLORS_DARK = ["#5a1414", "#1a3370", "#1a5a2c", "#5a3a14"];
 const RES = ['🪵','🧱','🐑','🌾','⛰️'];
 // Letter fallback for environments without a color-emoji font (mirrors
 // board_layout.RESOURCE_LETTER). Wrapped so a missing glyph still reads.
@@ -166,6 +168,10 @@ function applyStateNoStream(st) {
     clearTradeTimer();
     document.querySelectorAll('.modal-bg').forEach(m => m.remove());
   }
+  if (st.status === 'game_over' && !G._celebrated) {
+    G._celebrated = true;       // fire once per game, not on every re-render
+    celebrateGameOver(st);
+  }
   renderActionBar(st);
 }
 
@@ -193,20 +199,79 @@ function renderGame() {
     body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#fff" stroke-width="7" stroke-linecap="round"/>`;
     body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${PLAYER_COLORS[o]}" stroke-width="4.5" stroke-linecap="round"/>`;
   }
-  // Settlements + cities.
+  // Last-move glow (cyan halo) under the piece, so it's clear "the game is
+  // here right now". Distinct from the amber clickable-target markers.
+  body += lastMoveGlowSvg(G.state);
+  // Settlements = small houses (pentagon + door). Ported from playback.py.
   for (const [vid,o] of st.s) {
     const v = G.layout.vertices[String(vid)]; const [px,py] = dataToPx(v[0],v[1]);
-    body += `<rect x="${px-8}" y="${py-8}" width="16" height="16" fill="${PLAYER_COLORS[o]}" stroke="#222" stroke-width="1.5"/>`;
+    body += settlementGlyph(px, py, o);
   }
+  // Cities = bigger houses with a tower + window strip. Ported from playback.py.
   for (const [vid,o] of st.c) {
     const v = G.layout.vertices[String(vid)]; const [px,py] = dataToPx(v[0],v[1]);
-    body += `<rect x="${px-10}" y="${py-10}" width="20" height="20" rx="3" fill="${PLAYER_COLORS[o]}" stroke="#fff" stroke-width="2"/>`;
+    body += cityGlyph(px, py, o);
   }
   // Clickable spatial targets when it's your turn (Task 19 fills click handlers).
   body += spatialTargetsSvg(G.state);
   svg.innerHTML = body;
   renderPlayers(G.state);
   renderStatus(G.state);
+}
+
+// Settlement glyph: a small house (square base + peaked roof) with a door.
+function settlementGlyph(px, py, o) {
+  const sz = 11;
+  const path = `M ${px-sz} ${py+sz} L ${px+sz} ${py+sz} L ${px+sz} ${py-sz/3} `
+             + `L ${px} ${py-sz} L ${px-sz} ${py-sz/3} Z`;
+  const dark = PLAYER_COLORS_DARK[o];
+  return `<path d="${path}" fill="${PLAYER_COLORS[o]}" stroke="${dark}" stroke-width="1.8" stroke-linejoin="round"/>`
+       + `<rect x="${px-2.5}" y="${py+sz/3}" width="5" height="${sz-sz/3-1}" fill="${dark}"/>`;
+}
+
+// City glyph: a bigger house with a corner tower, a horizontal window strip,
+// and a door — unmistakably larger/more detailed than a settlement.
+function cityGlyph(px, py, o) {
+  const sz = 14;
+  const dark = PLAYER_COLORS_DARK[o];
+  const base = `M ${px-sz} ${py+sz} L ${px+sz} ${py+sz} L ${px+sz} ${py-sz/2} `
+             + `L ${px} ${py-sz-3} L ${px-sz} ${py-sz/2} Z`;
+  return `<path d="${base}" fill="${PLAYER_COLORS[o]}" stroke="${dark}" stroke-width="1.8" stroke-linejoin="round"/>`
+       + `<rect x="${px+sz/2}" y="${py-sz-1}" width="4" height="7" fill="${PLAYER_COLORS[o]}" stroke="${dark}" stroke-width="1.2"/>`
+       + `<rect x="${px-sz+3}" y="${py-1}" width="${sz*2-6}" height="3.5" fill="${dark}" opacity="0.55"/>`
+       + `<rect x="${px-3}" y="${py+sz/3}" width="6" height="${sz-sz/3}" fill="${dark}" opacity="0.7"/>`;
+}
+
+// Map a raw action id to {kind,target} for spatial moves, mirroring the
+// server's action_decode ranges. Non-spatial actions return null.
+function actionSpatialTarget(a) {
+  a = Number(a);
+  if (a >= 0 && a < 54)    return { kind: 'settlement', target: a };
+  if (a >= 54 && a < 108)  return { kind: 'city', target: a - 54 };
+  if (a >= 108 && a < 180) return { kind: 'road', target: a - 108 };
+  if (a >= 180 && a < 199) return { kind: 'robber', target: a - 180 };
+  return null;
+}
+
+// Draw a pulsing cyan halo at the last applied move's spatial target.
+function lastMoveGlowSvg(g) {
+  const la = g.last_action;
+  if (!la) return '';
+  const t = actionSpatialTarget(la.action);
+  if (!t) return '';
+  let px, py;
+  if (t.kind === 'road') {
+    const e = G.layout.edges[t.target]; if (!e) return '';
+    [px, py] = dataToPx((e[0]+e[2])/2, (e[1]+e[3])/2);
+  } else if (t.kind === 'robber') {
+    const c = G.layout.hex_centers[t.target]; if (!c) return '';
+    [px, py] = dataToPx(c[0], c[1]);
+  } else {
+    const v = G.layout.vertices[String(t.target)]; if (!v) return '';
+    [px, py] = dataToPx(v[0], v[1]);
+  }
+  return `<circle class="last-move-glow" cx="${px}" cy="${py}" r="17" fill="#33e0ff" `
+       + `fill-opacity="0.28" stroke="#33e0ff" stroke-width="2.5" stroke-opacity="0.8"/>`;
 }
 
 function renderPlayers(g) {
@@ -288,12 +353,13 @@ function renderActionBar(g) {
   }
   let html = [...seen.values()]
     .map(a => `<button onclick="postAction(${a.id})">${a.label}</button>`).join(' ');
-  if (proposeIds.length) {
-    html += ` <button id="proposeTradeBtn" onclick="toggleTradeGrid()">Propose Trade ▾</button>`;
-  }
+  // The trade grid shows inline (no toggle) whenever propose_trade is legal.
+  const gridLabel = proposeIds.length
+    ? `<div class="trade-grid-label">Propose Trade</div>` : '';
   bar.innerHTML = `<div class="action-row">${html}</div>` +
-                  `<div id="tradeGrid" class="trade-grid-wrap" style="display:none"></div>`;
-  // Build the (hidden) trade grid from the legal propose_trade ids.
+                  gridLabel +
+                  `<div id="tradeGrid" class="trade-grid-wrap"></div>`;
+  // Build the trade grid from the legal propose_trade ids (empty if none).
   buildTradeGrid(proposeIds);
 }
 
@@ -326,15 +392,7 @@ function buildTradeGrid(proposeIds) {
   grid.innerHTML = `<table class="trade-grid"><tr>${head}</tr>${rows}</table>`;
 }
 
-function toggleTradeGrid() {
-  const grid = document.getElementById('tradeGrid');
-  if (!grid) return;
-  grid.style.display = grid.style.display === 'none' ? 'block' : 'none';
-}
-
 function postTradeFromGrid(id) {
-  const grid = document.getElementById('tradeGrid');
-  if (grid) grid.style.display = 'none';
   postAction(id);
 }
 
@@ -374,6 +432,71 @@ function showTradeModal(o) {
     if (fill) fill.style.width = `${Math.max(remaining, 0) * 20}%`;
     if (remaining <= 0) { clearTradeTimer(); respondTrade(false); }
   }, 1000);
+}
+
+// ---- Victory celebration --------------------------------------------------
+function celebrateGameOver(st) {
+  let winner = -1;
+  if (st.returns) winner = st.returns.indexOf(1);
+  const humanWon = winner === st.human_seat;
+  const winnerName = winner >= 0 ? st.seat_names[winner] : 'Nobody';
+  // Banner / modal with a fresh-game button.
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg win-modal-bg';
+  const title = humanWon ? '🎉 You win!' : `${escapeHtml(winnerName)} wins`;
+  bg.innerHTML = `<div class="modal win-modal">
+    <h2 class="win-title">${title}</h2>
+    <button class="primary" onclick="location.reload()">New Game</button>
+  </div>`;
+  document.body.appendChild(bg);
+  // Full confetti for a human win; a subdued burst otherwise.
+  fireConfetti(humanWon ? 150 : 40);
+}
+
+// Self-contained vanilla canvas confetti — no external library.
+function fireConfetti(count) {
+  const colors = [...PLAYER_COLORS, '#ffc107', '#ffd700'];
+  const canvas = document.createElement('canvas');
+  canvas.className = 'confetti-canvas';
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const pieces = [];
+  for (let i = 0; i < count; i++) {
+    pieces.push({
+      x: Math.random() * canvas.width,
+      y: -20 - Math.random() * canvas.height * 0.5,
+      w: 6 + Math.random() * 8,
+      h: 8 + Math.random() * 10,
+      vy: 2 + Math.random() * 4,
+      vx: -1.5 + Math.random() * 3,
+      rot: Math.random() * Math.PI * 2,
+      vr: -0.2 + Math.random() * 0.4,
+      color: colors[(Math.random() * colors.length) | 0],
+    });
+  }
+  const start = performance.now();
+  const DURATION = 4000;
+  function frame(now) {
+    const elapsed = now - start;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const p of pieces) {
+      p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    if (elapsed < DURATION) {
+      requestAnimationFrame(frame);
+    } else {
+      canvas.remove();
+    }
+  }
+  requestAnimationFrame(frame);
 }
 
 function maybeStreamBots(st) {

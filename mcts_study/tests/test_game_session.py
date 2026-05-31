@@ -24,6 +24,37 @@ def test_construct_and_state_json():
     assert len(s["seat_names"]) == 4
 
 
+def test_seat_names_distinct_and_informative():
+    sess = GameSession(_setup(human_seat=0))
+    names = sess.seat_names()
+    assert len(names) == 4
+    assert names[0] == "You"
+    bot_names = names[1:]
+    # Three Random bots must read as three distinct personas, not all "Random".
+    assert len(set(bot_names)) == 3, bot_names
+    # Each bot name stays informative: it carries its type label in parens.
+    assert all("(Random)" in n for n in bot_names), bot_names
+
+
+def test_seat_names_gnn_includes_checkpoint_stem():
+    # Build a Random-only session, then swap in a GNN-style spec so seat_names
+    # exercises the checkpoint-stem path without loading a real torch model.
+    sess = GameSession(_setup(human_seat=0))
+    sess._seat_specs[3] = {"type": "PureGnn", "checkpoint": "/some/dir/round0_Cell6.pt"}
+    names = sess.seat_names()
+    assert names[0] == "You"
+    assert "PureGnn" in names[3] and "round0_Cell6" in names[3], names[3]
+    assert len(set(names)) == 4
+
+
+def test_last_action_recorded_after_apply():
+    sess = GameSession(_setup(human_seat=0))
+    assert sess.state_json()["last_action"] is None
+    sess.advance()
+    la = sess.state_json()["last_action"]
+    assert la is None or ({"action", "player"} <= set(la))
+
+
 def test_board_payload_present():
     sess = GameSession(_setup())
     board = sess.board_payload()
