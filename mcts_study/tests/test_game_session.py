@@ -1,6 +1,8 @@
 """Tests for the live GameSession."""
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from catan_mcts.web.game_session import GameSession
@@ -163,3 +165,51 @@ def test_apply_human_action_async_returns_and_settles():
     assert not sess.is_advancing()
     final = sess.state_json()
     assert final["status"] in {"your_turn", "trade_offer", "game_over", "error"}
+
+
+def _drive_to_yop(seed):
+    """Drive a fresh engine until seat 0 can play Year of Plenty; return (engine,
+    same-kind YoP action id) or (None, None). Buys dev cards to surface YoP."""
+    from catan_bot import _engine
+    eng = _engine.Engine(seed)
+    rng = random.Random(seed)
+    for _ in range(6000):
+        if eng.is_terminal():
+            return None, None
+        if eng.is_chance_pending():
+            eng.apply_chance_outcome(int(eng.chance_outcomes()[0][0]))
+            continue
+        la = [int(a) for a in eng.legal_actions()]
+        if int(eng.current_player()) == 0:
+            yop = [a for a in la if 234 <= a < 259]
+            if yop:
+                same = [a for a in yop if a in (234, 240, 246, 252, 258)]
+                return eng, (same[0] if same else yop[0])
+            if 226 in la:
+                eng.step(226)
+                continue
+        eng.step(int(rng.choice(la)))
+    return None, None
+
+
+def test_same_kind_year_of_plenty_applies_cleanly():
+    """A same-kind Year of Plenty (e.g. Wood+Wood, id 234) must apply through
+    the session without hanging or erroring — guards against the frontend bug
+    where same-kind picks were rejected and the UI stalled."""
+    eng = target = None
+    for seed in range(0, 80):
+        eng, target = _drive_to_yop(seed)
+        if eng is not None:
+            break
+    if eng is None:
+        pytest.skip("no YoP-legal state reached within budget")
+
+    # Wrap the YoP-legal engine in a session and apply the same-kind play
+    # through the real POST /action path.
+    sess = GameSession(_setup(human_seat=0))
+    sess._state._engine = eng
+    legal_ids = [int(a["id"]) for a in sess.state_json()["legal_actions"]]
+    assert target in legal_ids, "same-kind YoP id should be offered"
+    out = sess.apply_human_action(target)
+    assert out.get("error") is None
+    assert out["status"] in {"your_turn", "trade_offer", "bot_thinking", "game_over"}

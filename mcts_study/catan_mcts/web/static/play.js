@@ -519,55 +519,68 @@ function renderDevCards(g, legalDevIds) {
       <span id="yopErr" class="dev-pick-err"></span></div>`;
   el.innerHTML = `<div class="trade-grid-label">Dev Cards</div>` +
                  `<div class="dev-hand">${cards}</div>` + picker;
-  renderYopIcons();   // (re)draw the icon picker for the current selection
+  renderYopIcons(null);   // draw the icon picker fresh (1st-resource row)
 }
 
-// Year of Plenty via clickable resource icons (two clicks), not dropdowns.
-// G._yopFirst holds the first picked resource (or null). Clicking a second
-// resource plays 234 + r1*5 + r2 if that combo is legal this turn.
+// Year of Plenty via clickable resource icons. STATELESS: the in-progress
+// first pick lives in the picker's `data-first` attribute (not a persistent
+// global), so re-renders from state updates can't desync it. Same-kind picks
+// (e.g. Wheat+Wheat, id 252) are fully supported — the engine allows all 25
+// ordered pairs incl. r1==r2.
 function yopLegalIds() {
   return new Set((G.state.legal_actions || [])
     .filter(a => a.id >= 234 && a.id < 259).map(a => a.id));
 }
 
-function renderYopIcons() {
+// Render the icon rows. `first` (0..4 or null) is the resource already picked.
+function renderYopIcons(first) {
   const box = document.getElementById('yopIcons');
   if (!box) return;
+  if (first === undefined) first = null;
+  box.dataset.first = (first == null) ? '' : String(first);
   const legal = yopLegalIds();
-  const first = (G && G._yopFirst != null) ? G._yopFirst : null;
-  // A resource is a valid SECOND pick (given first=r1) iff 234+r1*5+r2 is legal.
-  // A resource is a valid FIRST pick iff some r2 makes 234+r1*5+r2 legal.
-  const validFirst = r => [0,1,2,3,4].some(r2 => legal.has(234 + r*5 + r2));
+  const validFirst  = r  => [0,1,2,3,4].some(r2 => legal.has(234 + r*5 + r2));
   const validSecond = r2 => first != null && legal.has(234 + first*5 + r2);
   let html = '';
   for (let r = 0; r < 5; r++) {
-    const enabled = first == null ? validFirst(r) : validSecond(r);
+    const enabled = (first == null) ? validFirst(r) : validSecond(r);
     const sel = (first === r) ? ' yop-sel' : '';
     html += enabled
-      ? `<button class="dev-pick yop-icon${sel}" onclick="pickYop(${r})">${res(r)}</button>`
-      : `<button class="dev-pick yop-icon" disabled>${res(r)}</button>`;
+      ? `<button type="button" class="dev-pick yop-icon${sel}" onclick="pickYop(${r})">${res(r)}</button>`
+      : `<button type="button" class="dev-pick yop-icon" disabled>${res(r)}</button>`;
   }
-  const hint = first == null ? 'Click the 1st resource' : 'Now click the 2nd resource';
-  box.innerHTML = `<span class="yop-hint">${hint}</span> ${html}` +
-    (first != null ? ` <button class="dev-pick" onclick="resetYop()">↺</button>` : '');
+  const hint = (first == null) ? 'Click the 1st resource' : 'Now click the 2nd (same is OK)';
+  html += (first != null)
+    ? ` <button type="button" class="dev-pick" onclick="resetYop()" title="start over">↺</button>` : '';
+  box.innerHTML = `<span class="yop-hint">${hint}</span> ${html}`;
 }
 
 function pickYop(r) {
-  if (G._yopFirst == null) { G._yopFirst = r; renderYopIcons(); return; }
-  const id = 234 + G._yopFirst * 5 + r;
-  if (!yopLegalIds().has(id)) {
-    document.getElementById('yopErr').textContent = 'illegal pair';
+  const box = document.getElementById('yopIcons');
+  if (!box) return;
+  const cur = box.dataset.first;
+  if (cur === '' || cur === undefined) {
+    // First pick — remember it in the DOM and redraw the 2nd-pick row.
+    renderYopIcons(r);
     return;
   }
-  G._yopFirst = null;     // reset selection before the state refreshes
+  const first = parseInt(cur, 10);
+  const id = 234 + first * 5 + r;          // r may equal `first` (same-kind) — fine.
+  const err = document.getElementById('yopErr');
+  if (!yopLegalIds().has(id)) {
+    if (err) err.textContent = 'that pair is not available';
+    return;
+  }
+  if (err) err.textContent = '';
+  box.dataset.first = '';                   // clear before the state refreshes
   postAction(id);
 }
 
-function resetYop() { G._yopFirst = null; renderYopIcons(); }
+function resetYop() { renderYopIcons(null); }
 
 // Show one picker at a time; clicking the same card again hides it.
 function toggleDevPicker(which) {
-  if (which === 'yop') { G._yopFirst = null; renderYopIcons(); }  // fresh selection
+  if (which === 'yop') { renderYopIcons(null); }  // fresh selection on open
   for (const w of ['mono', 'yop']) {
     const p = document.getElementById('devPicker-' + w);
     if (!p) continue;
