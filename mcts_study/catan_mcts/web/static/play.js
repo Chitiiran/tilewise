@@ -279,10 +279,9 @@ function renderPlayers(g) {
   for (let i = 0; i < 4; i++) {
     const h = st.hands[i];
     const hand = h.breakdown.map((n,r) => n>0?`${res(r)}${n}`:'').filter(Boolean).join(' ');
-    const me = i === g.human_seat ? ' (You)' : '';
     const isCp = g.current_player === i;
     const cp = isCp ? '▶ ' : '';
-    rows += `<tr class="${isCp ? 'cp-row' : ''}"><td class="seat-${i}"><b>${cp}${g.seat_names[i]}${me}</b></td>
+    rows += `<tr class="${isCp ? 'cp-row' : ''}"><td class="seat-${i}"><b>${cp}${g.seat_names[i]}</b></td>
              <td>${st.vp[i]} VP</td><td>${hand||'—'}</td></tr>`;
   }
   document.getElementById('players').innerHTML =
