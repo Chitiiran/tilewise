@@ -286,7 +286,14 @@ function maybeStreamBots(st) {
       if (next.status !== 'bot_thinking') { G._sse.close(); G._sse = null; }
     } catch (_) {}
   };
-  G._sse.onerror = () => { if (G._sse) { G._sse.close(); G._sse = null; }
-    // Stream closed; fetch authoritative state once.
-    fetch(`/api/games/${G.gid}/state`).then(r => r.json()).then(applyStateNoStream); };
+  G._sse.onerror = () => {
+    if (G._sse) { G._sse.close(); G._sse = null; }
+    // Stream closed (server SSE cap or network). Re-sync once; if bots are
+    // still driving, re-open the stream so slow GNN/MCTS turns don't strand
+    // the UI on "bot thinking".
+    fetch(`/api/games/${G.gid}/state`).then(r => r.json()).then(st => {
+      applyStateNoStream(st);
+      if (st.status === 'bot_thinking') maybeStreamBots(st);
+    }).catch(() => {});
+  };
 }
