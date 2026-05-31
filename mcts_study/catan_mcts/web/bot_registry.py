@@ -66,8 +66,7 @@ def list_checkpoints(checkpoints_dir) -> list[dict]:
 
 def _load_gnn_model(checkpoint: str, *, hidden_dim: int, num_layers: int, device: str):
     """Load a GnnModel from a .pt checkpoint (handles {'model_state': ...} wrappers)."""
-    from pathlib import Path as _P
-    if not _P(checkpoint).exists():
+    if not Path(checkpoint).exists():
         raise ValueError(f"checkpoint not found: {checkpoint}")
     import torch
     from catan_gnn.gnn_model import GnnModel
