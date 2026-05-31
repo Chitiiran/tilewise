@@ -112,6 +112,10 @@ function startGame(body) {
 
 const PLAYER_COLORS = ["#cc3333", "#3366cc", "#33aa55", "#cc8833"];
 const RES = ['🪵','🧱','🐑','🌾','⛰️'];
+// Letter fallback for environments without a color-emoji font (mirrors
+// board_layout.RESOURCE_LETTER). Wrapped so a missing glyph still reads.
+const RES_LETTER = ['W', 'B', 'S', 'Wh', 'O'];
+function res(r) { return `<span title="${RES_LETTER[r]}">${RES[r]}</span>`; }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
@@ -192,7 +196,7 @@ function renderPlayers(g) {
   const st = g.state; let rows = '';
   for (let i = 0; i < 4; i++) {
     const h = st.hands[i];
-    const hand = h.breakdown.map((n,r) => n>0?`${RES[r]}${n}`:'').filter(Boolean).join(' ');
+    const hand = h.breakdown.map((n,r) => n>0?`${res(r)}${n}`:'').filter(Boolean).join(' ');
     const me = i === g.human_seat ? ' (You)' : '';
     const cp = g.current_player === i ? '▶ ' : '';
     rows += `<tr><td class="seat-${i}"><b>${cp}${g.seat_names[i]}${me}</b></td>
@@ -268,7 +272,7 @@ function showTradeModal(o) {
   div.className = 'modal-bg';
   div.innerHTML = `<div class="modal">
     <p><b class="seat-${o.from_seat}">${G.state.seat_names[o.from_seat]}</b> offers a trade:</p>
-    <p>You give ${RES[o.you_give[0]]}×${o.you_give[1]}, you get ${RES[o.you_get[0]]}×${o.you_get[1]}</p>
+    <p>You give ${res(o.you_give[0])}×${o.you_give[1]}, you get ${res(o.you_get[0])}×${o.you_get[1]}</p>
     <button class="primary" onclick="respondTrade(true)">Accept</button>
     <button onclick="respondTrade(false)">Reject</button></div>`;
   document.body.appendChild(div);
@@ -293,7 +297,9 @@ function maybeStreamBots(st) {
     // the UI on "bot thinking".
     fetch(`/api/games/${G.gid}/state`).then(r => r.json()).then(st => {
       applyStateNoStream(st);
-      if (st.status === 'bot_thinking') maybeStreamBots(st);
+      // Backoff before re-opening so a proxy that fails SSE but serves REST
+      // can't drive a tight reconnect loop.
+      if (st.status === 'bot_thinking') setTimeout(() => maybeStreamBots(st), 500);
     }).catch(() => {});
   };
 }
