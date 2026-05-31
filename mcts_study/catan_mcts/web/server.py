@@ -26,6 +26,14 @@ class SetupSpec(BaseModel):
     seed: int | None = None
 
 
+class ActionBody(BaseModel):
+    action: int
+
+
+class TradeBody(BaseModel):
+    accept: bool
+
+
 def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
     app = FastAPI(title="Catan Play-vs-Bots")
     checkpoints_dir = Path(checkpoints_dir)
@@ -38,6 +46,39 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
             "types": bot_registry.list_types(),
             "checkpoints": bot_registry.list_checkpoints(checkpoints_dir),
         }
+
+    def _get(gid: str) -> GameSession:
+        sess = games.get(gid)
+        if sess is None:
+            raise HTTPException(status_code=404, detail="game not found")
+        return sess
+
+    @app.post("/api/games")
+    def create_game(spec: SetupSpec):
+        try:
+            sess = GameSession(spec.model_dump())
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        gid = uuid.uuid4().hex[:12]
+        games[gid] = sess
+        state = sess.advance()
+        return {"game_id": gid, "board": sess.board_payload(), "state": state}
+
+    @app.get("/api/games/{gid}/state")
+    def get_state(gid: str):
+        return _get(gid).state_json()
+
+    @app.post("/api/games/{gid}/action")
+    def post_action(gid: str, body: ActionBody):
+        sess = _get(gid)
+        try:
+            return sess.apply_human_action(body.action)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+    @app.post("/api/games/{gid}/trade-response")
+    def post_trade(gid: str, body: TradeBody):
+        return _get(gid).respond_to_trade(accept=body.accept)
 
     app.state.games = games
     app.state.checkpoints_dir = checkpoints_dir
