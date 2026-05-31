@@ -77,6 +77,18 @@ def test_intercept_pauses_when_trade_targets_human():
     assert sj["trade_offer"]["from_seat"] == 0
 
 
+def test_trade_offer_payload_values():
+    sess = _trade_session(human_seat=1)
+    # action 260 decodes to give=0 (wood), get=1 (brick). From the human's view
+    # the swap is mirrored: you_give = what the bot wants (get), you_get = what
+    # the bot offers (give).
+    sess._pending_trade = (0, 260)
+    payload = sess._trade_offer_payload()
+    assert payload["you_give"] == [1, 1]
+    assert payload["you_get"] == [0, 1]
+    assert payload["from_seat"] == 0
+
+
 def test_reject_leaves_human_hand_unchanged():
     sess = _trade_session(human_seat=1)
     sess._pending_trade = (0, 260)

@@ -17,7 +17,12 @@ from catan_mcts.web import bot_registry, board_layout, serializers, action_decod
 
 
 class _MaskedLegalView:
-    """Wraps a CatanState so legal_actions() omits one action; all else delegates."""
+    """Wraps a CatanState so legal_actions() omits one action; all else delegates.
+
+    clone() preserves the mask (returns another _MaskedLegalView) so tree-search
+    bots like OpenSpiel's MCTSBot also see the masked action set at their tree
+    root, not just the top-level step() caller.
+    """
     def __init__(self, state, masked_action: int):
         self._state = state
         self._masked = int(masked_action)
@@ -25,8 +30,14 @@ class _MaskedLegalView:
     def legal_actions(self):
         return [a for a in self._state.legal_actions() if int(a) != self._masked]
 
+    def clone(self):
+        return _MaskedLegalView(self._state.clone(), self._masked)
+
     def __getattr__(self, name):
         return getattr(self._state, name)
+
+
+END_TURN = 204
 
 
 class GameSession:
@@ -50,6 +61,10 @@ class GameSession:
         self._last_narration = "(game start)"
         self._error = None
         self._thread = None
+        # RLock (re-entrant): advance() -> apply_human_action()/respond_to_trade()
+        # paths re-acquire; the server reads state_json() from the main thread
+        # while advance_async()'s daemon thread mutates the engine.
+        self._lock = threading.RLock()
 
     def seat_names(self) -> list[str]:
         names = []
@@ -83,31 +98,35 @@ class GameSession:
         return "bot_thinking"
 
     def state_json(self) -> dict:
-        eng = self._state._engine
-        status = self._status()
-        out = {
-            "status": status,
-            "human_seat": self.human_seat,
-            "current_player": -1 if eng.is_terminal() else int(eng.current_player()),
-            "phase": None,
-            "narration": self._last_narration,
-            "state": serializers.serialize_state(eng, self._last_narration),
-            "seat_names": self.seat_names(),
-        }
-        out["phase"] = out["state"]["phase"]
-        if status == "your_turn":
-            out["legal_actions"] = action_decode.decode_many(self._state.legal_actions())
-        if status == "trade_offer":
-            out["trade_offer"] = self._trade_offer_payload()
-        if status == "game_over":
-            out["returns"] = self._state.returns()
-        if status == "error":
-            out["error"] = str(self._error)
-        return out
+        with self._lock:
+            eng = self._state._engine
+            status = self._status()
+            out = {
+                "status": status,
+                "human_seat": self.human_seat,
+                "current_player": -1 if eng.is_terminal() else int(eng.current_player()),
+                "phase": None,
+                "narration": self._last_narration,
+                "state": serializers.serialize_state(eng, self._last_narration),
+                "seat_names": self.seat_names(),
+            }
+            out["phase"] = out["state"]["phase"]
+            if status == "your_turn":
+                out["legal_actions"] = action_decode.decode_many(self._state.legal_actions())
+            if status == "trade_offer":
+                out["trade_offer"] = self._trade_offer_payload()
+            if status == "game_over":
+                out["returns"] = self._state.returns()
+            if status == "error":
+                out["error"] = str(self._error)
+            return out
 
     def _trade_offer_payload(self) -> dict:
         proposer, action = self._pending_trade
         give, get = trade_logic.decode_propose_trade(action)
+        # The proposer gives `give` and wants `get`. From the human's view this
+        # is mirrored: you_give = the resource the bot wants (get); you_get = the
+        # resource the bot offers (give). Each side is a 1-for-1 swap.
         return {"from_seat": proposer, "you_give": [get, 1], "you_get": [give, 1]}
 
     def _sample_chance(self) -> int:
@@ -122,51 +141,60 @@ class GameSession:
 
     def advance(self, max_steps: int = 100000) -> dict:
         """Run chance + bot turns until human turn / trade offer / terminal."""
-        steps = 0
-        while steps < max_steps:
-            if self._error is not None:
-                return self.state_json()
-            if self._state.is_terminal():
-                return self.state_json()
-            if self._state.is_chance_node():
-                self._state.apply_action(self._sample_chance())
+        with self._lock:
+            steps = 0
+            while steps < max_steps:
+                if self._error is not None:
+                    return self.state_json()
+                if self._state.is_terminal():
+                    return self.state_json()
+                if self._state.is_chance_node():
+                    self._state.apply_action(self._sample_chance())
+                    steps += 1
+                    continue
+                cp = int(self._state.current_player())
+                if cp == self.human_seat:
+                    return self.state_json()
+                legal = self._state.legal_actions()
+                if len(legal) == 1:
+                    self._apply_and_narrate(int(legal[0]), cp)
+                    steps += 1
+                    continue
+                try:
+                    action = int(self._bots[cp].step(self._state))
+                except Exception as e:
+                    self._error = f"bot P{cp} errored: {e}"
+                    return self.state_json()
+                if self._maybe_intercept_trade(cp, action):
+                    return self.state_json()
+                self._apply_and_narrate(action, cp)
                 steps += 1
-                continue
-            cp = int(self._state.current_player())
-            if cp == self.human_seat:
-                return self.state_json()
-            legal = self._state.legal_actions()
-            if len(legal) == 1:
-                self._apply_and_narrate(int(legal[0]), cp)
-                steps += 1
-                continue
-            try:
-                action = int(self._bots[cp].step(self._state))
-            except Exception as e:
-                self._error = f"bot P{cp} errored: {e}"
-                return self.state_json()
-            if self._maybe_intercept_trade(cp, action):
-                return self.state_json()
-            self._apply_and_narrate(action, cp)
-            steps += 1
-        return self.state_json()
+            # Every normal exit is via an explicit return inside the loop; reaching
+            # here means the step cap was hit without the game terminating.
+            self._error = "step cap exceeded (game did not terminate within max_steps)"
+            return self.state_json()
 
     def _apply_and_narrate(self, action: int, player: int) -> None:
         self._last_narration = f"P{player} {serializers.action_desc(action)}"
         self._state.apply_action(int(action))
 
     def apply_human_action(self, action: int) -> dict:
-        if int(self._state.current_player()) != self.human_seat:
-            raise ValueError("not your turn")
-        legal = self._state.legal_actions()
-        if int(action) not in legal:
-            raise ValueError(f"illegal action {action}")
-        self._apply_and_narrate(int(action), self.human_seat)
-        return self.advance()
+        with self._lock:
+            if int(self._state.current_player()) != self.human_seat:
+                raise ValueError("not your turn")
+            legal = self._state.legal_actions()
+            if int(action) not in legal:
+                raise ValueError(f"illegal action {action}")
+            self._apply_and_narrate(int(action), self.human_seat)
+            return self.advance()
 
     def _predict_trade_acceptor(self, current_player: int, action: int) -> int:
-        if not (260 <= int(action) < 280):
-            return -1
+        """Seat the engine would auto-match for this ProposeTrade, else -1.
+
+        Assumes `action` is already in the ProposeTrade range; the entry-point
+        guard lives in _maybe_intercept_trade. Delegates decode + acceptor
+        scan to trade_logic so the rule mirror lives in one place.
+        """
         give, get = trade_logic.decode_propose_trade(action)
         hands = [list(h) for h in self._state._engine.all_hands()]
         return trade_logic.first_acceptor(current_player, give, get, hands)
@@ -174,7 +202,8 @@ class GameSession:
     def _maybe_intercept_trade(self, current_player: int, action: int) -> bool:
         """If this bot ProposeTrade would auto-match the human, pause. Returns
         True iff intercepted (caller must stop driving and surface trade_offer)."""
-        if not (260 <= int(action) < 280):
+        base = trade_logic.PROPOSE_TRADE_BASE
+        if not (base <= int(action) < base + 20):
             return False
         if self._predict_trade_acceptor(current_player, action) == self.human_seat:
             self._pending_trade = (current_player, int(action))
@@ -182,32 +211,34 @@ class GameSession:
         return False
 
     def respond_to_trade(self, accept: bool) -> dict:
-        if self._pending_trade is None:
+        with self._lock:
+            if self._pending_trade is None:
+                return self.advance()
+            proposer, action = self._pending_trade
+            self._pending_trade = None
+            if accept:
+                self._apply_and_narrate(action, proposer)
+            else:
+                substitute = self._requery_bot_masked(proposer, masked_action=action)
+                self._apply_and_narrate(substitute, proposer)
             return self.advance()
-        proposer, action = self._pending_trade
-        self._pending_trade = None
-        if accept:
-            self._apply_and_narrate(action, proposer)
-        else:
-            substitute = self._requery_bot_masked(proposer, masked_action=action)
-            self._apply_and_narrate(substitute, proposer)
-        return self.advance()
 
     def _requery_bot_masked(self, seat: int, masked_action: int) -> int:
         """Ask the bot for an action with `masked_action` removed; else EndTurn."""
         legal = [a for a in self._state.legal_actions() if int(a) != int(masked_action)]
         if not legal:
-            return 204
+            return END_TURN
         try:
             a = int(self._bots[seat].step(_MaskedLegalView(self._state, masked_action)))
             if a in legal:
                 return a
         except Exception:
             pass
-        return 204 if 204 in legal else int(legal[0])
+        return END_TURN if END_TURN in legal else int(legal[0])
 
     def advance_async(self) -> None:
-        """Run advance() in a daemon thread; poll is_advancing()/state_json()."""
+        """Fire-and-forget: run advance() in a daemon thread; no-op if one is
+        already running. Poll is_advancing()/state_json() for progress."""
         if getattr(self, "_thread", None) is not None and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self.advance, daemon=True)
