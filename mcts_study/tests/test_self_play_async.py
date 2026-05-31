@@ -58,3 +58,21 @@ def test_memory_budget_caps_concurrency(tmp_path, capsys):
                   vp_target=10, bonuses=True, device="cpu", max_batch=8,
                   window_ms=5, seed_base=5_300_000, ram_budget_mb=64)
     assert "concurrency capped" in capsys.readouterr().out.lower()
+
+
+def test_orchestrator_enables_self_play_exploration(tmp_path, monkeypatch):
+    # run_self_play(self_play=True) must call play_one_async_game with
+    # self_play=True so Dirichlet noise + temperature sampling activate.
+    import catan_mcts.experiments.self_play_async as spa
+    captured = {}
+    orig = spa.play_one_async_game
+    async def spy(*args, **kwargs):
+        captured["self_play"] = kwargs.get("self_play")
+        return await orig(*args, **kwargs)
+    monkeypatch.setattr(spa, "play_one_async_game", spy)
+    ckpt = _save_ckpt(tmp_path)
+    run_self_play(out_root=tmp_path / "runs", checkpoint=ckpt, num_games=1,
+                  n_sims=4, n_concurrent=1, hidden_dim=8, num_layers=2,
+                  vp_target=10, bonuses=True, device="cpu", max_batch=4,
+                  window_ms=5, seed_base=5_400_000, self_play=True)
+    assert captured.get("self_play") is True

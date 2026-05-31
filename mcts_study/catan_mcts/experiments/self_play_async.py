@@ -30,14 +30,15 @@ def _load_model(checkpoint: Path, hidden_dim: int, num_layers: int, device: str)
     return model.to(device).eval()
 
 
-async def _play_and_record(*, game, seed, evaluator, n_sims, rec, sem, active):
+async def _play_and_record(*, game, seed, evaluator, n_sims, rec, sem, active,
+                           self_play=False):
     async with sem:
         active["n"] += 1
         evaluator.active_game_count = active["n"]
         try:
             result = await play_one_async_game(
                 game=game, seed=seed, evaluator=evaluator, n_sims=n_sims,
-                rng=np.random.default_rng(seed))
+                rng=np.random.default_rng(seed), self_play=self_play)
             with rec.game(seed=seed) as g_rec:
                 for m in result.moves:
                     g_rec.record_move(
@@ -58,7 +59,7 @@ async def _play_and_record(*, game, seed, evaluator, n_sims, rec, sem, active):
 async def _run_async(*, out, checkpoint, num_games, n_sims, n_concurrent,
                      hidden_dim, num_layers, vp_target, bonuses, device,
                      max_batch, window_ms, seed_base, resume,
-                     ram_budget_mb, per_game_mb, max_seconds):
+                     ram_budget_mb, per_game_mb, max_seconds, self_play=False):
     if ram_budget_mb is not None:
         cap = max(1, int(ram_budget_mb / per_game_mb))
         if cap < n_concurrent:
@@ -81,7 +82,8 @@ async def _run_async(*, out, checkpoint, num_games, n_sims, n_concurrent,
     game = CatanGame(vp_target=vp_target, bonuses=bonuses)
     seeds = [seed_base + i for i in range(num_games) if (seed_base + i) not in done]
     tasks = [_play_and_record(game=game, seed=s, evaluator=evaluator,
-                              n_sims=n_sims, rec=rec, sem=sem, active=active)
+                              n_sims=n_sims, rec=rec, sem=sem, active=active,
+                              self_play=self_play)
              for s in seeds]
     try:
         results = await asyncio.wait_for(
@@ -115,7 +117,7 @@ def run_self_play(*, out_root: Path, checkpoint: Path, num_games: int = 64,
                   max_seconds: float = 900.0, seed_base: int = 20_000_000,
                   resume_dir: Path | None = None,
                   ram_budget_mb: float | None = None,
-                  per_game_mb: float = 50.0) -> Path:
+                  per_game_mb: float = 50.0, self_play: bool = False) -> Path:
     out = resume_dir if resume_dir is not None else make_run_dir(out_root, "self_play_async")
     asyncio.run(_run_async(
         out=out, checkpoint=checkpoint, num_games=num_games, n_sims=n_sims,
@@ -123,7 +125,7 @@ def run_self_play(*, out_root: Path, checkpoint: Path, num_games: int = 64,
         vp_target=vp_target, bonuses=bonuses, device=device, max_batch=max_batch,
         window_ms=window_ms, seed_base=seed_base, resume=resume_dir is not None,
         ram_budget_mb=ram_budget_mb, per_game_mb=per_game_mb,
-        max_seconds=max_seconds))
+        max_seconds=max_seconds, self_play=self_play))
     return out
 
 
@@ -150,6 +152,9 @@ def cli_main():
                         "(finished games are already persisted)")
     p.add_argument("--resume-dir", type=Path, default=None,
                    help="resume into an existing run dir, skipping done seeds")
+    p.add_argument("--self-play", action="store_true",
+                   help="enable AlphaZero exploration (Dirichlet root noise + "
+                        "temperature sampling) for data generation")
     args = p.parse_args()
     out = run_self_play(
         out_root=args.out_root, checkpoint=args.checkpoint, num_games=args.num_games,
@@ -158,7 +163,7 @@ def cli_main():
         device=args.device, max_batch=args.max_batch, window_ms=args.window_ms,
         seed_base=args.seed_base, ram_budget_mb=args.ram_budget_mb,
         per_game_mb=args.per_game_mb, max_seconds=args.max_seconds,
-        resume_dir=args.resume_dir)
+        resume_dir=args.resume_dir, self_play=args.self_play)
     print(f"self_play_async wrote to {out}")
 
 
