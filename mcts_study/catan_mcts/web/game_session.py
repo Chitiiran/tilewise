@@ -241,6 +241,43 @@ class GameSession:
             pass
         return END_TURN if END_TURN in legal else int(legal[0])
 
+    def apply_human_action_async(self, action: int) -> dict:
+        """Apply the human action, then drive bots in the background.
+
+        Returns the immediate state snapshot (status likely bot_thinking, but
+        with fast bots it may already show the settled status). The `with
+        self._lock:` block ends BEFORE advance_async() so the daemon thread can
+        re-acquire the lock inside advance() without deadlocking (RLock is
+        per-thread; the worker is a different thread)."""
+        with self._lock:
+            if int(self._state.current_player()) != self.human_seat:
+                raise ValueError("not your turn")
+            legal = self._state.legal_actions()
+            if int(action) not in legal:
+                raise ValueError(f"illegal action {action}")
+            self._apply_and_narrate(int(action), self.human_seat)
+        self.advance_async()
+        return self.state_json()
+
+    def respond_to_trade_async(self, accept: bool) -> dict:
+        """Resolve the pending trade, then drive bots in the background."""
+        with self._lock:
+            if self._pending_trade is not None:
+                proposer, action = self._pending_trade
+                self._pending_trade = None
+                if accept:
+                    self._apply_and_narrate(action, proposer)
+                else:
+                    substitute = self._requery_bot_masked(proposer, masked_action=action)
+                    self._apply_and_narrate(substitute, proposer)
+        self.advance_async()
+        return self.state_json()
+
+    def start_async(self) -> dict:
+        """Kick off the opening bot turns in the background (game creation)."""
+        self.advance_async()
+        return self.state_json()
+
     def advance_async(self) -> None:
         """Fire-and-forget: run advance() in a daemon thread; no-op if one is
         already running. Poll is_advancing()/state_json() for progress."""

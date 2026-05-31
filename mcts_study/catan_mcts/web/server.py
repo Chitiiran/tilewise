@@ -63,7 +63,7 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         gid = uuid.uuid4().hex[:12]
         games[gid] = sess
-        state = sess.advance()
+        state = sess.start_async()
         return {"game_id": gid, "board": sess.board_payload(), "state": state}
 
     @app.get("/api/games/{gid}/state")
@@ -74,7 +74,7 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
     def post_action(gid: str, body: ActionBody):
         sess = _get(gid)
         try:
-            return sess.apply_human_action(body.action)
+            return sess.apply_human_action_async(body.action)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
 
@@ -82,7 +82,7 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
     def post_trade(gid: str, body: TradeBody):
         sess = _get(gid)
         try:
-            return sess.respond_to_trade(accept=body.accept)
+            return sess.respond_to_trade_async(accept=body.accept)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
 
@@ -91,20 +91,21 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
         sess = _get(gid)
 
         def gen():
-            last = None
             snap = sess.state_json()
             yield f"data: {json.dumps(snap)}\n\n"
             last = snap["status"]
-            for _ in range(600):
-                if not sess.is_advancing():
-                    final = sess.state_json()
-                    if final["status"] != last:
-                        yield f"data: {json.dumps(final)}\n\n"
-                    break
+            # Drive-completion stream: while bots run in the background, emit
+            # whenever the status transitions; always emit the final settled
+            # state once advancing stops. (Status-transition contract: a long
+            # run of same-status bot moves yields no intermediate events.)
+            for _ in range(1200):  # ~60s cap at 50ms
+                advancing = sess.is_advancing()
                 cur = sess.state_json()
                 if cur["status"] != last:
                     yield f"data: {json.dumps(cur)}\n\n"
                     last = cur["status"]
+                if not advancing:
+                    break
                 time.sleep(0.05)
 
         return StreamingResponse(gen(), media_type="text/event-stream")

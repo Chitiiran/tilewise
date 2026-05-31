@@ -112,3 +112,23 @@ def test_advance_async_runs_in_background():
         time.sleep(0.02)
     assert not sess.is_advancing()
     assert sess.state_json()["status"] in {"your_turn", "game_over"}
+
+
+def test_apply_human_action_async_returns_and_settles():
+    sess = GameSession(_setup(human_seat=0))
+    # Drive to the human's first decision synchronously, then act async.
+    s = sess.advance()
+    if s["status"] != "your_turn":
+        return  # game ended immediately (unlikely); nothing to assert
+    aid = s["legal_actions"][0]["id"]
+    out = sess.apply_human_action_async(aid)
+    assert out["status"] in {"your_turn", "bot_thinking", "trade_offer", "game_over"}
+    # Wait for the background driving to settle.
+    import time as _t
+    for _ in range(500):
+        if not sess.is_advancing():
+            break
+        _t.sleep(0.02)
+    assert not sess.is_advancing()
+    final = sess.state_json()
+    assert final["status"] in {"your_turn", "trade_offer", "game_over", "error"}

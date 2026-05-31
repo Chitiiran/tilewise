@@ -90,3 +90,31 @@ def test_bad_human_seat_returns_400(client):
     bad = {"human_seat": 9, "seats": {str(s): {"type": "Random"} for s in range(4)}, "rules": {}, "seed": 1}
     r = client.post("/api/games", json=bad)
     assert r.status_code == 400
+
+
+def test_async_create_and_play_via_sse(client):
+    body = client.post("/api/games", json=_all_random_setup()).json()
+    gid = body["game_id"]
+    state = body["state"]
+    import json as _json
+    for _ in range(100000):
+        if state["status"] == "game_over":
+            break
+        if state["status"] == "your_turn":
+            aid = state["legal_actions"][0]["id"]
+            state = client.post(f"/api/games/{gid}/action", json={"action": aid}).json()
+        elif state["status"] == "trade_offer":
+            state = client.post(f"/api/games/{gid}/trade-response", json={"accept": False}).json()
+        elif state["status"] in ("bot_thinking",):
+            # Drain the SSE stream until the session settles to a new status.
+            with client.stream("GET", f"/api/games/{gid}/events") as r:
+                for line in r.iter_lines():
+                    s = line.decode() if isinstance(line, bytes) else line
+                    if s.startswith("data:"):
+                        state = _json.loads(s[len("data:"):].strip())
+                # after stream closes, re-fetch authoritative state
+            state = client.get(f"/api/games/{gid}/state").json()
+        else:  # error
+            raise AssertionError(f"unexpected status {state['status']}: {state.get('error')}")
+    assert state["status"] == "game_over"
+    assert state["returns"] is not None
