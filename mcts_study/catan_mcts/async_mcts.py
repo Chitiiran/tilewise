@@ -142,7 +142,10 @@ async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
     state = game.new_initial_state(seed=seed)
     mcts = AsyncMcts(evaluator=evaluator, c=1.4, rng=rng)
     moves: list = []
-    move_index = 0
+    # PER-PLAYER move_index (NOT global): the dataset replay (catan_gnn.dataset)
+    # counts multi-legal decisions for the recorded current_player and matches
+    # move_index, so each seat's decisions must be numbered 0,1,2,... independently.
+    move_index_by_player = [0, 0, 0, 0]
     steps = 0
     while not state.is_terminal() and steps < max_steps:
         if state.is_chance_node():
@@ -166,12 +169,13 @@ async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
         action = mcts.best_action(visit_counts)
         legal_mask = np.zeros(ACTION_SPACE_SIZE, dtype=np.int8)
         legal_mask[np.asarray(legal, dtype=np.int64)] = 1
+        cp = int(state.current_player())
         moves.append(RecordedMove(
-            current_player=int(state.current_player()), move_index=move_index,
+            current_player=cp, move_index=move_index_by_player[cp],
             legal_mask=legal_mask, visit_counts=visit_counts,
             action_taken=int(action), root_value=float(mcts.last_root_value)))
         state.apply_action(int(action))
-        move_index += 1
+        move_index_by_player[cp] += 1
         steps += 1
     terminal = state.is_terminal()
     if terminal:
