@@ -1,3 +1,4 @@
+:root { --topbar-h: 58px; --tabpad: 16px; }
 body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
 .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: #1f2a3a; color: #f0e8c8; }
 .topbar h1 { font-size: 18px; margin: 0; }
@@ -15,14 +16,55 @@ select { padding: 4px 6px; font-size: 13px; }
 table { border-collapse: collapse; font-size: 12px; }
 th, td { border: 1px solid #ddd; padding: 3px 6px; text-align: left; }
 th { background: #f0f0f0; }
-#boardWrap { position: relative; width: 700px; max-width: 100%; }
-#board { display: block; width: 100%; height: auto; }
+#boardWrap { position: relative; width: fit-content; max-width: 100%; margin: 0 auto; }
+#board { display: block; width: auto; max-width: 100%; height: auto;
+         max-height: calc(100vh - var(--topbar-h) - 2 * var(--tabpad) - 24px); }
 svg#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .clickable { cursor: pointer; }
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 10; }
 .modal { background: #fff; padding: 20px 24px; border-radius: 8px; min-width: 280px; }
-#log { font-family: ui-monospace, monospace; font-size: 12px; max-height: 220px; overflow-y: auto; background: #1f2a3a; color: #f0e8c8; padding: 8px; border-radius: 4px; }
-#status { font-weight: 700; margin-bottom: 6px; }
+#log { font-family: ui-monospace, monospace; font-size: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; background: #1f2a3a; color: #f0e8c8; padding: 8px; border-radius: 4px; }
+#status { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
 .seat-0 { color: #cc3333; } .seat-1 { color: #3366cc; } .seat-2 { color: #33aa55; } .seat-3 { color: #cc8833; }
 #actionBar button { margin: 2px; }
 .cp-row { background: #fff7c4; }
+
+/* ---- In-game screen: no-scroll 2-column layout -------------------------- */
+.game-screen {
+  display: flex; gap: 16px; align-items: stretch;
+  height: calc(100vh - var(--topbar-h) - 2 * var(--tabpad));
+}
+.game-screen .board-col {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: flex-start;
+  justify-content: center; overflow: hidden;
+}
+.game-screen .side-col {
+  flex: 0 0 380px; max-width: 380px; display: flex; flex-direction: column;
+  gap: 12px; height: 100%; min-height: 0;
+}
+.side-col .panel { padding: 10px; }
+.side-players { flex: 0 0 auto; }
+.side-players table { width: 100%; }
+.side-log { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.side-log-title { font-size: 13px; margin: 0 0 6px; }
+.side-actions { flex: 0 0 auto; }
+.action-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.action-row button { padding: 7px 11px; font-size: 13px; }
+
+/* ---- Propose-trade grid ------------------------------------------------- */
+.trade-grid-wrap { margin-top: 8px; }
+.trade-grid { border-collapse: collapse; font-size: 13px; }
+.trade-grid th, .trade-grid td { border: 1px solid #ddd; padding: 0; text-align: center; }
+.trade-grid th { background: #f0f0f0; padding: 2px 4px; }
+.trade-grid .tg-corner { font-size: 10px; color: #666; font-weight: 400; }
+.trade-grid .tg-diag { background: #eee; }
+.tg-cell { width: 30px; height: 28px; margin: 0; border: none; background: #fff7c4; }
+.tg-cell:hover:not(:disabled) { background: #ffd633; }
+.tg-cell:disabled { background: #f7f7f7; color: #ccc; }
+
+/* ---- Trade auto-reject timer ------------------------------------------- */
+.trade-timer { margin: 10px 0; font-weight: 700; }
+.trade-timer #tradeCountdown { color: #c33; font-size: 18px; }
+.trade-timer-bar { height: 6px; background: #eee; border-radius: 3px; margin-top: 4px; overflow: hidden; }
+.trade-timer-bar > div { height: 100%; width: 100%; background: #ffd633;
+  transition: width 1s linear; }

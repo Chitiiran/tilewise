@@ -91,24 +91,35 @@ function startGame(body) {
   G = { gid: body.game_id, layout: body.board.layout, png: body.board.png_b64,
         state: body.state };
   PLAY.innerHTML = `
-    <div class="row">
+    <div class="game-screen">
       <div class="panel board-col">
         <div id="boardWrap">
           <img id="board" src="data:image/png;base64,${G.png}">
           <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
-        <div id="actionBar" style="margin-top:8px"></div>
       </div>
-      <div class="panel" style="flex:1 1 360px; min-width:340px">
-        <div id="status"></div>
-        <div id="players"></div>
-        <h3 style="font-size:13px;margin:8px 0 4px">Log</h3>
-        <div id="log"></div>
+      <div class="side-col">
+        <div class="panel side-players">
+          <div id="status"></div>
+          <div id="players"></div>
+        </div>
+        <div class="panel side-log">
+          <h3 class="side-log-title">Log</h3>
+          <div id="log"></div>
+        </div>
+        <div class="panel side-actions">
+          <div id="actionBar"></div>
+        </div>
       </div>
     </div>`;
   document.getElementById('board').addEventListener('load', renderGame);
+  window.addEventListener('resize', onResize);
   applyState(G.state);
 }
+
+// Re-map the overlay whenever the board's display size changes (the overlay
+// viewBox is derived from img.clientWidth/clientHeight).
+function onResize() { if (G && G.state) renderGame(); }
 
 const PLAYER_COLORS = ["#cc3333", "#3366cc", "#33aa55", "#cc8833"];
 const RES = ['🪵','🧱','🐑','🌾','⛰️'];
@@ -148,7 +159,13 @@ function applyStateNoStream(st) {
     log.innerHTML += `<div>${formatNarration(st.narration)}</div>`;
     log.scrollTop = log.scrollHeight;
   }
-  if (st.status === 'trade_offer') showTradeModal(st.trade_offer);
+  if (st.status === 'trade_offer') {
+    showTradeModal(st.trade_offer);
+  } else {
+    // Any non-offer state cancels a pending auto-reject and clears stale modals.
+    clearTradeTimer();
+    document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  }
   renderActionBar(st);
 }
 
@@ -198,8 +215,9 @@ function renderPlayers(g) {
     const h = st.hands[i];
     const hand = h.breakdown.map((n,r) => n>0?`${res(r)}${n}`:'').filter(Boolean).join(' ');
     const me = i === g.human_seat ? ' (You)' : '';
-    const cp = g.current_player === i ? '▶ ' : '';
-    rows += `<tr><td class="seat-${i}"><b>${cp}${g.seat_names[i]}${me}</b></td>
+    const isCp = g.current_player === i;
+    const cp = isCp ? '▶ ' : '';
+    rows += `<tr class="${isCp ? 'cp-row' : ''}"><td class="seat-${i}"><b>${cp}${g.seat_names[i]}${me}</b></td>
              <td>${st.vp[i]} VP</td><td>${hand||'—'}</td></tr>`;
   }
   document.getElementById('players').innerHTML =
@@ -245,21 +263,87 @@ function spatialTargetsSvg(g) {
   return out;
 }
 
+// Decode a propose_trade action id (260..279) into [give, get] resource
+// indices, mirroring the server's encoding: idx = id-260, give = idx//4, and
+// get = the (idx%4)-th resource != give.
+function decodeProposeTrade(id) {
+  const idx = id - 260, give = Math.floor(idx / 4);
+  const others = [0, 1, 2, 3, 4].filter(r => r !== give);
+  const get = others[idx % 4];
+  return [give, get];
+}
+
 function renderActionBar(g) {
   const bar = document.getElementById('actionBar');
   if (g.status !== 'your_turn' || !g.legal_actions) { bar.innerHTML = ''; return; }
   // Non-spatial actions become buttons; spatial ones are board clicks.
-  const NON_SPATIAL = new Set(['roll','end_turn','buy_dev','trade_bank','propose_trade','play_dev','discard']);
+  // propose_trade is special-cased into a give→get grid below.
+  const NON_SPATIAL = new Set(['roll','end_turn','buy_dev','trade_bank','play_dev','discard']);
   const seen = new Map();
+  const proposeIds = [];      // legal propose_trade action ids
   for (const a of g.legal_actions) {
+    if (a.kind === 'propose_trade') { proposeIds.push(a.id); continue; }
     if (!NON_SPATIAL.has(a.kind)) continue;
     if (!seen.has(a.id)) seen.set(a.id, a);
   }
-  bar.innerHTML = [...seen.values()]
+  let html = [...seen.values()]
     .map(a => `<button onclick="postAction(${a.id})">${a.label}</button>`).join(' ');
+  if (proposeIds.length) {
+    html += ` <button id="proposeTradeBtn" onclick="toggleTradeGrid()">Propose Trade ▾</button>`;
+  }
+  bar.innerHTML = `<div class="action-row">${html}</div>` +
+                  `<div id="tradeGrid" class="trade-grid-wrap" style="display:none"></div>`;
+  // Build the (hidden) trade grid from the legal propose_trade ids.
+  buildTradeGrid(proposeIds);
+}
+
+// Map each legal propose_trade id to its [give,get] cell and render a 5×5
+// give→get matrix. Off-diagonal cells with no legal action are disabled.
+function buildTradeGrid(proposeIds) {
+  const grid = document.getElementById('tradeGrid');
+  if (!grid) return;
+  const cellId = {};   // "gi,gj" -> action id
+  for (const id of proposeIds) {
+    const [gi, gj] = decodeProposeTrade(id);
+    cellId[`${gi},${gj}`] = id;
+  }
+  let head = '<th class="tg-corner">give↓ get→</th>';
+  for (let j = 0; j < 5; j++) head += `<th>${res(j)}</th>`;
+  let rows = '';
+  for (let i = 0; i < 5; i++) {
+    let cells = `<th>${res(i)}</th>`;
+    for (let j = 0; j < 5; j++) {
+      if (i === j) { cells += `<td class="tg-diag"></td>`; continue; }
+      const id = cellId[`${i},${j}`];
+      if (id !== undefined) {
+        cells += `<td><button class="tg-cell" onclick="postTradeFromGrid(${id})">↔</button></td>`;
+      } else {
+        cells += `<td><button class="tg-cell" disabled>·</button></td>`;
+      }
+    }
+    rows += `<tr>${cells}</tr>`;
+  }
+  grid.innerHTML = `<table class="trade-grid"><tr>${head}</tr>${rows}</table>`;
+}
+
+function toggleTradeGrid() {
+  const grid = document.getElementById('tradeGrid');
+  if (!grid) return;
+  grid.style.display = grid.style.display === 'none' ? 'block' : 'none';
+}
+
+function postTradeFromGrid(id) {
+  const grid = document.getElementById('tradeGrid');
+  if (grid) grid.style.display = 'none';
+  postAction(id);
+}
+
+function clearTradeTimer() {
+  if (G && G._tradeTimer) { clearInterval(G._tradeTimer); G._tradeTimer = null; }
 }
 
 async function respondTrade(accept) {
+  clearTradeTimer();   // cancel auto-reject so the timer never fires post-close
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
   const r = await fetch(`/api/games/${G.gid}/trade-response`,
     { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ accept }) });
@@ -267,15 +351,29 @@ async function respondTrade(accept) {
 }
 
 function showTradeModal(o) {
+  clearTradeTimer();   // a fresh offer gets a fresh 5s timer; kill any stale one
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
   const div = document.createElement('div');
   div.className = 'modal-bg';
   div.innerHTML = `<div class="modal">
     <p><b class="seat-${o.from_seat}">${G.state.seat_names[o.from_seat]}</b> offers a trade:</p>
     <p>You give ${res(o.you_give[0])}×${o.you_give[1]}, you get ${res(o.you_get[0])}×${o.you_get[1]}</p>
+    <div class="trade-timer">Auto-reject in <span id="tradeCountdown">5</span>s
+      <div class="trade-timer-bar"><div id="tradeTimerFill"></div></div></div>
     <button class="primary" onclick="respondTrade(true)">Accept</button>
     <button onclick="respondTrade(false)">Reject</button></div>`;
   document.body.appendChild(div);
+  // 5-second countdown; at 0 auto-reject. Manual Accept/Reject clears it.
+  let remaining = 5;
+  const span = document.getElementById('tradeCountdown');
+  const fill = document.getElementById('tradeTimerFill');
+  if (fill) fill.style.width = '100%';
+  G._tradeTimer = setInterval(() => {
+    remaining -= 1;
+    if (span) span.textContent = String(Math.max(remaining, 0));
+    if (fill) fill.style.width = `${Math.max(remaining, 0) * 20}%`;
+    if (remaining <= 0) { clearTradeTimer(); respondTrade(false); }
+  }, 1000);
 }
 
 function maybeStreamBots(st) {
