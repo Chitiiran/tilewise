@@ -29,7 +29,6 @@ from catan_mcts.web.board_layout import (
     build_layout as _build_layout,
     layout_dict as _layout_dict,
     render_board_png as _render_static_board_png_public,
-    XLIM, YLIM,
 )
 from catan_mcts.web.serializers import action_desc as _action_desc, serialize_state
 

@@ -98,7 +98,12 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
             # whenever the status transitions; always emit the final settled
             # state once advancing stops. (Status-transition contract: a long
             # run of same-status bot moves yields no intermediate events.)
-            for _ in range(1200):  # ~60s cap at 50ms
+            # NOTE: state_json() acquires the session lock, which advance()
+            # holds for the entire drive. During a long bot turn this poll
+            # blocks inside state_json() rather than cycling, so this
+            # 1200x50ms bound is NOT a hard ~60s wall-clock cap mid-turn — the
+            # client-side SSE reconnect (play.js) is what keeps the UI live.
+            for _ in range(1200):
                 advancing = sess.is_advancing()
                 cur = sess.state_json()
                 if cur["status"] != last:
