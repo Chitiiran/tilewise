@@ -34,6 +34,31 @@ def test_decode_non_spatial_has_null_target():
         assert d["target"] is None
 
 
+def test_decode_city_target_offset():
+    from catan_mcts.web import action_decode
+    # City ids are 54..107; target maps back to the vertex (a - 54).
+    assert action_decode.decode(54)["kind"] == "build_city"
+    assert action_decode.decode(54)["target"] == 0
+    assert action_decode.decode(107)["target"] == 53
+
+
+def test_decode_boundaries():
+    from catan_mcts.web import action_decode
+    # The off-by-one-prone seams between ranges.
+    assert action_decode.decode(198)["kind"] == "move_robber"   # last robber
+    assert action_decode.decode(199)["kind"] == "discard"        # first discard
+    assert action_decode.decode(259)["kind"] == "play_dev"       # last dev play
+    assert action_decode.decode(260)["kind"] == "propose_trade"  # first trade
+
+
+def test_decode_out_of_range_is_unknown():
+    from catan_mcts.web import action_decode
+    for a in (280, -1, 999):
+        d = action_decode.decode(a)
+        assert d["kind"] == "unknown"
+        assert d["target"] is None
+
+
 def test_decode_many():
     from catan_mcts.web import action_decode
     out = action_decode.decode_many([0, 108, 204, 205])
