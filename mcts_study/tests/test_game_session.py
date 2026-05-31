@@ -86,3 +86,17 @@ def test_reject_leaves_human_hand_unchanged():
     sess.respond_to_trade(accept=False)
     after = [list(h) for h in sess._state._engine.all_hands()]
     assert after[1] == before[1], "human hand changed on reject"
+
+
+import time
+
+
+def test_advance_async_runs_in_background():
+    sess = GameSession(_setup(human_seat=0))
+    sess.advance_async()
+    for _ in range(200):
+        if not sess.is_advancing():
+            break
+        time.sleep(0.02)
+    assert not sess.is_advancing()
+    assert sess.state_json()["status"] in {"your_turn", "game_over"}
