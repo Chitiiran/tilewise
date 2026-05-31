@@ -145,39 +145,49 @@ class GameSession:
         return int(outcomes[-1][0])
 
     def advance(self, max_steps: int = 100000) -> dict:
-        """Run chance + bot turns until human turn / trade offer / terminal."""
+        """Run chance + bot turns until human turn / trade offer / terminal.
+
+        Runs under self._lock so a background-thread drive (advance_async) can't
+        be read mid-mutation. Any unexpected engine-level exception is captured
+        into self._error rather than killing a daemon thread silently — that
+        would leave the UI hung on "bot_thinking" forever.
+        """
         with self._lock:
-            steps = 0
-            while steps < max_steps:
-                if self._error is not None:
-                    return self.state_json()
-                if self._state.is_terminal():
-                    return self.state_json()
-                if self._state.is_chance_node():
-                    self._state.apply_action(self._sample_chance())
+            try:
+                steps = 0
+                while steps < max_steps:
+                    if self._error is not None:
+                        return self.state_json()
+                    if self._state.is_terminal():
+                        return self.state_json()
+                    if self._state.is_chance_node():
+                        self._state.apply_action(self._sample_chance())
+                        steps += 1
+                        continue
+                    cp = int(self._state.current_player())
+                    if cp == self.human_seat:
+                        return self.state_json()
+                    legal = self._state.legal_actions()
+                    if len(legal) == 1:
+                        self._apply_and_narrate(int(legal[0]), cp)
+                        steps += 1
+                        continue
+                    try:
+                        action = int(self._bots[cp].step(self._state))
+                    except Exception as e:
+                        self._error = f"bot P{cp} errored: {e}"
+                        return self.state_json()
+                    if self._maybe_intercept_trade(cp, action):
+                        return self.state_json()
+                    self._apply_and_narrate(action, cp)
                     steps += 1
-                    continue
-                cp = int(self._state.current_player())
-                if cp == self.human_seat:
-                    return self.state_json()
-                legal = self._state.legal_actions()
-                if len(legal) == 1:
-                    self._apply_and_narrate(int(legal[0]), cp)
-                    steps += 1
-                    continue
-                try:
-                    action = int(self._bots[cp].step(self._state))
-                except Exception as e:
-                    self._error = f"bot P{cp} errored: {e}"
-                    return self.state_json()
-                if self._maybe_intercept_trade(cp, action):
-                    return self.state_json()
-                self._apply_and_narrate(action, cp)
-                steps += 1
-            # Every normal exit is via an explicit return inside the loop; reaching
-            # here means the step cap was hit without the game terminating.
-            self._error = "step cap exceeded (game did not terminate within max_steps)"
-            return self.state_json()
+                # Every normal exit is via an explicit return inside the loop;
+                # reaching here means the step cap was hit without terminating.
+                self._error = "step cap exceeded (game did not terminate within max_steps)"
+                return self.state_json()
+            except Exception as e:  # engine-level fault (chance/apply/legal/etc.)
+                self._error = f"engine error during advance: {e}"
+                return self.state_json()
 
     def _apply_and_narrate(self, action: int, player: int) -> None:
         self._last_narration = f"P{player} {serializers.action_desc(action)}"
