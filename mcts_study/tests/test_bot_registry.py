@@ -34,3 +34,38 @@ def test_build_unknown_type_raises():
     from catan_mcts.adapter import CatanGame
     with pytest.raises(ValueError, match="unknown bot type"):
         bot_registry.build({"type": "Nope"}, game=CatanGame(), seed=0)
+
+
+def test_list_checkpoints_scans_dir(tmp_path):
+    from catan_mcts.web import bot_registry
+    (tmp_path / "a.pt").write_bytes(b"x")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.pt").write_bytes(b"y")
+    (tmp_path / "notes.txt").write_text("ignore me")
+    cps = bot_registry.list_checkpoints(tmp_path)
+    names = {c["name"] for c in cps}
+    assert "a.pt" in names and "b.pt" in names
+    assert all(c["path"].endswith(".pt") for c in cps)
+    assert not any(c["name"] == "notes.txt" for c in cps)
+
+
+def test_build_gnn_bad_checkpoint_raises(tmp_path):
+    from catan_mcts.web import bot_registry
+    from catan_mcts.adapter import CatanGame
+    bad = tmp_path / "bad.pt"
+    bad.write_bytes(b"not a torch checkpoint")
+    with pytest.raises(ValueError, match="checkpoint"):
+        bot_registry.build(
+            {"type": "PureGnn", "checkpoint": str(bad)},
+            game=CatanGame(), seed=0,
+        )
+
+
+def test_build_gnn_missing_checkpoint_raises(tmp_path):
+    from catan_mcts.web import bot_registry
+    from catan_mcts.adapter import CatanGame
+    with pytest.raises(ValueError, match="checkpoint"):
+        bot_registry.build(
+            {"type": "PureGnn", "checkpoint": str(tmp_path / "nope.pt")},
+            game=CatanGame(), seed=0,
+        )

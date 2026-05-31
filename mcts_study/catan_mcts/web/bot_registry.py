@@ -53,5 +53,46 @@ def build(spec: dict, *, game, seed: int):
     raise ValueError(f"unknown bot type: {t!r}")
 
 
-def _build_gnn_bot(spec, *, game, seed):  # implemented in Task 5
-    raise NotImplementedError("GNN bot construction lands in Task 5")
+def list_checkpoints(checkpoints_dir) -> list[dict]:
+    """Recursively list *.pt files under `checkpoints_dir` (sorted by name)."""
+    root = Path(checkpoints_dir)
+    if not root.exists():
+        return []
+    out = []
+    for p in sorted(root.rglob("*.pt")):
+        out.append({"name": p.name, "path": str(p)})
+    return out
+
+
+def _load_gnn_model(checkpoint: str, *, hidden_dim: int, num_layers: int, device: str):
+    """Load a GnnModel from a .pt checkpoint (handles {'model_state': ...} wrappers)."""
+    from pathlib import Path as _P
+    if not _P(checkpoint).exists():
+        raise ValueError(f"checkpoint not found: {checkpoint}")
+    import torch
+    from catan_gnn.gnn_model import GnnModel
+    try:
+        obj = torch.load(checkpoint, map_location=device, weights_only=False)
+        state = obj["model_state"] if isinstance(obj, dict) and "model_state" in obj else obj
+        model = GnnModel(hidden_dim=hidden_dim, num_layers=num_layers)
+        model.load_state_dict(state)
+    except Exception as e:
+        raise ValueError(f"failed to load checkpoint {checkpoint!r}: {e}") from e
+    return model.to(device).eval()
+
+
+def _build_gnn_bot(spec, *, game, seed):
+    checkpoint = spec.get("checkpoint")
+    if not checkpoint:
+        raise ValueError("GNN bot requires a 'checkpoint' path")
+    device = spec.get("device", "cpu")
+    hidden_dim = int(spec.get("hidden_dim", 32))
+    num_layers = int(spec.get("num_layers", 2))
+    model = _load_gnn_model(checkpoint, hidden_dim=hidden_dim,
+                            num_layers=num_layers, device=device)
+    if spec["type"] == "PureGnn":
+        from catan_mcts.bots_gnn import PureGnnBot
+        return PureGnnBot(model=model, device=device)
+    from catan_mcts.experiments.e10e_gnn_mcts import build_gnn_mcts_bot
+    sims = int(spec.get("sims", 200))
+    return build_gnn_mcts_bot(game, model, sims=sims, seed=seed, device=device)
