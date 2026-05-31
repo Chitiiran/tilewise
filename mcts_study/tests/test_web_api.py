@@ -72,3 +72,9 @@ def test_sse_emits_at_least_one_event(client):
                 got = line
                 break
         assert got is not None
+
+
+def test_root_serves_index(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]

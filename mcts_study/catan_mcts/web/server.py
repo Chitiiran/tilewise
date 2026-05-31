@@ -107,6 +107,13 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    @app.get("/")
+    def index():
+        return FileResponse(_STATIC / "index.html")
+
+    if _STATIC.exists():
+        app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+
     app.state.games = games
     app.state.checkpoints_dir = checkpoints_dir
     app.state.replays_dir = replays_dir
