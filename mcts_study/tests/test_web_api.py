@@ -60,3 +60,15 @@ def test_illegal_action_returns_409(client):
 def test_unknown_game_404(client):
     r = client.get("/api/games/does-not-exist/state")
     assert r.status_code == 404
+
+
+def test_sse_emits_at_least_one_event(client):
+    gid = client.post("/api/games", json=_all_random_setup()).json()["game_id"]
+    with client.stream("GET", f"/api/games/{gid}/events") as r:
+        assert r.status_code == 200
+        got = None
+        for line in r.iter_lines():
+            if line and line.startswith("data:"):
+                got = line
+                break
+        assert got is not None

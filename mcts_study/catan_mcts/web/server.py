@@ -80,6 +80,33 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
     def post_trade(gid: str, body: TradeBody):
         return _get(gid).respond_to_trade(accept=body.accept)
 
+    import json as _json
+    from fastapi.responses import StreamingResponse
+
+    @app.get("/api/games/{gid}/events")
+    def events(gid: str):
+        sess = _get(gid)
+
+        def gen():
+            last = None
+            snap = sess.state_json()
+            yield f"data: {_json.dumps(snap)}\n\n"
+            last = snap["status"]
+            import time
+            for _ in range(600):
+                if not sess.is_advancing():
+                    final = sess.state_json()
+                    if final["status"] != last:
+                        yield f"data: {_json.dumps(final)}\n\n"
+                    break
+                cur = sess.state_json()
+                if cur["status"] != last:
+                    yield f"data: {_json.dumps(cur)}\n\n"
+                    last = cur["status"]
+                time.sleep(0.05)
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
     app.state.games = games
     app.state.checkpoints_dir = checkpoints_dir
     app.state.replays_dir = replays_dir
