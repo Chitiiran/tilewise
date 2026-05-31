@@ -136,7 +136,7 @@ function dataToPx(x, y) {
   return [((x-x0)/(x1-x0))*w, h-((y-y0)/(y1-y0))*h];
 }
 
-function applyState(st) {
+function applyStateNoStream(st) {
   G.state = st;
   renderGame();
   if (st.narration) {
@@ -144,8 +144,13 @@ function applyState(st) {
     log.innerHTML += `<div>${formatNarration(st.narration)}</div>`;
     log.scrollTop = log.scrollHeight;
   }
-  if (st.status === 'trade_offer') showTradeModal(st.trade_offer);   // Task 19
-  renderActionBar(st);                                               // Task 19
+  if (st.status === 'trade_offer') showTradeModal(st.trade_offer);
+  renderActionBar(st);
+}
+
+function applyState(st) {
+  applyStateNoStream(st);
+  maybeStreamBots(st);
 }
 
 function renderGame() {
@@ -208,7 +213,80 @@ function renderStatus(g) {
   document.getElementById('status').innerHTML = `<b>${txt}</b>`;
 }
 
-// Filled in Task 19:
-function spatialTargetsSvg(g) { return ''; }
-function renderActionBar(g) {}
-function showTradeModal(o) {}
+// ---- Interaction (Task 19) ------------------------------------------------
+async function postAction(actionId) {
+  const r = await fetch(`/api/games/${G.gid}/action`,
+    { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action: actionId }) });
+  if (r.status === 409) { const s = await fetch(`/api/games/${G.gid}/state`); applyState(await s.json()); return; }
+  applyState(await r.json());
+}
+
+function spatialTargetsSvg(g) {
+  if (g.status !== 'your_turn' || !g.legal_actions) return '';
+  let out = '';
+  for (const a of g.legal_actions) {
+    if (a.target === null) continue;
+    let px, py;
+    if (a.kind === 'build_road') {
+      const e = G.layout.edges[a.target]; [px,py] = dataToPx((e[0]+e[2])/2,(e[1]+e[3])/2);
+    } else if (a.kind === 'move_robber') {
+      const c = G.layout.hex_centers[a.target]; [px,py] = dataToPx(c[0],c[1]);
+    } else {
+      const v = G.layout.vertices[String(a.target)]; [px,py] = dataToPx(v[0],v[1]);
+    }
+    out += `<circle class="clickable" cx="${px}" cy="${py}" r="10" fill="#ffd633" fill-opacity="0.5"
+             stroke="#c90" stroke-width="2" style="pointer-events:all" onclick="postAction(${a.id})"/>`;
+  }
+  return out;
+}
+
+function renderActionBar(g) {
+  const bar = document.getElementById('actionBar');
+  if (g.status !== 'your_turn' || !g.legal_actions) { bar.innerHTML = ''; return; }
+  // Non-spatial actions become buttons; spatial ones are board clicks.
+  const NON_SPATIAL = new Set(['roll','end_turn','buy_dev','trade_bank','propose_trade','play_dev','discard']);
+  const seen = new Map();
+  for (const a of g.legal_actions) {
+    if (!NON_SPATIAL.has(a.kind)) continue;
+    if (!seen.has(a.id)) seen.set(a.id, a);
+  }
+  bar.innerHTML = [...seen.values()]
+    .map(a => `<button onclick="postAction(${a.id})">${a.label}</button>`).join(' ');
+}
+
+async function respondTrade(accept) {
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  const r = await fetch(`/api/games/${G.gid}/trade-response`,
+    { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ accept }) });
+  applyState(await r.json());
+}
+
+function showTradeModal(o) {
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  const div = document.createElement('div');
+  div.className = 'modal-bg';
+  div.innerHTML = `<div class="modal">
+    <p><b class="seat-${o.from_seat}">${G.state.seat_names[o.from_seat]}</b> offers a trade:</p>
+    <p>You give ${RES[o.you_give[0]]}×${o.you_give[1]}, you get ${RES[o.you_get[0]]}×${o.you_get[1]}</p>
+    <button class="primary" onclick="respondTrade(true)">Accept</button>
+    <button onclick="respondTrade(false)">Reject</button></div>`;
+  document.body.appendChild(div);
+}
+
+function maybeStreamBots(st) {
+  // When bots are driving in the background, open SSE to get the settled state.
+  if (st.status !== 'bot_thinking') return;
+  if (G._sse) { G._sse.close(); G._sse = null; }
+  G._sse = new EventSource(`/api/games/${G.gid}/events`);
+  G._sse.onmessage = (ev) => {
+    try {
+      const next = JSON.parse(ev.data);
+      applyStateNoStream(next);          // render without re-opening SSE
+      if (next.status !== 'bot_thinking') { G._sse.close(); G._sse = null; }
+    } catch (_) {}
+  };
+  G._sse.onerror = () => { if (G._sse) { G._sse.close(); G._sse = null; }
+    // Stream closed; fetch authoritative state once.
+    fetch(`/api/games/${G.gid}/state`).then(r => r.json()).then(applyStateNoStream); };
+}
