@@ -27,6 +27,11 @@ dev = [
     "hypothesis>=6.100",
     "nbstripout>=0.7",
 ]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",       # FastAPI TestClient dependency
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["catan_mcts"]
