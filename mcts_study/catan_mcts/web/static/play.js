@@ -316,11 +316,17 @@ function renderPlayers(g) {
     const hand = h.breakdown.map((n,r) => n>0?`${res(r)}${n}`:'').filter(Boolean).join(' ');
     const isCp = g.current_player === i;
     const cp = isCp ? '▶ ' : '';
+    // Longest Road / Largest Army badges. The +2 VP each is ALREADY included in
+    // st.vp[i] by the engine; these badges show who holds them (and why), since
+    // otherwise the bonus looks invisible. Show the length / knight count too.
+    let bonus = '';
+    if (st.lr_holder === i) bonus += `<span class="badge badge-lr" title="Longest Road (+2 VP)">🛣️ LR ${st.lr_len[i]}</span>`;
+    if (st.la_holder === i) bonus += `<span class="badge badge-la" title="Largest Army (+2 VP)">⚔️ LA ${st.knights[i]}</span>`;
     rows += `<tr class="${isCp ? 'cp-row' : ''}"><td class="seat-${i}"><b>${cp}${g.seat_names[i]}</b></td>
-             <td>${st.vp[i]} VP</td><td>${hand||'—'}</td></tr>`;
+             <td>${st.vp[i]} VP</td><td>${bonus || '—'}</td><td>${hand||'—'}</td></tr>`;
   }
   document.getElementById('players').innerHTML =
-    `<table><tr><th>seat</th><th>VP</th><th>hand</th></tr>${rows}</table>`;
+    `<table><tr><th>seat</th><th>VP</th><th>bonus</th><th>hand</th></tr>${rows}</table>`;
   renderBank(g);
 }
 

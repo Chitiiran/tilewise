@@ -89,6 +89,12 @@ svg#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; po
 .dev-pick-label { color: #555; font-weight: 700; margin-right: 4px; }
 .dev-pick { padding: 4px 8px; font-size: 13px; margin: 0 2px; }
 .dev-pick-err { color: #c33; margin-left: 6px; }
+/* Longest Road / Largest Army holder badges in the player table. */
+.badge { display: inline-block; padding: 1px 5px; margin: 0 2px 1px 0; border-radius: 3px;
+  font-size: 10px; font-weight: 700; white-space: nowrap; border: 1px solid #ccc; background: #f0f0f0; }
+.badge-lr { background: #d4f7d4; border-color: #4a8; color: #1a5a2c; }
+.badge-la { background: #f7d4d4; border-color: #c66; color: #7a1a1a; }
+
 /* Year of Plenty clickable resource icons (two-click picker). */
 .yop-hint { color: #555; font-weight: 700; margin-right: 4px; }
 .yop-icon { font-size: 15px; padding: 4px 9px; }
