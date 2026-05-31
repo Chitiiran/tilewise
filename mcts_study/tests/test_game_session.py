@@ -54,3 +54,35 @@ def test_full_game_with_stub_human_terminates():
             raise AssertionError(f"unexpected status {res['status']}")
     assert sess.state_json()["status"] == "game_over"
     assert sess.state_json()["returns"] is not None
+
+
+def _trade_session(human_seat=1):
+    return GameSession(_setup(human_seat=human_seat))
+
+
+def test_no_intercept_when_trade_targets_other_bot():
+    sess = _trade_session(human_seat=1)
+    sess._predict_trade_acceptor = lambda cp, action: 2
+    assert sess._maybe_intercept_trade(current_player=0, action=260) is False
+
+
+def test_intercept_pauses_when_trade_targets_human():
+    sess = _trade_session(human_seat=1)
+    # Force the predictor to say the human (seat 1) is the acceptor.
+    sess._predict_trade_acceptor = lambda cp, action: sess.human_seat
+    res = sess._maybe_intercept_trade(current_player=0, action=260)
+    assert res is True
+    sj = sess.state_json()
+    assert sj["status"] == "trade_offer"
+    assert sj["trade_offer"]["from_seat"] == 0
+
+
+def test_reject_leaves_human_hand_unchanged():
+    sess = _trade_session(human_seat=1)
+    sess._pending_trade = (0, 260)
+    before = [list(h) for h in sess._state._engine.all_hands()]
+    # Make the proposer bot (seat 0) end its turn when re-queried.
+    sess._bots[0].step = lambda state: 204
+    sess.respond_to_trade(accept=False)
+    after = [list(h) for h in sess._state._engine.all_hands()]
+    assert after[1] == before[1], "human hand changed on reject"
