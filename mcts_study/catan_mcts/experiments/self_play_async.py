@@ -145,6 +145,11 @@ def cli_main():
     p.add_argument("--seed-base", type=int, default=20_000_000)
     p.add_argument("--ram-budget-mb", type=float, default=None)
     p.add_argument("--per-game-mb", type=float, default=50.0)
+    p.add_argument("--max-seconds", type=float, default=900.0,
+                   help="wall-clock cap; run stops cleanly when hit "
+                        "(finished games are already persisted)")
+    p.add_argument("--resume-dir", type=Path, default=None,
+                   help="resume into an existing run dir, skipping done seeds")
     args = p.parse_args()
     out = run_self_play(
         out_root=args.out_root, checkpoint=args.checkpoint, num_games=args.num_games,
@@ -152,7 +157,8 @@ def cli_main():
         num_layers=args.num_layers, vp_target=args.vp_target, bonuses=args.bonuses,
         device=args.device, max_batch=args.max_batch, window_ms=args.window_ms,
         seed_base=args.seed_base, ram_budget_mb=args.ram_budget_mb,
-        per_game_mb=args.per_game_mb)
+        per_game_mb=args.per_game_mb, max_seconds=args.max_seconds,
+        resume_dir=args.resume_dir)
     print(f"self_play_async wrote to {out}")
 
 
