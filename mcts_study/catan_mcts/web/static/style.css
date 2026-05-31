@@ -47,7 +47,7 @@ svg#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; po
 .side-players table { width: 100%; }
 .side-log { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .side-log-title { font-size: 13px; margin: 0 0 6px; }
-.side-actions { flex: 0 0 auto; }
+.side-actions { flex: 0 0 auto; overflow-y: auto; max-height: 60vh; }
 .action-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .action-row button { padding: 7px 11px; font-size: 13px; }
 
@@ -63,6 +63,32 @@ svg#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; po
 .tg-cell:disabled { background: #f7f7f7; color: #ccc; }
 
 .trade-grid-label { font-size: 12px; font-weight: 700; color: #555; margin: 8px 0 2px; }
+
+/* ---- Bank strip --------------------------------------------------------- */
+.bank-strip {
+  margin-top: 8px; padding: 5px 8px; border-radius: 6px;
+  background: #1f2a3a; color: #fff; font-size: 13px;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+
+/* ---- Dev-card hand ------------------------------------------------------ */
+.dev-hand { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+.dev-card {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px; border: 1px solid #cbb24a; border-radius: 7px;
+  background: #fff7c4; font-size: 12px; cursor: pointer; user-select: none;
+}
+.dev-card:hover { background: #ffd633; }
+.dev-card .dev-count { font-weight: 700; color: #555; }
+.dev-card.dev-dim { background: #f1f1f1; border-color: #ddd; color: #999;
+  cursor: not-allowed; }
+.dev-card.dev-dim:hover { background: #f1f1f1; }
+.dev-card.dev-vp { background: #eef3ff; border-color: #9fb4e0; cursor: default; }
+.dev-card.dev-vp:hover { background: #eef3ff; }
+.dev-picker { margin: 2px 0 6px; font-size: 12px; }
+.dev-pick-label { color: #555; font-weight: 700; margin-right: 4px; }
+.dev-pick { padding: 4px 8px; font-size: 13px; margin: 0 2px; }
+.dev-pick-err { color: #c33; margin-left: 6px; }
 
 /* ---- Last-move glow (pulsing cyan halo) -------------------------------- */
 @keyframes lastMovePulse {

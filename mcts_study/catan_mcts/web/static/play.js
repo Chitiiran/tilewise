@@ -26,6 +26,7 @@ function renderLobby() {
       <div style="margin:10px 0">
         VP target <select id="vp"><option value="10" selected>10 (full)</option><option value="5">5 (short)</option></select>
         &nbsp; <label><input type="checkbox" id="bonuses" checked> bonuses (LR/LA +2)</label>
+        &nbsp; <label><input type="checkbox" id="showBank" checked> show bank</label>
         &nbsp; seed <input id="seed" type="number" placeholder="random" style="width:90px">
       </div>
       <button class="primary" id="start">Start Game</button>
@@ -93,6 +94,9 @@ async function onStart() {
     seats[s] = spec;
   }
   const seedVal = document.getElementById('seed').value;
+  // The bank is purely client-display (always present in state); carry the
+  // toggle to the game screen via a global instead of the POST body.
+  window._showBank = document.getElementById('showBank').checked;
   const body = {
     human_seat: human, seats,
     rules: { vp_target: +document.getElementById('vp').value,
@@ -113,6 +117,8 @@ let G = null;  // { gid, layout, png, state, _sse }
 function startGame(body) {
   G = { gid: body.game_id, layout: body.board.layout, png: body.board.png_b64,
         state: body.state };
+  // Client-only bank-strip visibility (default true), set by the lobby toggle.
+  G.showBank = window._showBank !== false;
   PLAY.innerHTML = `
     <div class="game-screen">
       <div class="panel board-col">
@@ -125,6 +131,7 @@ function startGame(body) {
         <div class="panel side-players">
           <div id="status"></div>
           <div id="players"></div>
+          <div id="bank"></div>
         </div>
         <div class="panel side-log">
           <h3 class="side-log-title">Log</h3>
@@ -152,6 +159,11 @@ const RES = ['🪵','🧱','🐑','🌾','⛰️'];
 // board_layout.RESOURCE_LETTER). Wrapped so a missing glyph still reads.
 const RES_LETTER = ['W', 'B', 'S', 'Wh', 'O'];
 function res(r) { return `<span title="${RES_LETTER[r]}">${RES[r]}</span>`; }
+
+// Dev card glyphs/names — index matches the dev_held slot order
+// (Knight, RoadBuilding, Monopoly, YearOfPlenty, VictoryPoint).
+const DEV_EMOJI = ['⚔️','🛣️','📜','🌽','⭐'];
+const DEV_NAMES = ['Knight','Road Building','Monopoly','Year of Plenty','Victory Point'];
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
@@ -309,6 +321,18 @@ function renderPlayers(g) {
   }
   document.getElementById('players').innerHTML =
     `<table><tr><th>seat</th><th>VP</th><th>hand</th></tr>${rows}</table>`;
+  renderBank(g);
+}
+
+// Compact bank strip: "🏦 Bank: 🪵19 🧱19 🐑19 🌾19 ⛰️19". Client-only display
+// gated on G.showBank; hidden (empty) when the lobby toggle is off.
+function renderBank(g) {
+  const el = document.getElementById('bank');
+  if (!el) return;
+  if (!G.showBank) { el.innerHTML = ''; return; }
+  const bank = g.state.bank || [];
+  const cells = bank.map((n, r) => `${res(r)}${n}`).join(' ');
+  el.innerHTML = `<div class="bank-strip">🏦 Bank: ${cells}</div>`;
 }
 
 function renderStatus(g) {
@@ -360,39 +384,146 @@ function decodeProposeTrade(id) {
   return [give, get];
 }
 
+// Decode a trade_bank action id (206..225) into [give, get] resource indices —
+// same formula as propose_trade but base 206 (mirrors serializers.action_desc).
+function decodeBankTrade(id) {
+  const idx = id - 206, give = Math.floor(idx / 4);
+  const others = [0, 1, 2, 3, 4].filter(r => r !== give);
+  const get = others[idx % 4];
+  return [give, get];
+}
+
 function renderActionBar(g) {
   const bar = document.getElementById('actionBar');
   if (g.status !== 'your_turn' || !g.legal_actions) { bar.innerHTML = ''; return; }
   // Non-spatial actions become buttons; spatial ones are board clicks.
-  // propose_trade is special-cased into a give→get grid below.
-  const NON_SPATIAL = new Set(['roll','end_turn','buy_dev','trade_bank','play_dev','discard']);
+  // propose_trade + trade_bank become give→get grids; play_dev becomes the
+  // clickable dev-card hand. Those kinds are NOT plain buttons.
+  const NON_SPATIAL = new Set(['roll','end_turn','buy_dev','discard']);
   const seen = new Map();
   const proposeIds = [];      // legal propose_trade action ids
+  const bankIds = [];         // legal trade_bank action ids
+  const devIds = [];          // legal play_dev action ids
   for (const a of g.legal_actions) {
     if (a.kind === 'propose_trade') { proposeIds.push(a.id); continue; }
+    if (a.kind === 'trade_bank')    { bankIds.push(a.id); continue; }
+    if (a.kind === 'play_dev')      { devIds.push(a.id); continue; }
     if (!NON_SPATIAL.has(a.kind)) continue;
     if (!seen.has(a.id)) seen.set(a.id, a);
   }
   let html = [...seen.values()]
     .map(a => `<button onclick="postAction(${a.id})">${a.label}</button>`).join(' ');
-  // The trade grid shows inline (no toggle) whenever propose_trade is legal.
-  const gridLabel = proposeIds.length
+  const bankGridLabel = bankIds.length
+    ? `<div class="trade-grid-label">Bank Trade</div>` : '';
+  const proposeGridLabel = proposeIds.length
     ? `<div class="trade-grid-label">Propose Trade</div>` : '';
   bar.innerHTML = `<div class="action-row">${html}</div>` +
-                  gridLabel +
+                  `<div id="devCards"></div>` +
+                  bankGridLabel +
+                  `<div id="bankGrid" class="trade-grid-wrap"></div>` +
+                  proposeGridLabel +
                   `<div id="tradeGrid" class="trade-grid-wrap"></div>`;
-  // Build the trade grid from the legal propose_trade ids (empty if none).
-  buildTradeGrid(proposeIds);
+  renderDevCards(g, new Set(devIds));
+  // Build the trade grids from the legal ids (empty if none).
+  buildTradeGrid('bankGrid', bankIds, decodeBankTrade, postAction);
+  buildTradeGrid('tradeGrid', proposeIds, decodeProposeTrade, postTradeFromGrid);
 }
 
-// Map each legal propose_trade id to its [give,get] cell and render a 5×5
-// give→get matrix. Off-diagonal cells with no legal action are disabled.
-function buildTradeGrid(proposeIds) {
-  const grid = document.getElementById('tradeGrid');
+// Render the human's held dev cards as clickable little cards. Knight (227) and
+// Road Building (228) play directly; Monopoly (229..233) and Year of Plenty
+// (234..258) expand inline resource pickers; VP (slot 4) is never clickable.
+// A card type is "playable now" iff at least one of its legal play_dev ids is
+// in legalDevIds.
+function renderDevCards(g, legalDevIds) {
+  const el = document.getElementById('devCards');
+  if (!el) return;
+  const st = g.state;
+  const seat = g.human_seat;
+  const held = (st.dev_held && st.dev_held[seat]) || [0, 0, 0, 0, 0];
+  const total = held.reduce((a, b) => a + b, 0);
+  if (!total) { el.innerHTML = ''; return; }
+  let cards = '';
+  for (let slot = 0; slot < 5; slot++) {
+    const n = held[slot];
+    if (n <= 0) continue;
+    const label = `${DEV_EMOJI[slot]} ${DEV_NAMES[slot]} <span class="dev-count">×${n}</span>`;
+    if (slot === 4) {                       // Victory Point — never playable
+      cards += `<div class="dev-card dev-vp" title="auto-counted">${label}</div>`;
+      continue;
+    }
+    if (slot === 0 || slot === 1) {         // Knight / Road Building — direct
+      const id = slot === 0 ? 227 : 228;
+      const ok = legalDevIds.has(id);
+      cards += ok
+        ? `<div class="dev-card" onclick="postAction(${id})">${label}</div>`
+        : `<div class="dev-card dev-dim" title="can't play now">${label}</div>`;
+      continue;
+    }
+    if (slot === 2) {                       // Monopoly — pick 1 resource (229..233)
+      const anyLegal = [0,1,2,3,4].some(r => legalDevIds.has(229 + r));
+      cards += anyLegal
+        ? `<div class="dev-card" onclick="toggleDevPicker('mono')">${label}</div>`
+        : `<div class="dev-card dev-dim" title="can't play now">${label}</div>`;
+      continue;
+    }
+    if (slot === 3) {                       // Year of Plenty — pick 2 (234..258)
+      const anyLegal = [...legalDevIds].some(id => id >= 234 && id < 259);
+      cards += anyLegal
+        ? `<div class="dev-card" onclick="toggleDevPicker('yop')">${label}</div>`
+        : `<div class="dev-card dev-dim" title="can't play now">${label}</div>`;
+    }
+  }
+  // Inline pickers (hidden until the matching card is clicked).
+  const monoBtns = [0,1,2,3,4].map(r =>
+    legalDevIds.has(229 + r)
+      ? `<button class="dev-pick" onclick="postAction(${229 + r})">${res(r)}</button>`
+      : `<button class="dev-pick" disabled>${res(r)}</button>`).join(' ');
+  const yopOpts = r =>
+    [0,1,2,3,4].map(i => `<option value="${i}">${RES_LETTER[i]}</option>`).join('');
+  const picker = `
+    <div id="devPicker-mono" class="dev-picker" style="display:none">
+      <span class="dev-pick-label">Monopolize:</span> ${monoBtns}</div>
+    <div id="devPicker-yop" class="dev-picker" style="display:none">
+      <span class="dev-pick-label">Year of Plenty:</span>
+      <select id="yopR1">${yopOpts()}</select>
+      <select id="yopR2">${yopOpts()}</select>
+      <button class="dev-pick" onclick="playYearOfPlenty()">Play</button>
+      <span id="yopErr" class="dev-pick-err"></span></div>`;
+  el.innerHTML = `<div class="trade-grid-label">Dev Cards</div>` +
+                 `<div class="dev-hand">${cards}</div>` + picker;
+}
+
+// Show one picker at a time; clicking the same card again hides it.
+function toggleDevPicker(which) {
+  for (const w of ['mono', 'yop']) {
+    const p = document.getElementById('devPicker-' + w);
+    if (!p) continue;
+    p.style.display = (w === which && p.style.display === 'none') ? 'block' : 'none';
+  }
+}
+
+// Year of Plenty: post 234 + r1*5 + r2 iff that id is legal for this turn.
+function playYearOfPlenty() {
+  const r1 = +document.getElementById('yopR1').value;
+  const r2 = +document.getElementById('yopR2').value;
+  const id = 234 + r1 * 5 + r2;
+  const legal = (G.state.legal_actions || []).some(a => a.id === id);
+  if (!legal) {
+    document.getElementById('yopErr').textContent = 'illegal pair';
+    return;
+  }
+  postAction(id);
+}
+
+// Map each legal trade id to its [give,get] cell and render a 5×5 give→get
+// matrix into containerId. Off-diagonal cells with no legal action are
+// disabled. Shared by both the bank-trade and propose-trade grids.
+function buildTradeGrid(containerId, ids, decodeFn, postFn) {
+  const grid = document.getElementById(containerId);
   if (!grid) return;
   const cellId = {};   // "gi,gj" -> action id
-  for (const id of proposeIds) {
-    const [gi, gj] = decodeProposeTrade(id);
+  for (const id of ids) {
+    const [gi, gj] = decodeFn(id);
     cellId[`${gi},${gj}`] = id;
   }
   let head = '<th class="tg-corner">give↓ get→</th>';
@@ -404,7 +535,7 @@ function buildTradeGrid(proposeIds) {
       if (i === j) { cells += `<td class="tg-diag"></td>`; continue; }
       const id = cellId[`${i},${j}`];
       if (id !== undefined) {
-        cells += `<td><button class="tg-cell" onclick="postTradeFromGrid(${id})">↔</button></td>`;
+        cells += `<td><button class="tg-cell" onclick="${postFn.name}(${id})">↔</button></td>`;
       } else {
         cells += `<td><button class="tg-cell" disabled>·</button></td>`;
       }
