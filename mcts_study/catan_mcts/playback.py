@@ -577,7 +577,7 @@ def render(run_dir: Path, seed: int, out_dir: Path | None = None) -> Path:
     print(f"  history length = {len(history)}, winner=p{winner}, final_vp={final_vp}", flush=True)
 
     print("  building layout...", flush=True)
-    vertex_xy, edges, hex_centers = _build_layout()
+    vertex_xy, _, _ = _build_layout()
 
     print("  rendering board PNG...", flush=True)
     board_png = out_dir / "board.png"

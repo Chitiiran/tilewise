@@ -84,6 +84,9 @@ MAX_ROADS = 15
 def serialize_state(eng, narration: str) -> dict:
     """Snapshot the engine into a JS-ready per-state dict.
 
+    `eng` is a catan_bot._engine.Engine (or any object exposing the same
+    observation_for / all_hands / bank / stats / is_terminal interface).
+
     Each state dict has the keys: n (narration), cp (current player or -1 at
     terminal), s (settlements as [(v, owner), ...]), c (cities), r (roads),
     rh (robber hex), vp (live VPs), hands (per-player breakdown + total),
