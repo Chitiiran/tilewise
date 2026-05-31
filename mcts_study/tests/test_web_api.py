@@ -118,3 +118,16 @@ def test_async_create_and_play_via_sse(client):
             raise AssertionError(f"unexpected status {state['status']}: {state.get('error')}")
     assert state["status"] == "game_over"
     assert state["returns"] is not None
+
+
+def test_replays_listing(tmp_path):
+    from catan_mcts.web.server import create_app
+    rd = tmp_path / "playback_seed_4242"
+    rd.mkdir()
+    (rd / "index.html").write_text("<html>replay</html>")
+    app = create_app(checkpoints_dir=tmp_path, replays_dir=tmp_path)
+    c = TestClient(app)
+    r = c.get("/api/replays")
+    assert r.status_code == 200
+    names = [x["name"] for x in r.json()["replays"]]
+    assert "playback_seed_4242" in names

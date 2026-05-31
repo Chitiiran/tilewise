@@ -120,6 +120,18 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
+    @app.get("/api/replays")
+    def list_replays():
+        out = []
+        if replays_dir.exists():
+            for d in sorted(replays_dir.glob("playback_seed_*")):
+                if (d / "index.html").exists():
+                    out.append({"name": d.name, "url": f"/replays/{d.name}/index.html"})
+        return {"replays": out}
+
+    if replays_dir.exists():
+        app.mount("/replays", StaticFiles(directory=str(replays_dir)), name="replays")
+
     app.state.games = games
     app.state.checkpoints_dir = checkpoints_dir
     app.state.replays_dir = replays_dir
