@@ -154,6 +154,11 @@ class SelfPlayRecorder:
         self._sigint_installed = False
         self._install_sigint_handler()
 
+    @property
+    def config_id(self) -> str:
+        """Public accessor for this recorder's unique run id (for run-distinct labels)."""
+        return self._config_id
+
     def _install_sigint_handler(self) -> None:
         """Install a SIGINT handler that re-raises KeyboardInterrupt cleanly
         AFTER giving the per-seed shards a chance to finish flushing.
