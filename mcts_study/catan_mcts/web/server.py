@@ -42,6 +42,18 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
     replays_dir = Path(replays_dir)
     games: dict[str, GameSession] = {}
 
+    # Local-dev convenience: tell the browser never to cache the frontend assets
+    # (index.html / play.js / replay.js / style.css) so edits show up on a plain
+    # reload — no hard-refresh needed. The game/replay HTML is small, so the
+    # bandwidth cost is negligible. (Drop this for a real CDN deployment.)
+    @app.middleware("http")
+    async def _no_store_frontend(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static") or path.startswith("/replays"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
     @app.get("/api/bots")
     def get_bots():
         return {
