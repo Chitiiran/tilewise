@@ -92,3 +92,65 @@ cannot. This is why GnnMcts >> PureGnn and why more data doesn't close the gap.
   -> confirms it's structural (argmax), not capacity.
 - D4 (greedy vs exploratory targets): minor; exploration adds some noise but D3
   shows the core blur is intrinsic.
+
+## D2 — Capacity test (h256 vs h128): NOT capacity-limited
+
+Trained h256 (num_layers=4, ~4x params of h128) on the FULL 509-game corpus
+(305,601 positions), same cache, lr 5e-4, rotate, early-stop patience 2.
+
+| Net | best val_top1 | train_loss floor | per-game top1 |
+|---|---|---|---|
+| h128 (all prior cells) | ~0.37 | ~1.95 | — |
+| **h256 (D2)** | **0.373** (ep1) | 1.972 (ep4) | [0.29\|0.33\|0.36\|0.39\|0.46] |
+
+- Doubling hidden dim (4x parameters) moved val_top1 by **+0.003** — noise.
+- Early-stopped at ep4; best was ep1. val_loss FLAT at 2.86 across all 4 epochs
+  — the bigger net does not extract more signal from the same targets.
+
+**Conclusion: H2 (capacity) is RULED OUT.** The h128 net is not the bottleneck;
+a 4x-larger net fits the policy targets no better. The policy ceiling (~0.37
+val_top1) is a property of the TARGETS, not the model size.
+
+## FINAL ROOT-CAUSE VERDICT — why more data didn't lift PureGnn
+
+Four diagnostics triangulate to one structural cause:
+- **D1** — net trains fine; VALUE head fits, POLICY head doesn't; policy loss flat
+  110g→509g. Not optimization, not data volume.
+- **D3** — 5x more search sims (160→800) barely sharpens targets (+0.05 peak),
+  and 28% of the time argmax shifts. The label blur is INTRINSIC to the positions.
+- **D2** — 4x bigger net (h256) gives identical val_top1 (0.373 vs ~0.37). Not
+  capacity.
+- (target entropy) — 30% of visit-count targets are near-flat.
+
+**THE CAUSE — multi-modal optima + argmax destroys value information.**
+Catan decision states frequently have SEVERAL near-equal-value moves. The MCTS
+visit-count targets honestly encode that as soft/flat distributions. A policy
+head trained on soft targets learns a soft (correct!) distribution — but PureGnn
+DEPLOYS via argmax, which collapses that distribution to one move and throws away
+exactly the value information that distinguishes the near-equal candidates. Search
+(GnnMcts) recovers it by simulating each candidate. This is why:
+- GnnMcts beats LookV3 (53.8%) while PureGnn stalls at ~5%,
+- more data / bigger net / more sims none of it closes the gap (the gap is in the
+  argmax deployment step, not the learned policy),
+- the plateau is at ~5-6% regardless: it's a structural property of value-based
+  combinatorial games, not a training failure.
+
+**Therefore:** "more data" was never going to lift PureGnn vs LookV3 on this
+problem. The lift requires changing the DEPLOYMENT, not the training. Options for
+a shippable non-GnnMcts (or cheap-search) player are in the next section.
+
+## Fix options (not shipping full GnnMcts)
+1. **Cheap fixed-width search at deploy** (sims=8–32 PUCT, no tree reuse) — keeps
+   most of search's value-recovery at a fraction of GnnMcts cost. Likely the best
+   ROI: turns the argmax into a shallow lookahead that ranks the near-equal moves.
+2. **1-ply value rollout (greedy-Q over legal moves)** — for each legal action,
+   apply it, evaluate child with the VALUE head (which D1 shows DOES fit), pick
+   argmax-Q. No tree, one batched eval per legal set. Directly exploits the one
+   head that learned well. Cheapest principled fix.
+3. **Policy+value blend at argmax** — rank moves by π(a)·exp(Q-tilt) using the
+   value head as a tiebreaker among near-equal-π moves. Almost free.
+4. (rejected) more self-play data / bigger net — D1/D2/D3 show these don't help.
+
+Recommend prototyping #2 (1-ply value-Q PureGnn) first: it is the minimal change
+that addresses the diagnosed cause (argmax discards value), reuses the head we
+proved fits, and is far cheaper than GnnMcts.
