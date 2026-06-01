@@ -49,3 +49,5 @@ scratch_*.py
 mcts_study/scripts/_archive/
 mcts_study/scripts/_*.py
 mcts_study/scripts/_*.sh
+# Browser-verification screenshots (local artifacts, not served content)
+mcts_study/catan_mcts/web/static/_*.png

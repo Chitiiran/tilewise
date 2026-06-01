@@ -1,0 +1,154 @@
+:root { --topbar-h: 58px; --tabpad: 16px; }
+body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: #1f2a3a; color: #f0e8c8; }
+.topbar h1 { font-size: 18px; margin: 0; }
+.tab-btn { padding: 6px 14px; font-size: 14px; cursor: pointer; border: none; background: #2c3a52; color: #cdd6e6; border-radius: 4px; }
+.tab-btn.active { background: #ffd633; color: #1f2a3a; font-weight: 700; }
+.tab-panel { display: none; padding: 16px; }
+.tab-panel.active { display: block; }
+.panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; }
+.row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.board-col { flex: 0 0 auto; }
+button { padding: 5px 10px; font-size: 13px; cursor: pointer; }
+button.primary { background: #ffd633; border: 1px solid #c90; font-weight: 700; }
+button:disabled { opacity: 0.45; cursor: default; }
+select { padding: 4px 6px; font-size: 13px; }
+table { border-collapse: collapse; font-size: 12px; }
+th, td { border: 1px solid #ddd; padding: 3px 6px; text-align: left; }
+th { background: #f0f0f0; }
+#boardWrap { position: relative; width: fit-content; max-width: 100%; margin: 0 auto; }
+#board { display: block; width: auto; max-width: 100%; height: auto;
+         max-height: calc(100vh - var(--topbar-h) - 2 * var(--tabpad) - 24px); }
+svg#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.clickable { cursor: pointer; }
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.modal { background: #fff; padding: 20px 24px; border-radius: 8px; min-width: 280px; }
+#log { font-family: ui-monospace, monospace; font-size: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; background: #1f2a3a; color: #f0e8c8; padding: 8px; border-radius: 4px; }
+#status { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+.seat-0 { color: #cc3333; } .seat-1 { color: #3366cc; } .seat-2 { color: #33aa55; } .seat-3 { color: #cc8833; }
+#actionBar button { margin: 2px; }
+.cp-row { background: #fff7c4; }
+
+/* Per-player stat cards (colonist-style panels, denser). */
+#players { display: flex; flex-direction: column; gap: 5px; }
+.pcard { border: 1px solid #ddd; border-left: 4px solid #ccc; border-radius: 5px;
+  padding: 4px 7px; background: #fff; }
+.pcard-0 { border-left-color: #cc3333; } .pcard-1 { border-left-color: #3366cc; }
+.pcard-2 { border-left-color: #33aa55; } .pcard-3 { border-left-color: #cc8833; }
+.pcard-cp { background: #fff7c4; box-shadow: 0 0 0 1px #f5b800 inset; }
+.pcard-top { display: flex; align-items: center; gap: 6px; }
+.pcard-name { font-weight: 700; font-size: 13px; flex: 1 1 auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pcard-vp { font-weight: 700; font-size: 12px; background: #1f2a3a; color: #f0e8c8;
+  padding: 0 6px; border-radius: 3px; }
+.pcard-stats { display: flex; flex-wrap: wrap; gap: 4px 9px; margin-top: 3px;
+  font-size: 11px; color: #333; }
+.pcard-stats > span { white-space: nowrap; }
+.pcard-ports { color: #666; }
+
+/* ---- In-game screen: no-scroll 2-column layout -------------------------- */
+.game-screen {
+  display: flex; gap: 16px; align-items: stretch;
+  height: calc(100vh - var(--topbar-h) - 2 * var(--tabpad));
+}
+.game-screen .board-col {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: flex-start;
+  justify-content: center; overflow: hidden;
+}
+.game-screen .side-col {
+  flex: 0 0 380px; max-width: 380px; display: flex; flex-direction: column;
+  gap: 12px; height: 100%; min-height: 0;
+}
+.side-col .panel { padding: 10px; }
+.side-players { flex: 0 0 auto; }
+.side-players table { width: 100%; }
+.side-log { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.side-log-title { font-size: 13px; margin: 0 0 6px; }
+.side-actions { flex: 0 0 auto; overflow-y: auto; max-height: 60vh; }
+.action-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.action-row button { padding: 7px 11px; font-size: 13px; }
+
+/* ---- Propose-trade grid ------------------------------------------------- */
+.trade-grid-wrap { margin-top: 8px; }
+.trade-grid { border-collapse: collapse; font-size: 13px; }
+.trade-grid th, .trade-grid td { border: 1px solid #ddd; padding: 0; text-align: center; }
+.trade-grid th { background: #f0f0f0; padding: 2px 4px; }
+.trade-grid .tg-corner { font-size: 10px; color: #666; font-weight: 400; }
+.trade-grid .tg-diag { background: #eee; }
+.tg-cell { width: 30px; height: 28px; margin: 0; border: none; background: #fff7c4; }
+.tg-cell:hover:not(:disabled) { background: #ffd633; }
+.tg-cell:disabled { background: #f7f7f7; color: #ccc; }
+
+.trade-grid-label { font-size: 12px; font-weight: 700; color: #555; margin: 8px 0 2px; }
+
+/* ---- Bank strip --------------------------------------------------------- */
+.bank-strip {
+  margin-top: 8px; padding: 5px 8px; border-radius: 6px;
+  background: #1f2a3a; color: #fff; font-size: 13px;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+
+/* ---- Dev-card hand ------------------------------------------------------ */
+.dev-hand { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+.dev-card {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px; border: 1px solid #cbb24a; border-radius: 7px;
+  background: #fff7c4; font-size: 12px; cursor: pointer; user-select: none;
+}
+.dev-card:hover { background: #ffd633; }
+.dev-card .dev-count { font-weight: 700; color: #555; }
+.dev-card.dev-dim { background: #f1f1f1; border-color: #ddd; color: #999;
+  cursor: not-allowed; }
+.dev-card.dev-dim:hover { background: #f1f1f1; }
+.dev-card.dev-vp { background: #eef3ff; border-color: #9fb4e0; cursor: default; }
+.dev-card.dev-vp:hover { background: #eef3ff; }
+.dev-picker { margin: 2px 0 6px; font-size: 12px; }
+.dev-pick-label { color: #555; font-weight: 700; margin-right: 4px; }
+.dev-pick { padding: 4px 8px; font-size: 13px; margin: 0 2px; }
+.dev-pick-err { color: #c33; margin-left: 6px; }
+/* Longest Road / Largest Army holder badges in the player table. */
+.badge { display: inline-block; padding: 1px 5px; margin: 0 2px 1px 0; border-radius: 3px;
+  font-size: 10px; font-weight: 700; white-space: nowrap; border: 1px solid #ccc; background: #f0f0f0; }
+.badge-lr { background: #d4f7d4; border-color: #4a8; color: #1a5a2c; }
+.badge-la { background: #f7d4d4; border-color: #c66; color: #7a1a1a; }
+
+/* Year of Plenty clickable resource icons (two-click picker). */
+.yop-hint { color: #555; font-weight: 700; margin-right: 4px; }
+.yop-icon { font-size: 15px; padding: 4px 9px; }
+.yop-icon.yop-sel { background: #ffd633; border: 2px solid #c90; font-weight: 700; }
+
+/* ---- Robber / discard attention prompt --------------------------------- */
+.status-alert b { display: block; background: #ffe2e2; color: #b00020;
+  border: 2px solid #ff5252; border-radius: 6px; padding: 8px 10px;
+  font-size: 15px; animation: alertPulse 1.1s ease-in-out infinite; }
+@keyframes alertPulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(255,82,82,0.5); }
+  50%     { box-shadow: 0 0 0 6px rgba(255,82,82,0); }
+}
+/* Pulsing robber hex target on the board. */
+@keyframes robberPulse {
+  0%,100% { stroke-opacity: 1; fill-opacity: 0.30; }
+  50%     { stroke-opacity: 0.4; fill-opacity: 0.50; }
+}
+.robber-target { animation: robberPulse 1s ease-in-out infinite; }
+
+/* ---- Last-move glow (pulsing cyan halo) -------------------------------- */
+@keyframes lastMovePulse {
+  0%   { stroke-opacity: 0.85; r: 15; }
+  50%  { stroke-opacity: 0.30; r: 19; }
+  100% { stroke-opacity: 0.85; r: 15; }
+}
+.last-move-glow { animation: lastMovePulse 1.4s ease-in-out infinite; pointer-events: none; }
+
+/* ---- Victory celebration ----------------------------------------------- */
+.win-modal { text-align: center; min-width: 260px; }
+.win-title { margin: 0 0 14px; font-size: 28px; }
+.confetti-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh;
+  pointer-events: none; z-index: 50; }
+
+/* ---- Trade auto-reject timer ------------------------------------------- */
+.trade-timer { margin: 10px 0; font-weight: 700; }
+.trade-timer #tradeCountdown { color: #c33; font-size: 18px; }
+.trade-timer-bar { height: 6px; background: #eee; border-radius: 3px; margin-top: 4px; overflow: hidden; }
+.trade-timer-bar > div { height: 100%; width: 100%; background: #ffd633;
+  transition: width 1s linear; }
