@@ -54,3 +54,41 @@ quantity, are the bottleneck.
 - D3: re-search a sample at sims=800 — do targets sharpen (peak share rise)?
   (confirms sims=160 is too shallow)
 - D4: train on GREEDY (no-exploration) self-play targets — sharper? (poison)
+
+## D3 — Target sharpness sims=160 vs 800: blur is INTRINSIC, not shallow-search
+
+Re-searched 25 corpus states at sims=160 vs sims=800 (Cell6 net):
+| | peak-share | entropy | frac flat (peak<0.3) |
+|---|---|---|---|
+| sims=160 | 0.539 | 1.446 | 0.36 |
+| sims=800 | 0.591 | 1.289 | 0.28 |
+
+- 5x more sims sharpens the targets only MARGINALLY (+0.05 peak share). So "use
+  higher sims for sharper targets" is NOT the fix — the blur is largely intrinsic.
+- argmax(160) == argmax(800) only **72%** — 28% of the time deeper search picks
+  a DIFFERENT best move, so sims=160 targets are also somewhat NOISY in which
+  move they prefer.
+
+**Conclusion:** many Catan positions genuinely have SEVERAL near-equal-value
+moves (multi-modal optimum). The visit-count targets honestly reflect that
+(flat + sometimes shifting argmax). This rules out H1a (shallow search) and H1
+(fixable by better labels). It points at:
+- H5 (argmax-is-wrong): a raw policy FORCED to argmax a multi-modal target picks
+  poorly — exactly the regime where SEARCH (evaluates each candidate) wins and
+  raw policy (must commit to one) loses. Structural to value-based games.
+- H2 (capacity): a small h128 net may also lack the capacity to even represent
+  the multi-modal distribution sharply.
+
+## Refined root cause
+The PureGnn plateau is NOT a data-volume or shallow-search problem. It is
+STRUCTURAL: Catan decision states are frequently multi-modal (several good
+moves), so (a) the policy targets are inherently soft/ambiguous, and (b) argmax
+of a soft policy throws away the value information that distinguishes the
+near-equal moves. Search recovers that value at decision time; the raw policy
+cannot. This is why GnnMcts >> PureGnn and why more data doesn't close the gap.
+
+## Remaining tests
+- D2 (capacity h256): does a bigger net lower policy loss / raise PureGnn? If NOT
+  -> confirms it's structural (argmax), not capacity.
+- D4 (greedy vs exploratory targets): minor; exploration adds some noise but D3
+  shows the core blur is intrinsic.
