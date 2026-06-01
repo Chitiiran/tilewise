@@ -34,20 +34,20 @@ real value, ~54%).
 
 ## Decisive control: sims=200 in THIS harness — CONFIRMS the valley
 
-| sims=200 (partial, 57/120 games) | win% |
+| sims=200 (FINAL, 120/120 games) | win% |
 |---|---:|
-| **GnnMcts@200** | **50.9%** |
-| LookV3 | 36.8% |
-| RawPureGnn | 6.1% |
+| **GnnMcts@200** | **51.7%** |
+| LookV3 | 31.7% |
+| RawPureGnn | 8.3% |
 
-GnnMcts@200 recovers to ~51% (matches Gate-2's ~54%), beating LookV3, in the SAME
+GnnMcts@200 recovers to 51.7% (matches Gate-2's ~54%), beating LookV3, in the SAME
 harness that gave the low-sims numbers. The harness is sound; RawPureGnn stays low
 (6.1%) as expected. **The low-sims valley is REAL, not a bug.**
 
 Full sims curve (this harness, same net + seeds):
 | sims | 0(argmax) | 1-ply Q | 8 | 16 | 32 | 200 |
 |---|---|---|---|---|---|---|
-| GnnMcts win% | ~13-18 | ~14 | 14.2 | 7.5 | 3.3 | **~51** |
+| GnnMcts win% | ~13-18 | ~14 | 14.2 | 7.5 | 3.3 | **51.7** |
 
 A clear VALLEY: prior alone is OK, shallow search NOISES it (worse, bottoming
 ~sims=32 at 3.3%), and only deep search (~200) crosses into real value recovery.
