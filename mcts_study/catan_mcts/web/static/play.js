@@ -336,24 +336,64 @@ function lastMoveGlowSvg(g) {
        + `fill-opacity="0.28" stroke="#33e0ff" stroke-width="2.5" stroke-opacity="0.8"/>`;
 }
 
+// Catan piece allowances (per player) — remaining = MAX − built.
+const MAX_SETTLE = 5, MAX_CITY = 4, MAX_ROAD = 15;
+const DEV_TOTAL = '🃏';                 // generic dev-card glyph for opponents
+const PORT_NAMES = ['3:1', 'Wd 2:1', 'Bk 2:1', 'Sh 2:1', 'Wh 2:1', 'Or 2:1'];
+
+function fmtPorts(arr) {
+  const owned = (arr || []).map((on, i) => on ? PORT_NAMES[i] : null).filter(Boolean);
+  return owned.length ? owned.join(', ') : '—';
+}
+
+// One compact stat card per player — name + VP + LR/LA badges on line 1, then a
+// stats line: hand (your breakdown / opponents' total), dev cards, pieces left
+// (settle/city/road), knights, longest-road length, and ports. Matches the
+// per-player panels in colonist.io but denser to fit the side column.
 function renderPlayers(g) {
-  const st = g.state; let rows = '';
+  const st = g.state;
+  let cards = '';
   for (let i = 0; i < 4; i++) {
-    const h = st.hands[i];
-    const hand = h.breakdown.map((n,r) => n>0?`${res(r)}${n}`:'').filter(Boolean).join(' ');
     const isCp = g.current_player === i;
-    const cp = isCp ? '▶ ' : '';
-    // Longest Road / Largest Army badges. The +2 VP each is ALREADY included in
-    // st.vp[i] by the engine; these badges show who holds them (and why), since
-    // otherwise the bonus looks invisible. Show the length / knight count too.
-    let bonus = '';
-    if (st.lr_holder === i) bonus += `<span class="badge badge-lr" title="Longest Road (+2 VP)">🛣️ LR ${st.lr_len[i]}</span>`;
-    if (st.la_holder === i) bonus += `<span class="badge badge-la" title="Largest Army (+2 VP)">⚔️ LA ${st.knights[i]}</span>`;
-    rows += `<tr class="${isCp ? 'cp-row' : ''}"><td class="seat-${i}"><b>${cp}${g.seat_names[i]}</b></td>
-             <td>${st.vp[i]} VP</td><td>${bonus || '—'}</td><td>${hand||'—'}</td></tr>`;
+    const you = i === g.human_seat;
+    const h = st.hands[i];
+
+    // Hand: your own full breakdown; opponents show only the hidden total.
+    const hand = you
+      ? (h.breakdown.map((n, r) => n > 0 ? `${res(r)}${n}` : '').filter(Boolean).join(' ') || '—')
+      : `🂠 ${h.total}`;
+
+    // Dev cards: your own breakdown (emoji×n); opponents show only the count.
+    const devArr = (st.dev_held && st.dev_held[i]) || [0, 0, 0, 0, 0];
+    const devCount = devArr.reduce((a, b) => a + b, 0);
+    const dev = you
+      ? (devArr.map((n, k) => n > 0 ? `${DEV_EMOJI[k]}${n}` : '').filter(Boolean).join(' ') || '—')
+      : `${DEV_TOTAL}${devCount}`;
+
+    // Pieces remaining = allowance − built.
+    const b = st.built[i] || { settle: 0, city: 0, road: 0 };
+    const remS = MAX_SETTLE - b.settle, remC = MAX_CITY - b.city, remR = MAX_ROAD - b.road;
+
+    let badges = '';
+    if (st.lr_holder === i) badges += `<span class="badge badge-lr" title="Longest Road (+2 VP)">🛣️ LR</span>`;
+    if (st.la_holder === i) badges += `<span class="badge badge-la" title="Largest Army (+2 VP)">⚔️ LA</span>`;
+
+    cards += `<div class="pcard ${isCp ? 'pcard-cp' : ''} pcard-${i}">
+      <div class="pcard-top">
+        <span class="pcard-name seat-${i}">${isCp ? '▶ ' : ''}${g.seat_names[i]}${you ? '' : ''}</span>
+        <span class="pcard-vp">${st.vp[i]} VP</span>${badges}
+      </div>
+      <div class="pcard-stats">
+        <span title="hand">✋ ${hand}</span>
+        <span title="dev cards">${dev}</span>
+        <span title="pieces left: settlements / cities / roads">🏠${remS} 🏛️${remC} 🛣️${remR}</span>
+        <span title="knights played">⚔️${st.knights[i]}</span>
+        <span title="longest road length">🛣${st.lr_len[i]}</span>
+        <span title="ports" class="pcard-ports">⚓ ${fmtPorts(st.ports[i])}</span>
+      </div>
+    </div>`;
   }
-  document.getElementById('players').innerHTML =
-    `<table><tr><th>seat</th><th>VP</th><th>bonus</th><th>hand</th></tr>${rows}</table>`;
+  document.getElementById('players').innerHTML = cards;
   renderBank(g);
 }
 
