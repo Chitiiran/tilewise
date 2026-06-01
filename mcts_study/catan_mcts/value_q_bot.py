@@ -40,14 +40,34 @@ class ValueQGnnBot:
         for a in legal:
             child = state.clone()
             child.apply_action(int(a))
-            if child.is_terminal():
-                val = np.asarray(child.returns(), dtype=np.float32)
-                mover_value = float(val[parent_mover])  # returns() is absolute-seat
-            else:
-                child_mover = child.current_player()
-                ego, _ = await self.ev.eval_leaf(child)
-                ego = np.asarray(ego, dtype=np.float32)
-                mover_value = float(ego[(parent_mover - child_mover) % 4])
+            mover_value = await self._mover_value(child, parent_mover)
             if mover_value > best_value:
                 best_value, best_action = mover_value, int(a)
         return best_action
+
+    async def _mover_value(self, state, mover: int) -> float:
+        """Value of `state` from the perspective of absolute seat `mover`.
+
+        Terminal -> absolute-seat returns()[mover].
+        Chance node -> probability-weighted EXPECTED value over outcomes
+          (deterministic; the engine can't be evaluated mid-chance because
+          legal_actions() then returns chance-outcome IDs outside the policy
+          action space). One level of chance is resolved here; nested chance
+          recurses through this same method.
+        Decision node -> GNN value head, rotated from the child mover's
+          ego-relative frame into `mover`'s seat.
+        """
+        if state.is_terminal():
+            val = np.asarray(state.returns(), dtype=np.float32)
+            return float(val[mover])
+        if state.is_chance_node():
+            exp = 0.0
+            for outcome, prob in state.chance_outcomes():
+                nxt = state.clone()
+                nxt.apply_action(int(outcome))
+                exp += float(prob) * await self._mover_value(nxt, mover)
+            return exp
+        child_mover = state.current_player()
+        ego, _ = await self.ev.eval_leaf(state)
+        ego = np.asarray(ego, dtype=np.float32)
+        return float(ego[(mover - child_mover) % 4])
