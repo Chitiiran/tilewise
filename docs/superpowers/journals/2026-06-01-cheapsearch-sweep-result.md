@@ -32,13 +32,27 @@ until sims is large enough to actually search to depth. So there is a U / valley
 raw argmax (good prior) > shallow search (noised prior) ... > deep search (sims=200,
 real value, ~54%).
 
-## Decisive control (running): sims=200 in THIS harness
-If sims=200 recovers ~50%+ here, the low-sims numbers are confirmed as the
-shallow-PUCT valley -> conclusion: cheap search does NOT work; you need real sims
-(expensive). If sims=200 is ALSO low here, there is a harness/search bug to fix
-before trusting any of this. Either way we learn something decisive.
+## Decisive control: sims=200 in THIS harness — CONFIRMS the valley
 
-## Implication if the control confirms the valley
+| sims=200 (partial, 57/120 games) | win% |
+|---|---:|
+| **GnnMcts@200** | **50.9%** |
+| LookV3 | 36.8% |
+| RawPureGnn | 6.1% |
+
+GnnMcts@200 recovers to ~51% (matches Gate-2's ~54%), beating LookV3, in the SAME
+harness that gave the low-sims numbers. The harness is sound; RawPureGnn stays low
+(6.1%) as expected. **The low-sims valley is REAL, not a bug.**
+
+Full sims curve (this harness, same net + seeds):
+| sims | 0(argmax) | 1-ply Q | 8 | 16 | 32 | 200 |
+|---|---|---|---|---|---|---|
+| GnnMcts win% | ~13-18 | ~14 | 14.2 | 7.5 | 3.3 | **~51** |
+
+A clear VALLEY: prior alone is OK, shallow search NOISES it (worse, bottoming
+~sims=32 at 3.3%), and only deep search (~200) crosses into real value recovery.
+
+## Implication — the valley is confirmed
 - "Search-free or cheap-search deploy beats LookV3" looks FALSE on this stack:
   1-ply ties argmax; 8-32 sims is worse than argmax; only ~200 sims works.
 - That re-centers the deployable on the known winner (GnnMcts@~200, 54%) OR on
@@ -46,3 +60,24 @@ before trusting any of this. Either way we learn something decisive.
   but D1/D2/D3 say that's capped at this scale).
 - Worth testing the PUCT hypothesis directly: lower c_puct at low sims, or
   policy-target temperature, might rescue cheap search. Defer pending control.
+
+## VERDICT (control confirmed)
+On this stack, the ONLY deployment that beats LookV3 is real search at ~200 sims —
+which is exactly "GnnMcts." Every cheaper deploy failed: 1-ply value-Q ties argmax;
+8-32-sim search is WORSE than argmax. The diagnosed plateau cause (multi-modal
+optima + argmax discards value) is correct, but the fix is NOT cheap — it needs
+enough search depth to overcome the wide-action-space PUCT noise floor (~tens of
+sims wasted before depth helps).
+
+This re-centers the deployable decision (to discuss with user, given "not shipping
+gnn+mcts"):
+1. Accept GnnMcts@~150-200 as the deployable (it's the only ~50%+ player). Cost is
+   the open question — measure ms/move; it may be acceptable for non-realtime use.
+2. Try to RESCUE cheap search by killing the PUCT noise: lower c_puct (e.g. 0.5),
+   FPU/prior-trust tweaks, or fewer-but-wider root children. Could move the valley
+   floor up. Cheap experiment, high information.
+3. Improve the RAW policy/value so argmax itself is stronger — but D1/D2/D3 say
+   this is capped at h128 + few-hundred-game scale; would need a different training
+   signal (e.g. value-weighted policy targets), not just more data.
+Recommend (2) as the next cheap probe (it directly tests the valley mechanism),
+then bring the cost numbers for (1) so the user can decide what "shippable" means.
