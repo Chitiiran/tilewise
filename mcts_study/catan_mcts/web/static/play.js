@@ -6,8 +6,29 @@ async function initLobby() {
   renderLobby();
 }
 
+// Default opponent: PureGnn loading the "Cell 6" checkpoint — the strongest
+// FAST bot for full Catan per our tournament data (~54% in 4-PureGnn, CPU-only
+// so it doesn't touch the GPU). LookaheadV3 wins more (~70%) but is slow.
+const DEFAULT_BOT_TYPE = 'PureGnn';
+
+// Find the Cell 6 epoch-10 checkpoint among the discovered .pt files. Matched
+// by distinctive path fragments so a runs-dir reorg doesn't break it; falls
+// back to the first checkpoint, then to null (caller degrades the default).
+function defaultCheckpointPath() {
+  const cks = BOTS.checkpoints || [];
+  if (!cks.length) return null;
+  const cell6 = cks.find(c =>
+    /06_cand11_cand8_cand10/.test(c.label) && /checkpoint_epoch10\.pt$/.test(c.label));
+  return (cell6 || cks[0]).path;
+}
+
 function botSelect(seat) {
-  const opts = BOTS.types.map(t => `<option value="${t.id}">${t.label}</option>`).join('');
+  // Default the type to PureGnn (Cell 6) when a checkpoint is available;
+  // otherwise leave the first type selected so the lobby still works.
+  const haveCkpt = (BOTS.checkpoints || []).length > 0;
+  const defType = haveCkpt ? DEFAULT_BOT_TYPE : (BOTS.types[0] && BOTS.types[0].id);
+  const opts = BOTS.types.map(t =>
+    `<option value="${t.id}"${t.id === defType ? ' selected' : ''}>${t.label}</option>`).join('');
   return `<select class="bot-type" data-seat="${seat}">${opts}</select>
           <select class="bot-ckpt" data-seat="${seat}" style="display:none"></select>`;
 }
@@ -35,6 +56,9 @@ function renderLobby() {
   syncHumanSeat();
   PLAY.querySelectorAll('input[name=human]').forEach(r => r.onchange = syncHumanSeat);
   PLAY.querySelectorAll('.bot-type').forEach(sel => sel.onchange = () => syncCkpt(sel));
+  // Populate each seat's checkpoint dropdown for its (defaulted) bot type, so
+  // a PureGnn default shows its Cell 6 checkpoint pre-selected.
+  PLAY.querySelectorAll('.bot-type').forEach(sel => syncCkpt(sel));
   document.getElementById('start').onclick = onStart;
 }
 
@@ -76,6 +100,9 @@ function syncCkpt(sel) {
   const type = BOTS.types.find(t => t.id === sel.value);
   if (type && type.needs_checkpoint) {
     ck.innerHTML = checkpointOptionsHtml();
+    // Pre-select the strong default (Cell 6) when this dropdown is first shown.
+    const def = defaultCheckpointPath();
+    if (def) ck.value = def;
     ck.style.display = '';
   } else {
     ck.style.display = 'none';
