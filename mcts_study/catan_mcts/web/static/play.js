@@ -23,13 +23,21 @@ function defaultCheckpointPath() {
 }
 
 function botSelect(seat) {
+  // Primary picker: the server's difficulty ladder (medium = GNN policy is
+  // the default). "Custom…" reveals the raw type+checkpoint controls for
+  // power users; those keep their old behavior untouched.
+  const diffs = BOTS.difficulties || [];
+  const diffOpts = diffs.map(d =>
+    `<option value="${d.id}"${d.id === 'medium' ? ' selected' : ''}>${d.label}</option>`).join('')
+    + `<option value="__custom__">Custom…</option>`;
   // Default the type to PureGnn (Cell 6) when a checkpoint is available;
   // otherwise leave the first type selected so the lobby still works.
   const haveCkpt = (BOTS.checkpoints || []).length > 0;
   const defType = haveCkpt ? DEFAULT_BOT_TYPE : (BOTS.types[0] && BOTS.types[0].id);
   const opts = BOTS.types.map(t =>
     `<option value="${t.id}"${t.id === defType ? ' selected' : ''}>${t.label}</option>`).join('');
-  return `<select class="bot-type" data-seat="${seat}">${opts}</select>
+  return `<select class="bot-diff" data-seat="${seat}">${diffOpts}</select>
+          <select class="bot-type" data-seat="${seat}" style="display:none">${opts}</select>
           <select class="bot-ckpt" data-seat="${seat}" style="display:none"></select>`;
 }
 
@@ -55,6 +63,7 @@ function renderLobby() {
     </div>`;
   syncHumanSeat();
   PLAY.querySelectorAll('input[name=human]').forEach(r => r.onchange = syncHumanSeat);
+  PLAY.querySelectorAll('.bot-diff').forEach(sel => sel.onchange = () => syncCustom(sel));
   PLAY.querySelectorAll('.bot-type').forEach(sel => sel.onchange = () => syncCkpt(sel));
   // Populate each seat's checkpoint dropdown for its (defaulted) bot type, so
   // a PureGnn default shows its Cell 6 checkpoint pre-selected.
@@ -94,6 +103,17 @@ function checkpointOptionsHtml() {
   return html;
 }
 
+// Show/hide the raw type+ckpt controls when the difficulty picker flips
+// to/from "Custom…".
+function syncCustom(sel) {
+  const seat = sel.dataset.seat;
+  const typeSel = PLAY.querySelector(`.bot-type[data-seat="${seat}"]`);
+  const custom = sel.value === '__custom__';
+  typeSel.style.display = custom ? '' : 'none';
+  if (custom) syncCkpt(typeSel);
+  else PLAY.querySelector(`.bot-ckpt[data-seat="${seat}"]`).style.display = 'none';
+}
+
 function syncCkpt(sel) {
   const seat = sel.dataset.seat;
   const ck = PLAY.querySelector(`.bot-ckpt[data-seat="${seat}"]`);
@@ -114,6 +134,11 @@ async function onStart() {
   const seats = {};
   for (let s = 0; s < 4; s++) {
     if (s === human) continue;
+    const diff = PLAY.querySelector(`.bot-diff[data-seat="${s}"]`).value;
+    if (diff !== '__custom__') {
+      seats[s] = { difficulty: diff };   // server resolves the preset
+      continue;
+    }
     const type = PLAY.querySelector(`.bot-type[data-seat="${s}"]`).value;
     const spec = { type };
     const ck = PLAY.querySelector(`.bot-ckpt[data-seat="${s}"]`);

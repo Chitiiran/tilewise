@@ -33,6 +33,67 @@ def list_types() -> list[dict]:
     ]
 
 
+# Difficulty ladder. Each tier is justified by a measured winrate (see plan
+# 2026-06-10-az-difficulty-bots.md). Checkpoints are stored RELATIVE to the
+# server's checkpoints_dir and resolved at build time. There is deliberately
+# no mid-sims GnnMcts tier: the 2026-06-01 cheap-search sweep showed sims
+# 8/16/32 play WORSE than raw argmax (the "valley") — only ~200-sim search
+# beats LookaheadV3.
+_CELL6_CKPT = ("training/loss_aug/06_cand11_cand8_cand10_h128_l4/"
+               "training_h128_l4/checkpoint_epoch10.pt")
+
+_DIFFICULTIES: list[dict] = [
+    {"id": "beginner", "label": "Beginner (random)",
+     "spec": {"type": "Random"}},
+    {"id": "easy", "label": "Easy (greedy)",
+     "spec": {"type": "Greedy"}},
+    {"id": "medium", "label": "Medium (GNN policy)",
+     "spec": {"type": "PureGnn", "checkpoint_rel": _CELL6_CKPT}},
+    {"id": "hard", "label": "Hard (lookahead search)",
+     "spec": {"type": "LookaheadMctsV3"}},
+    {"id": "expert", "label": "Expert (GNN + deep search)",
+     "spec": {"type": "GnnMcts", "checkpoint_rel": _CELL6_CKPT,
+              "sims": 200, "device": "cpu"}},
+]
+
+
+def list_difficulties() -> list[dict]:
+    """Difficulty presets for the lobby, in ascending strength order."""
+    return [dict(d, spec=dict(d["spec"])) for d in _DIFFICULTIES]
+
+
+def resolve_seat_spec(spec: dict, *, checkpoints_dir) -> dict:
+    """Turn a lobby seat spec into a buildable bot spec.
+
+    Accepts either {"type": ...} (passed through unchanged, back-compat) or
+    {"difficulty": "<id>"} (expanded from the preset table). Preset specs
+    carrying `checkpoint_rel` get it resolved against checkpoints_dir into an
+    absolute `checkpoint`; a missing file is a ValueError naming the expected
+    relative path so deployment gaps are loud, not mysterious.
+    """
+    if spec.get("type"):
+        return spec
+    diff_id = spec.get("difficulty")
+    if not diff_id:
+        raise ValueError("seat spec needs a 'type' or a 'difficulty'")
+    preset = next((d for d in _DIFFICULTIES if d["id"] == diff_id), None)
+    if preset is None:
+        known = ", ".join(d["id"] for d in _DIFFICULTIES)
+        raise ValueError(f"unknown difficulty {diff_id!r} (known: {known})")
+    out = dict(preset["spec"])
+    rel = out.pop("checkpoint_rel", None)
+    if rel is not None:
+        if checkpoints_dir is None:
+            raise ValueError(f"difficulty {diff_id!r} needs a checkpoint, "
+                             f"but no checkpoints_dir is configured")
+        path = Path(checkpoints_dir) / rel
+        if not path.exists():
+            raise ValueError(f"difficulty {diff_id!r} checkpoint missing: "
+                             f"expected {rel} under {checkpoints_dir}")
+        out["checkpoint"] = str(path)
+    return out
+
+
 def build(spec: dict, *, game, seed: int):
     """Construct a bot from a spec like {"type": "Random"} or
     {"type": "PureGnn", "checkpoint": "/abs/path.pt"}.

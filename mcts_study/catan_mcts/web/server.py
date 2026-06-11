@@ -58,6 +58,7 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
     def get_bots():
         return {
             "types": bot_registry.list_types(),
+            "difficulties": bot_registry.list_difficulties(),
             "checkpoints": bot_registry.list_checkpoints(checkpoints_dir),
         }
 
@@ -69,8 +70,16 @@ def create_app(*, checkpoints_dir, replays_dir) -> FastAPI:
 
     @app.post("/api/games")
     def create_game(spec: SetupSpec):
+        setup = spec.model_dump()
         try:
-            sess = GameSession(spec.model_dump())
+            # Expand {"difficulty": ...} seats into full bot specs before the
+            # session sees them; explicit {"type": ...} specs pass through.
+            setup["seats"] = {
+                seat: bot_registry.resolve_seat_spec(
+                    s, checkpoints_dir=checkpoints_dir)
+                for seat, s in setup["seats"].items()
+            }
+            sess = GameSession(setup)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         gid = uuid.uuid4().hex[:12]
