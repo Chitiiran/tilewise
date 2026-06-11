@@ -133,6 +133,31 @@ def class_balanced_target(target: torch.Tensor, legal: torch.Tensor) -> torch.Te
     return adjusted
 
 
+def sharpen_policy_target(target: torch.Tensor, p: float) -> torch.Tensor:
+    """Distillation target: raise the (normalized) visit distribution to the
+    p-th power and renormalize per row. (v/s)^p ∝ v^p, so this equals
+    sharpening raw visit counts.
+
+    Why: the 2026-06-01 deploy-valley diagnosis — Catan states have several
+    near-equal-value moves, visit targets are honestly soft, and argmax
+    deployment discards the value signal that separates them. Sharpening the
+    GnnMcts@200 teacher's visits concentrates probability on the searcher's
+    DECISION so the student's argmax inherits it (recommended target form,
+    puregnn-deploy-investigation-FINAL §4).
+
+    p=1 is the identity; exact ties stay tied; all-zero rows stay zero (the
+    masked policy loss handles them without NaN). Detached — a target
+    transform, not a loss term.
+    """
+    if p == 1.0:
+        return target
+    with torch.no_grad():
+        powered = target.pow(p)
+        row_sum = powered.sum(dim=-1, keepdim=True)
+        safe = row_sum.clamp(min=1e-12)
+        return torch.where(row_sum > 0, powered / safe, powered)
+
+
 def _masked_policy_loss(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Cross-entropy where illegal logits are sent to -inf before softmax.
 
@@ -316,6 +341,7 @@ def train_main(
     lambda_settle: float = 0.0,
     lambda_road: float = 0.0,
     class_balanced_policy: bool = False,
+    policy_sharpen: float = 1.0,
     val_frac: float = 0.1,
     seed: int = 0,
     device: str = "auto",
@@ -552,6 +578,11 @@ def train_main(
             # the rebalance operates on the final target.
             if class_balanced_policy:
                 policy_t = class_balanced_target(policy_t, legal)
+            # Distillation: sharpen the (final) target toward the teacher's
+            # decision. Applied last so it sharpens whatever target the
+            # earlier transforms produced (all off in distill runs anyway).
+            if policy_sharpen != 1.0:
+                policy_t = sharpen_policy_target(policy_t, policy_sharpen)
             lv = F.mse_loss(v_pred, value_t)
             lp = _masked_policy_loss(p_logits, policy_t, legal)
             loss = w_value * lv + w_policy * lp
@@ -658,6 +689,13 @@ def train_main(
                     if class_balanced_policy
                     else policy_t
                 )
+                # Distillation: keep val loss on the same target the train
+                # loss optimizes. top1 below stays on the ORIGINAL teacher
+                # target (sharpening preserves argmax, so it's identical
+                # either way — but original keeps cross-run comparability).
+                if policy_sharpen != 1.0:
+                    policy_t_for_loss = sharpen_policy_target(
+                        policy_t_for_loss, policy_sharpen)
                 lv = F.mse_loss(v_pred, value_t)
                 lp = _masked_policy_loss(p_logits, policy_t_for_loss, legal)
                 vt += float(w_value * lv + w_policy * lp); vv += float(lv); vp_ += float(lp)
@@ -975,6 +1013,10 @@ def cli_main() -> None:
                         "hex symmetry augmentation).")
     p.add_argument("--rotate-k", type=int, default=1,
                    help="If --rotate-mode=fixed, apply this many 60° rotations (0..5).")
+    p.add_argument("--policy-sharpen", type=float, default=1.0,
+                   help="Distillation: raise visit-count policy targets to this "
+                        "power and renormalize (2.0 = visits^2, the recommended "
+                        "teacher-decision target). 1.0 = off.")
     p.add_argument("--early-stop-patience", type=int, default=0,
                    help="Stop training when val_top1 hasn't beaten best for N epochs in a row. "
                         "0 disables early stopping (default; preserves prior --epochs behavior).")
@@ -996,6 +1038,7 @@ def cli_main() -> None:
         rotate=args.rotate,
         rotate_mode=args.rotate_mode,
         rotate_k=args.rotate_k,
+        policy_sharpen=args.policy_sharpen,
         early_stop_patience=args.early_stop_patience,
         status_file=args.status_file,
         status_label=args.status_label,
