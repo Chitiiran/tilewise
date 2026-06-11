@@ -51,3 +51,7 @@ mcts_study/scripts/_*.py
 mcts_study/scripts/_*.sh
 # Browser-verification screenshots (local artifacts, not served content)
 mcts_study/catan_mcts/web/static/_*.png
+
+# Claude worktrees + session state (local only)
+.claude/worktrees/
+.superpowers/
