@@ -44,6 +44,30 @@ nohup setsid python -m catan_mcts.experiments.self_play_async \
 WSL itself failed to start once tonight ("Failed to attach disk
 D:/wsl-distros/Ubuntu/ext4.vhdx") — fixed by `wsl --shutdown` + retry.
 
+## DIRECTION CHANGE 2026-06-11 ~02:00 — AZ loop (spec 2026-06-11-az-loop-design.md)
+
+The run above is now **AZ iteration 1's SELF-PLAY stage** (user decision).
+Ladder seeded at `/home/chitii/catan_data/runs/v3/az_loop` (champion=cell6).
+
+When all 5 procs exit (cap ~06:42 or game ceilings):
+
+```bash
+source ~/catan_mcts_venvs/mcts-study/bin/activate
+cd /mnt/c/dojo/catan_bot/.claude/worktrees/az-bots/mcts_study
+python -m catan_az.loop \
+  --loop-root /home/chitii/catan_data/runs/v3/az_loop \
+  --iter 1 \
+  --skip-selfplay-dirs /home/chitii/catan_data/runs/v3/distill/*self_play_async*
+```
+
+That runs TRAIN (window over the corpus, warm-start champion, lr=2e-4,
+≤4 epochs early-stop) -> ARENA (candidate vs cell6, GnnMcts both sides,
+120 games, <5% timeout rule) -> verdict + Elo + journal.csv. Fully
+resumable (STAGE.done markers); `touch <loop-root>/STOP` halts cleanly
+between stages.
+
+## Old plan below (superseded but resume commands still valid)
+
 ## Next steps (Phase 3, after data accumulates)
 
 1. Train student (warm-start Cell 6, distillation target):
