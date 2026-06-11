@@ -57,12 +57,48 @@ _DIFFICULTIES: list[dict] = [
 ]
 
 
-def list_difficulties() -> list[dict]:
-    """Difficulty presets for the lobby, in ascending strength order."""
-    return [dict(d, spec=dict(d["spec"])) for d in _DIFFICULTIES]
+def list_difficulties(az_ladder_root=None) -> list[dict]:
+    """Difficulty presets for the lobby, in ascending strength order.
+
+    When an AZ-loop ladder registry exists (az_ladder_root/ladder.json),
+    the current champion is appended as a dynamic top tier — the loop's
+    promoted nets become playable without code changes.
+    """
+    out = [dict(d, spec=dict(d["spec"])) for d in _DIFFICULTIES]
+    champ = _az_champion(az_ladder_root)
+    if champ is not None:
+        out.append({
+            "id": "az-champion",
+            "label": f"AZ Champion ({champ['name']}, elo {champ['elo']:.0f})",
+            "spec": {"type": "GnnMcts", "checkpoint": champ["checkpoint"],
+                     "sims": 200, "device": "cpu"},
+        })
+    return out
 
 
-def resolve_seat_spec(spec: dict, *, checkpoints_dir) -> dict:
+def _az_champion(az_ladder_root) -> dict | None:
+    """Champion entry from the AZ loop's ladder.json, or None.
+
+    Tolerates a missing/corrupt registry (the web app must never 500
+    because the training loop is mid-write — writes are atomic anyway).
+    """
+    if az_ladder_root is None:
+        return None
+    import json
+    p = Path(az_ladder_root) / "ladder.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text())
+        champ = data["entries"][data["champion"]]
+        if not Path(champ["checkpoint"]).exists():
+            return None
+        return champ
+    except Exception:
+        return None
+
+
+def resolve_seat_spec(spec: dict, *, checkpoints_dir, az_ladder_root=None) -> dict:
     """Turn a lobby seat spec into a buildable bot spec.
 
     Accepts either {"type": ...} (passed through unchanged, back-compat) or
@@ -76,6 +112,13 @@ def resolve_seat_spec(spec: dict, *, checkpoints_dir) -> dict:
     diff_id = spec.get("difficulty")
     if not diff_id:
         raise ValueError("seat spec needs a 'type' or a 'difficulty'")
+    if diff_id == "az-champion":
+        champ = _az_champion(az_ladder_root)
+        if champ is None:
+            raise ValueError("difficulty 'az-champion' unavailable: no ladder "
+                             "registry (or champion checkpoint missing)")
+        return {"type": "GnnMcts", "checkpoint": champ["checkpoint"],
+                "sims": 200, "device": "cpu"}
     preset = next((d for d in _DIFFICULTIES if d["id"] == diff_id), None)
     if preset is None:
         known = ", ".join(d["id"] for d in _DIFFICULTIES)

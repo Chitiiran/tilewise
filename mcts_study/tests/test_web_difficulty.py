@@ -131,3 +131,68 @@ def test_create_game_with_unknown_difficulty_400(client):
         "seed": 1,
     })
     assert r.status_code == 400
+
+
+# --- AZ ladder dynamic tier --------------------------------------------------
+
+def _mk_ladder(root, ckpt_path):
+    import json
+    root.mkdir(parents=True, exist_ok=True)
+    ckpt_path.write_bytes(b"fake")
+    (root / "ladder.json").write_text(json.dumps({
+        "entries": {"az_iter_3": {"name": "az_iter_3",
+                                  "checkpoint": str(ckpt_path),
+                                  "elo": 1042.0, "games": 360,
+                                  "created_iter": 3}},
+        "champion": "az_iter_3", "history": [],
+    }))
+
+
+def test_list_difficulties_includes_az_champion(tmp_path):
+    from catan_mcts.web import bot_registry
+    _mk_ladder(tmp_path / "loop", tmp_path / "champ.pt")
+    diffs = bot_registry.list_difficulties(tmp_path / "loop")
+    ids = [d["id"] for d in diffs]
+    assert ids[-1] == "az-champion"
+    assert "az_iter_3" in diffs[-1]["label"]
+    assert diffs[-1]["spec"]["checkpoint"] == str(tmp_path / "champ.pt")
+
+
+def test_list_difficulties_no_ladder_unchanged(tmp_path):
+    from catan_mcts.web import bot_registry
+    diffs = bot_registry.list_difficulties(tmp_path / "nonexistent")
+    assert [d["id"] for d in diffs] == \
+        ["beginner", "easy", "medium", "hard", "expert"]
+
+
+def test_missing_champion_checkpoint_hides_tier(tmp_path):
+    import json
+    from catan_mcts.web import bot_registry
+    root = tmp_path / "loop"
+    root.mkdir()
+    (root / "ladder.json").write_text(json.dumps({
+        "entries": {"x": {"name": "x", "checkpoint": "/gone.pt",
+                          "elo": 1000.0, "games": 0, "created_iter": 1}},
+        "champion": "x", "history": [],
+    }))
+    diffs = bot_registry.list_difficulties(root)
+    assert all(d["id"] != "az-champion" for d in diffs)
+
+
+def test_resolve_az_champion_difficulty(tmp_path):
+    from catan_mcts.web import bot_registry
+    _mk_ladder(tmp_path / "loop", tmp_path / "champ.pt")
+    spec = bot_registry.resolve_seat_spec(
+        {"difficulty": "az-champion"}, checkpoints_dir=None,
+        az_ladder_root=tmp_path / "loop")
+    assert spec["type"] == "GnnMcts" and spec["sims"] == 200
+    assert spec["checkpoint"] == str(tmp_path / "champ.pt")
+
+
+def test_resolve_az_champion_without_ladder_raises(tmp_path):
+    import pytest as _pytest
+    from catan_mcts.web import bot_registry
+    with _pytest.raises(ValueError, match="az-champion"):
+        bot_registry.resolve_seat_spec({"difficulty": "az-champion"},
+                                       checkpoints_dir=None,
+                                       az_ladder_root=tmp_path / "none")
