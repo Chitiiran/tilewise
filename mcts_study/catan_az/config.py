@@ -35,6 +35,12 @@ class AzConfig:
     promote_threshold: float = 0.55    # strictly-greater promotes (AGZ gate)
     arena_timeout_rate_max: float = 0.05
     arena_sims: int = 200
+    # Per-game wall-clock cap: bounds the rare pathological game that crawls
+    # toward the 200k step cap and would otherwise hold the whole arena's
+    # gather() hostage (2026-06-13 incident). 600s >> a normal ~2min game, so
+    # it only ever fires on a genuine straggler. Counts as a timeout (the
+    # <5% timeout-rate gate still guards verdict trustworthiness).
+    arena_game_max_seconds: float = 600.0
     # Anchor (absolute calibration vs LookV3)
     anchor_every: int = 5
     anchor_games: int = 60

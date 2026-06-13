@@ -84,13 +84,23 @@ def should_promote(result: ArenaResult, cfg) -> str:
 # --------------------------------------------------------------------------
 
 async def _play_arena_game(*, game, seed: int, seating: list[str],
-                           mcts_cand, mcts_champ, sims: int) -> tuple[int, bool]:
+                           mcts_cand, mcts_champ, sims: int,
+                           max_seconds: float | None = None) -> tuple[int, bool]:
     """Returns (winner_seat or -1, timed_out). Mirrors the e10g driver:
-    chance fast-path, single-legal fast-path, step cap."""
+    chance fast-path, single-legal fast-path, step cap. A per-game
+    wall-clock cap (max_seconds) bounds the rare pathological game that
+    crawls toward the 200k step cap — without it, one slow game holds the
+    whole arena's asyncio.gather hostage (2026-06-13: seed 30030029 ran
+    45min+ alone while the 119-game verdict sat decided)."""
+    import time as _t
     state = game.new_initial_state(seed=seed)
     chance_rng = random.Random(seed)
     steps, max_steps = 0, 200_000
+    deadline = (_t.monotonic() + max_seconds) if max_seconds else None
     while not state.is_terminal() and steps < max_steps:
+        if deadline is not None and _t.monotonic() > deadline:
+            return -1, True   # wall-clock timeout
+        # step-count refresh keeps the check cheap (no per-inner-loop time call)
         if state.is_chance_node():
             outs = state.chance_outcomes()
             r = chance_rng.random()
@@ -185,7 +195,8 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
                                        rng=np.random.default_rng(seed + 13))
                     winner, timed_out = await _play_arena_game(
                         game=game, seed=seed, seating=seating,
-                        mcts_cand=mcts_c, mcts_champ=mcts_x, sims=cfg.arena_sims)
+                        mcts_cand=mcts_c, mcts_champ=mcts_x, sims=cfg.arena_sims,
+                        max_seconds=getattr(cfg, "arena_game_max_seconds", None))
                     rec = {"seed": seed, "rot": rot, "winner_seat": winner,
                            "winner_role": (seating[winner] if winner >= 0 else None),
                            "timed_out": timed_out}

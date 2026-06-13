@@ -69,6 +69,49 @@ def test_result_json_round_trip(tmp_path):
     assert back == r
 
 
+def test_play_arena_game_wall_clock_cap(monkeypatch):
+    """A game that never terminates must hit the wall-clock cap and return
+    timed_out=True, instead of grinding to the 200k step cap (2026-06-13
+    straggler held the whole gate hostage for 45min+)."""
+    import asyncio
+
+    from catan_az import arena as arena_mod
+
+    class NeverEndingState:
+        def is_terminal(self):
+            return False
+
+        def is_chance_node(self):
+            return False
+
+        def legal_actions(self):
+            return [0, 1]   # >1 so it always calls the (stubbed) search
+
+        def current_player(self):
+            return 0
+
+        def apply_action(self, a):
+            pass
+
+    class FakeGame:
+        def new_initial_state(self, seed):
+            return NeverEndingState()
+
+    class FakeMcts:
+        async def search(self, state, n_sims):
+            return {0: 1}
+
+        def best_action(self, vc):
+            return 0
+
+    winner, timed_out = asyncio.run(arena_mod._play_arena_game(
+        game=FakeGame(), seed=1, seating=["cand"] * 4,
+        mcts_cand=FakeMcts(), mcts_champ=FakeMcts(), sims=1,
+        max_seconds=0.2))
+    assert timed_out is True
+    assert winner == -1
+
+
 def test_run_arena_sets_active_game_count(tmp_path, monkeypatch):
     """Regression: each evaluator's active_game_count must be set below the
     10**9 default during the run, else the all-parked flush clause never
@@ -106,7 +149,8 @@ def test_run_arena_sets_active_game_count(tmp_path, monkeypatch):
         def __init__(self, **kw):
             pass
 
-    async def fake_play(*, game, seed, seating, mcts_cand, mcts_champ, sims):
+    async def fake_play(*, game, seed, seating, mcts_cand, mcts_champ, sims,
+                        max_seconds=None):
         return 0, False   # candidate (seat 0 in rot 0) wins, not timed out
 
     # run_arena imports these locally (keeps the module torch-free); patch at
