@@ -38,7 +38,7 @@ def _build_request():
     from catan_mcts.adapter import CatanGame
     game = CatanGame(vp_target=10, bonuses=True)
     state = game.new_initial_state(seed=123)
-    return state_to_pyg(state.observation())
+    return state_to_pyg(state._engine.observation())
 
 
 def server_proc(req_q: mp.Queue, reply_qs: dict, ckpt: str, stop_ev) -> None:
