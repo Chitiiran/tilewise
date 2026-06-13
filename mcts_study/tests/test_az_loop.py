@@ -111,6 +111,31 @@ def test_resume_skips_done_stages(loop_env):
     assert calls == ["selfplay", "train", "arena", "arena"]
 
 
+def test_rerun_completed_iteration_is_noop(loop_env):
+    """A fully-completed iteration re-run must NOT double-count Elo or append
+    a duplicate journal row (2026-06-13: a restart double-published iter 1)."""
+    from catan_az.ladder import Ladder
+    from catan_az.loop import run_iteration
+    root, _, sp, tr, win_arena, _ = loop_env
+    cfg = AzConfig()
+
+    run_iteration(cfg, root, 1, selfplay_fn=sp, train_fn=tr, arena_fn=win_arena)
+    champ_after_1 = Ladder(root).champion()
+    elo_1 = champ_after_1["elo"]
+    games_1 = champ_after_1["games"]
+    journal_1 = (root / "journal.csv").read_text()
+
+    # Re-run the identical completed iteration: every stage skipped via
+    # done-markers, publish guarded -> no state change at all.
+    run_iteration(cfg, root, 1, selfplay_fn=sp, train_fn=tr, arena_fn=win_arena)
+    champ_after_2 = Ladder(root).champion()
+    assert champ_after_2["name"] == champ_after_1["name"]
+    assert champ_after_2["elo"] == elo_1            # no double Elo
+    assert champ_after_2["games"] == games_1        # no double game count
+    assert (root / "journal.csv").read_text() == journal_1   # no dup row
+    assert len(Ladder(root).history()) == 1         # one promote, not two
+
+
 def test_stop_sentinel_halts_between_stages(loop_env):
     from catan_az.loop import run_iteration, StopRequested
     root, calls, sp, tr, win_arena, _ = loop_env

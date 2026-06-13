@@ -151,32 +151,39 @@ def run_iteration(cfg: AzConfig, loop_root: Path, iter_n: int, *,
                            "per_rotation": result.per_rotation},
                 "verdict": verdict})
 
-    # PUBLISH
-    name = f"az_iter_{iter_n}"
-    if verdict == "promote":
-        ckpt_dir = loop_root / "checkpoints"
-        ckpt_dir.mkdir(exist_ok=True)
-        published = ckpt_dir / f"{name}.pt"
-        shutil.copyfile(candidate, published)
-        ladder.register_candidate(name, str(published), created_iter=iter_n)
-        ladder.record_arena(name, champion["name"], wins_a=result.wins_cand,
-                            wins_b=result.wins_champ, draws=result.draws)
-        ladder.promote(name)
-    elif verdict == "hold":
-        ladder.register_candidate(name, str(candidate), created_iter=iter_n)
-        ladder.record_arena(name, champion["name"], wins_a=result.wins_cand,
-                            wins_b=result.wins_champ, draws=result.draws)
+    # PUBLISH — guarded by its own done-marker so a resumed/re-run iteration
+    # never double-counts Elo or appends a duplicate journal row (2026-06-13:
+    # a restart-to-unblock re-ran publish, giving az_iter_1 240 games + a
+    # duplicate promote). The ladder mutations + journal_row are NOT
+    # individually idempotent, so the whole stage must run at most once.
+    if _load_done(iter_dir, "PUBLISH") is None:
+        name = f"az_iter_{iter_n}"
+        if verdict == "promote":
+            ckpt_dir = loop_root / "checkpoints"
+            ckpt_dir.mkdir(exist_ok=True)
+            published = ckpt_dir / f"{name}.pt"
+            shutil.copyfile(candidate, published)
+            ladder.register_candidate(name, str(published), created_iter=iter_n)
+            ladder.record_arena(name, champion["name"], wins_a=result.wins_cand,
+                                wins_b=result.wins_champ, draws=result.draws)
+            ladder.promote(name)
+        elif verdict == "hold":
+            ladder.register_candidate(name, str(candidate), created_iter=iter_n)
+            ladder.record_arena(name, champion["name"], wins_a=result.wins_cand,
+                                wins_b=result.wins_champ, draws=result.draws)
 
-    status.journal_row({
-        "iter": iter_n, "champion": champion["name"],
-        "selfplay_dirs": len(run_dirs), "window_dirs": len(window),
-        "arena_wins_cand": result.wins_cand,
-        "arena_wins_champ": result.wins_champ,
-        "arena_draws": result.draws, "arena_timeouts": result.timeouts,
-        "arena_winrate": round(result.winrate_cand, 4),
-        "verdict": verdict,
-        "champion_elo_after": Ladder(loop_root).champion()["elo"],
-    })
+        status.journal_row({
+            "iter": iter_n, "champion": champion["name"],
+            "selfplay_dirs": len(run_dirs), "window_dirs": len(window),
+            "arena_wins_cand": result.wins_cand,
+            "arena_wins_champ": result.wins_champ,
+            "arena_draws": result.draws, "arena_timeouts": result.timeouts,
+            "arena_winrate": round(result.winrate_cand, 4),
+            "verdict": verdict,
+            "champion_elo_after": Ladder(loop_root).champion()["elo"],
+        })
+        _mark_done(iter_dir, "PUBLISH", {"verdict": verdict})
+
     status.stage(iter_n, "done", verdict=verdict)
     return verdict
 
