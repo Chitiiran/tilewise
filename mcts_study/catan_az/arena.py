@@ -160,23 +160,41 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
         game = CatanGame(vp_target=cfg.vp_target, bonuses=cfg.bonuses)
         sem = asyncio.Semaphore(n_concurrent)
         f = open(results_path, "a")
+        # Live-game counter shared by both evaluators. Without it, each
+        # evaluator keeps its 10**9 default, so the all-parked flush clause
+        # (n >= active_game_count) NEVER fires — batches degrade to the 5ms
+        # window only, throughput collapses, and the watchdog spams false
+        # "stuck game" warnings every window. Each live game alternates leaf
+        # requests between the two evaluators, so the right per-evaluator
+        # bound is the live game count (mirrors self_play_async's `active`).
+        active = {"n": 0}
+
+        def _set_active(n: int) -> None:
+            ev_cand.active_game_count = max(1, n)
+            ev_champ.active_game_count = max(1, n)
 
         async def one(rot: int, seed: int) -> None:
             async with sem:
-                seating = seating_for_rotation(rot)
-                mcts_c = AsyncMcts(evaluator=ev_cand, c=1.4,
-                                   rng=np.random.default_rng(seed + 11))
-                mcts_x = AsyncMcts(evaluator=ev_champ, c=1.4,
-                                   rng=np.random.default_rng(seed + 13))
-                winner, timed_out = await _play_arena_game(
-                    game=game, seed=seed, seating=seating,
-                    mcts_cand=mcts_c, mcts_champ=mcts_x, sims=cfg.arena_sims)
-                rec = {"seed": seed, "rot": rot, "winner_seat": winner,
-                       "winner_role": (seating[winner] if winner >= 0 else None),
-                       "timed_out": timed_out}
-                f.write(json.dumps(rec) + "\n")
-                f.flush()
-                done[seed] = rec
+                active["n"] += 1
+                _set_active(active["n"])
+                try:
+                    seating = seating_for_rotation(rot)
+                    mcts_c = AsyncMcts(evaluator=ev_cand, c=1.4,
+                                       rng=np.random.default_rng(seed + 11))
+                    mcts_x = AsyncMcts(evaluator=ev_champ, c=1.4,
+                                       rng=np.random.default_rng(seed + 13))
+                    winner, timed_out = await _play_arena_game(
+                        game=game, seed=seed, seating=seating,
+                        mcts_cand=mcts_c, mcts_champ=mcts_x, sims=cfg.arena_sims)
+                    rec = {"seed": seed, "rot": rot, "winner_seat": winner,
+                           "winner_role": (seating[winner] if winner >= 0 else None),
+                           "timed_out": timed_out}
+                    f.write(json.dumps(rec) + "\n")
+                    f.flush()
+                    done[seed] = rec
+                finally:
+                    active["n"] -= 1
+                    _set_active(active["n"])
 
         plan = [(rot, seed) for rot, seed in
                 seed_plan(seed_base=seed_base, games=cfg.arena_games)

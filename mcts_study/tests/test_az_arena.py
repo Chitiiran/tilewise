@@ -67,3 +67,63 @@ def test_result_json_round_trip(tmp_path):
     r.to_json(p)
     back = ArenaResult.from_json(p)
     assert back == r
+
+
+def test_run_arena_sets_active_game_count(tmp_path, monkeypatch):
+    """Regression: each evaluator's active_game_count must be set below the
+    10**9 default during the run, else the all-parked flush clause never
+    fires and batches degrade to window-only (the 2026-06-13 arena stall:
+    98% CPU, 32% GPU, watchdog spam, 0 results). Drives run_arena with fakes
+    for the GPU/engine pieces."""
+    import catan_az.arena as arena_mod
+    from catan_az.config import AzConfig
+
+    seen_active = {"min": 10 ** 9}
+
+    class FakeEvaluator:
+        def __init__(self, **kw):
+            object.__setattr__(self, "active_game_count", 10 ** 9)
+
+        def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+        def __setattr__(self, k, v):
+            object.__setattr__(self, k, v)
+            if k == "active_game_count":
+                seen_active["min"] = min(seen_active["min"], v)
+
+    class FakeGame:
+        def __init__(self, **kw):
+            pass
+
+        def new_initial_state(self, seed):
+            return None
+
+    class FakeMcts:
+        def __init__(self, **kw):
+            pass
+
+    async def fake_play(*, game, seed, seating, mcts_cand, mcts_champ, sims):
+        return 0, False   # candidate (seat 0 in rot 0) wins, not timed out
+
+    # run_arena imports these locally (keeps the module torch-free); patch at
+    # their source modules so the local imports resolve to the fakes.
+    monkeypatch.setattr("catan_mcts.batched_evaluator.BatchedGnnEvaluator",
+                        FakeEvaluator)
+    monkeypatch.setattr("catan_mcts.adapter.CatanGame", FakeGame)
+    monkeypatch.setattr("catan_mcts.async_mcts.AsyncMcts", FakeMcts)
+    monkeypatch.setattr(arena_mod, "_load_model", lambda *a, **k: object())
+    monkeypatch.setattr(arena_mod, "_play_arena_game", fake_play)
+
+    cfg = AzConfig(arena_games=8, arena_sims=2)
+    arena_mod.run_arena(candidate_ckpt=tmp_path / "c.pt",
+                        champion_ckpt=tmp_path / "x.pt", cfg=cfg,
+                        out_dir=tmp_path / "arena", seed_base=1, device="cpu",
+                        n_concurrent=4)
+    # With >=1 live game, active_game_count must drop to the live count,
+    # never stay at the 10**9 sentinel.
+    assert seen_active["min"] < 10 ** 9
+    assert seen_active["min"] >= 1
