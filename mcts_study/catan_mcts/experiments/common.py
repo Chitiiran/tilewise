@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -24,9 +25,12 @@ class GameOutcome:
 
 
 def make_run_dir(parent: Path, name: str) -> Path:
-    ts = dt.datetime.utcnow().strftime("%Y-%m-%dT%H-%M")
-    d = parent / f"{ts}-{name}"
-    d.mkdir(parents=True, exist_ok=True)
+    # Seconds + PID suffix: minute resolution alone let parallel same-minute
+    # launches collide into one dir (2026-06-11 iter-1 — racing consolidations
+    # duplicated rows). PID guarantees uniqueness even for same-second starts.
+    ts = dt.datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
+    d = parent / f"{ts}-{name}-p{os.getpid()}"
+    d.mkdir(parents=True, exist_ok=False)
     return d
 
 

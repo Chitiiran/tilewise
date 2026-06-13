@@ -56,6 +56,16 @@ class CatanReplayDataset(Dataset):
         import pandas as pd
         moves = pd.concat(moves_frames, ignore_index=True) if moves_frames else pd.DataFrame()
         games = pd.concat(games_frames, ignore_index=True) if games_frames else pd.DataFrame()
+        # Dedup guard: if multiple self-play procs collide into one run dir
+        # (make_run_dir minute-resolution, hit 2026-06-11), their racing
+        # end-of-run consolidations duplicate rows exactly. A duplicated
+        # position would get double training weight. Each (seed, move_index,
+        # current_player) is one decision, so dedup on that key is lossless.
+        # (games dups already collapse via the seed-keyed dicts below.)
+        if not moves.empty:
+            moves = moves.drop_duplicates(
+                subset=["seed", "move_index", "current_player"]
+            ).reset_index(drop=True)
         # Filter to v2 games only (need action_history).
         if not games.empty:
             games = games[games["schema_version"] >= 2]
