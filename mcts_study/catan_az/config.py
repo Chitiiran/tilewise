@@ -56,6 +56,17 @@ class AzConfig:
     # Net
     hidden_dim: int = 128
     num_layers: int = 4
+    # --- daily runner (spec 2026-06-13) ---
+    fresh_ratio: float = 0.70          # current-champion share of the window
+    rules_id: str = "v3-full"          # engine-rules version tag on run dirs
+    worker_procs_max: int = 7          # VRAM cap on the 4 GB GTX 1650 (GPU-only)
+    per_proc_vram_mb: float = 535.0    # measured CUDA-context cost per proc
+    worker_nice: int = 10              # low OS priority -> yields to foreground
+    min_fast_gb: float = 10.0          # preflight: fast-disk free floor
+    min_hdd_gb: float = 20.0           # preflight: HDD (archive) free floor
+    stagnation_holds: int = 5          # N trailing holds -> surface + stop day
+    archive_root: str = "/mnt/d/catan_az_archive"   # HDD archive target
+    dashboard_port: int = 8099
 
     def to_json(self, path: Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2))
