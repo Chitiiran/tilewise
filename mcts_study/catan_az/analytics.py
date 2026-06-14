@@ -130,16 +130,27 @@ def liveness(loop_root, *, now=None, stale_after_seconds=None) -> dict:
     stale_after_seconds to override."""
     now = now if now is not None else time.time()
     status = _read_json_safe(Path(loop_root) / "status.json", {})
-    ds = _read_json_safe(Path(loop_root) / "daily_state.json", {})
+    ds_path = Path(loop_root) / "daily_state.json"
+    ds = _read_json_safe(ds_path, {})
     ts = status.get("ts")
     stage = status.get("stage")
+    iter_n = status.get("iter")
+    # status.json is only written at stage TRANSITIONS; run_cycle rewrites
+    # daily_state.json (atomically) at every stage, so its mtime is the live
+    # heartbeat during the hours-long self-play stage. Fall back to it when
+    # status.json has no usable ts (pilot 2026-06-14: dashboard read "NOT
+    # RUNNING" for the whole self-play stage because only daily_state existed).
+    if not isinstance(ts, (int, float)) and ds_path.exists():
+        ts = ds_path.stat().st_mtime
+        stage = ds.get("stage", stage)
+        iter_n = ds.get("iter", iter_n)
     age = (now - ts) if isinstance(ts, (int, float)) else None
     budget = (stale_after_seconds if stale_after_seconds is not None
               else _STAGE_STALE_SECONDS.get(stage, _DEFAULT_STALE_SECONDS))
     return {
         "alive": (age is not None and age < budget),
         "stage": stage,
-        "iter": status.get("iter"),
+        "iter": iter_n,
         "age_seconds": age,
         "stale_budget_seconds": budget,
         "progress": {"fresh_done": ds.get("fresh_done"),

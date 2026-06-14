@@ -45,6 +45,37 @@ def test_liveness_stale_heartbeat_flags_dead(tmp_path):
     assert L["age_seconds"] > 1800
 
 
+def test_liveness_falls_back_to_daily_state_mtime(tmp_path):
+    """run_cycle writes daily_state.json (atomic, mtime = heartbeat) at EVERY
+    stage but never writes status.json until a stage transition. The pilot
+    (2026-06-14) showed the dashboard read 'NOT RUNNING' for the whole
+    hours-long self-play stage. Fix: when status.json lacks a usable ts, derive
+    the heartbeat (stage/iter/age) from daily_state.json's mtime."""
+    from catan_az.analytics import liveness
+    # only daily_state.json exists (no status.json) — the real self-play case
+    (tmp_path / "daily_state.json").write_text(json.dumps(
+        {"iter": 1, "stage": "selfplay", "fresh_target": 40, "fresh_done": 0}))
+    L = liveness(tmp_path, now=time.time())
+    assert L["alive"] is True                 # was False before the fix
+    assert L["stage"] == "selfplay"
+    assert L["iter"] == 1
+    assert L["age_seconds"] is not None and L["age_seconds"] < 60
+    assert L["stale_budget_seconds"] == 8 * 3600   # self-play gets the long budget
+
+
+def test_liveness_status_json_still_wins_when_present(tmp_path):
+    """status.json's explicit ts is authoritative when present — the
+    daily_state fallback must not override a real stage-transition heartbeat."""
+    from catan_az.analytics import liveness
+    (tmp_path / "status.json").write_text(json.dumps(
+        {"iter": 7, "stage": "arena", "ts": time.time()}))
+    (tmp_path / "daily_state.json").write_text(json.dumps(
+        {"iter": 7, "stage": "iterate", "fresh_target": 40, "fresh_done": 40}))
+    L = liveness(tmp_path, now=time.time())
+    assert L["stage"] == "arena"              # status.json wins
+    assert L["iter"] == 7
+
+
 # ---- training health ----
 
 def test_training_health_reads_log(tmp_path):
