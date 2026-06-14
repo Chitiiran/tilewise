@@ -166,6 +166,18 @@ def generate_fresh(cfg, *, iter_dir: Path, champion: str, champion_ckpt: Path,
     return dirs
 
 
+def select_generator(loop_root, iter_n: int, champion):
+    """Net that generates THIS iteration's self-play (spec 2026-06-14 §4).
+    iter-1, or no prior candidate -> champion; else iter (N-1)'s trained
+    candidate (promoted or not — self-play always uses the LATEST net, the
+    canonical-AZ separation of 'who self-plays' from 'who's crowned').
+    Returns (generator_name, ckpt_path)."""
+    prev = Path(loop_root) / f"iter_{iter_n - 1}" / "training" / "checkpoint_best.pt"
+    if iter_n > 1 and prev.exists():
+        return f"cand_iter_{iter_n - 1}", str(prev)
+    return champion   # (name, ckpt)
+
+
 def _champion_from_ladder(loop_root: Path):
     c = Ladder(Path(loop_root)).champion()
     return c["name"], c["checkpoint"]
