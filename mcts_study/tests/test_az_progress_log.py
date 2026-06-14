@@ -42,3 +42,12 @@ def test_progress_flags_zero_new_games(tmp_path):
     # new_games=0 + trained-on-data-from earlier iters is visible in the row
     assert "0" in text
     assert "STALE" in text or "iter 3" in text or "[3]" in text
+
+
+def test_progress_row_has_generator_and_window_iters(tmp_path):
+    from catan_az.progress import append_progress
+    append_progress(tmp_path, iter_n=5, champion="seed", generator="cand_iter_4",
+                    new_games=1000, window_iters=[3, 4, 5], window_dirs=3,
+                    verdict="hold", winrate=0.6, draw_rate=0.27)
+    text = (tmp_path / "PROGRESS.md").read_text()
+    assert "cand_iter_4" in text and "1000" in text and "3,4,5" in text

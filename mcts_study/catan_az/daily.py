@@ -265,11 +265,19 @@ def _iters_of_dirs(dirs) -> list:
     return sorted(out)
 
 
-def _append_progress_row(loop_root, iter_n, champion, fresh_dirs, window):
+def _window_iters(window) -> list:
+    """The gen_iters spanned by a window (from meta.json), de-duped + sorted."""
+    from .buffer import _read_meta
+    out = {int(_read_meta(d).get("gen_iter", 0)) for d in window}
+    return sorted(out)
+
+
+def _append_progress_row(loop_root, iter_n, generator, new_dirs, window):
     from .buffer import count_games
     from .progress import append_progress
     import csv as _c
-    new_games = sum(count_games(d) for d in fresh_dirs)
+    new_games = sum(count_games(d) for d in new_dirs)
+    champion = Ladder(Path(loop_root)).champion()["name"]
     # read the just-published journal row for winrate/draws
     wr = dr = 0.0
     verdict = "?"
@@ -287,8 +295,8 @@ def _append_progress_row(loop_root, iter_n, champion, fresh_dirs, window):
                 verdict = r.get("verdict", "?")
                 break
     append_progress(loop_root, iter_n=iter_n, champion=champion,
-                    new_games=new_games, window_games=len(window),
-                    window_dirs=len(window), all_from_iters=_iters_of_dirs(window),
+                    generator=generator, new_games=new_games,
+                    window_dirs=len(window), window_iters=_window_iters(window),
                     verdict=verdict, winrate=wr, draw_rate=dr)
 
 
