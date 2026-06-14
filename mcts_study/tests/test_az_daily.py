@@ -161,3 +161,23 @@ def test_run_day_stops_on_stagnation(tmp_path):
     run_day(AzConfig(), loop_root=tmp_path, capped_procs=5,
             cycle_fn=fake_cycle, max_iters=10, next_iter=5)
     assert len(calls) == 1   # stopped after first cycle (5 trailing holds)
+
+
+def test_generate_fresh_raises_on_zero_games(tmp_path, monkeypatch):
+    """A crashed self-play proc (empty dir) fails loud + located, not a
+    cryptic downstream 'no games in window'."""
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+    import pytest
+
+    def empty_launch(cfg, out_dir, checkpoint, n_games, n_procs, champion, rules_id):
+        d = out_dir / "crashed_self_play_async"
+        d.mkdir(parents=True)   # empty: proc died before writing games
+        return [d]
+
+    monkeypatch.setattr(daily, "_launch_selfplay_procs", empty_launch)
+    cfg = AzConfig(window_games=4, fresh_ratio=0.5)
+    with pytest.raises(RuntimeError, match="0 games"):
+        daily.generate_fresh(cfg, iter_dir=tmp_path / "iter_1",
+                             champion="c", champion_ckpt=tmp_path / "c.pt",
+                             capped_procs=1, prior_dirs=[])

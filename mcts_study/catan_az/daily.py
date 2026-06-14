@@ -111,7 +111,13 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                "--n-concurrent", str(cfg.n_concurrent),
                "--max-batch", str(cfg.max_batch), "--self-play",
                "--seed-base", str(sb), "--device", "cuda",
+               # arch must match the champion ckpt, else load size-mismatch
+               "--hidden-dim", str(cfg.hidden_dim),
+               "--num-layers", str(cfg.num_layers),
+               "--vp-target", str(cfg.vp_target),
                "--max-seconds", "21600"]
+        if not cfg.bonuses:
+            cmd.append("--no-bonuses")
         procs.append(subprocess.Popen(cmd))
     for p in procs:
         p.wait()
@@ -133,9 +139,20 @@ def generate_fresh(cfg, *, iter_dir: Path, champion: str, champion_ckpt: Path,
                             fresh_ratio=cfg.fresh_ratio)
     if deficit <= 0:
         return []
-    return _launch_selfplay_procs(cfg, Path(iter_dir) / "selfplay",
+    dirs = _launch_selfplay_procs(cfg, Path(iter_dir) / "selfplay",
                                   champion_ckpt, deficit, capped_procs,
                                   champion, cfg.rules_id)
+    # Resilience: a crashed self-play proc leaves an empty dir; that would
+    # surface as a cryptic "no games in window" later. Fail loud + located
+    # here instead (e.g. arch mismatch, OOM). Spec §2 (env failures surfaced).
+    from .buffer import count_games
+    produced = sum(count_games(d) for d in dirs)
+    if produced == 0:
+        raise RuntimeError(
+            f"self-play produced 0 games in {len(dirs)} dir(s) under "
+            f"{Path(iter_dir) / 'selfplay'} — check the proc logs (arch "
+            f"mismatch / OOM / bad checkpoint {champion_ckpt}).")
+    return dirs
 
 
 def _champion_from_ladder(loop_root: Path):
