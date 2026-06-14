@@ -151,6 +151,10 @@ def test_timeout_vp_tie_is_draw(monkeypatch):
         def vp(self, p):
             return [9, 9, 4, 2][p]   # seats 0 and 1 tied at top
 
+        def stats(self):
+            # tied on builds too -> a true draw (margin fallback can't break it)
+            return {"players": [{"settlements_built": 2, "cities_built": 1}] * 4}
+
     class NeverEndingState:
         def __init__(self):
             self._engine = FakeEngine()
@@ -185,7 +189,7 @@ def test_timeout_vp_tie_is_draw(monkeypatch):
         game=FakeGame(), seed=1, seating=["cand"] * 4,
         mcts_cand=FakeMcts(), mcts_champ=FakeMcts(), sims=1, max_seconds=0.2))
     assert timed_out is True
-    assert winner == -1         # tie -> draw
+    assert winner == -1         # full tie -> draw
 
 
 def test_play_arena_game_wall_clock_cap(monkeypatch):
@@ -199,6 +203,9 @@ def test_play_arena_game_wall_clock_cap(monkeypatch):
     class _ZeroEngine:
         def vp(self, p):
             return 0   # all tied -> VP-tiebreak yields no winner
+
+        def stats(self):
+            return {"players": [{"settlements_built": 0, "cities_built": 0}] * 4}
 
     class NeverEndingState:
         def __init__(self):
@@ -297,3 +304,43 @@ def test_run_arena_sets_active_game_count(tmp_path, monkeypatch):
     # never stay at the 10**9 sentinel.
     assert seen_active["min"] < 10 ** 9
     assert seen_active["min"] >= 1
+
+
+def test_vp_margin_tiebreak_breaks_vp_tie():
+    from catan_az.arena import _vp_leader_margin
+
+    class E:
+        def vp(self, p):
+            return [9, 9, 4, 2][p]
+
+        def stats(self):
+            return {"players": [
+                {"settlements_built": 3, "cities_built": 2},   # seat0: 5
+                {"settlements_built": 4, "cities_built": 2},   # seat1: 6 -> wins
+                {"settlements_built": 1, "cities_built": 0},
+                {"settlements_built": 1, "cities_built": 0}]}
+
+    class S:
+        _engine = E()
+
+    assert _vp_leader_margin(S()) == 1
+
+
+def test_vp_margin_true_tie_is_draw():
+    from catan_az.arena import _vp_leader_margin
+
+    class E:
+        def vp(self, p):
+            return [9, 9, 4, 2][p]
+
+        def stats(self):
+            return {"players": [
+                {"settlements_built": 3, "cities_built": 2},
+                {"settlements_built": 3, "cities_built": 2},   # identical
+                {"settlements_built": 1, "cities_built": 0},
+                {"settlements_built": 1, "cities_built": 0}]}
+
+    class S:
+        _engine = E()
+
+    assert _vp_leader_margin(S()) == -1

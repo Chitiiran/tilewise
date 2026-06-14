@@ -125,7 +125,7 @@ async def _play_arena_game(*, game, seed: int, seating: list[str],
     deadline = (_t.monotonic() + max_seconds) if max_seconds else None
     while not state.is_terminal() and steps < max_steps:
         if deadline is not None and _t.monotonic() > deadline:
-            return _vp_leader(state), True   # wall-clock timeout -> VP tiebreak
+            return _vp_leader_margin(state), True   # wall-clock timeout -> VP tiebreak
         if state.is_chance_node():
             outs = state.chance_outcomes()
             r = chance_rng.random()
@@ -149,25 +149,37 @@ async def _play_arena_game(*, game, seed: int, seating: list[str],
         steps += 1
     if not state.is_terminal():
         # Step-cap exit also uses the VP tiebreak.
-        return _vp_leader(state), True
+        return _vp_leader_margin(state), True
     rs = state.returns()
     return (rs.index(1.0) if 1.0 in rs else -1), False
 
 
-def _vp_leader(state) -> int:
-    """Seat with the strictly-highest current VP, or -1 on a tie.
+def _vp_leader_margin(state) -> int:
+    """VP-leader tiebreak with a margin fallback (spec 2026-06-13 §9).
 
-    VP-leader tiebreak for timed-out games: full-Catan games between two
-    closely-matched GNN nets routinely fail to close out within any wall-clock
-    cap (the documented stall pathology — 2026-06-13 iter-2 arena was 100%
-    timeouts vs iter-1's 0%). Discarding these as no-result makes the gate
-    unable to evaluate similar nets at all. Crediting whoever is closest to
-    winning when time runs out recovers the signal; a true VP tie is a draw.
+    For timed-out games: top public VP wins; a VP tie is broken by a second
+    signal (settlements+cities built), then -1 (draw). The margin fallback cuts
+    the draw rate as champion and candidate converge — without it, near-identical
+    nets produce mostly ties and the gate stalls on the draw-rate guard.
     """
     vps = [int(state._engine.vp(i)) for i in range(4)]
     top = max(vps)
     leaders = [i for i, v in enumerate(vps) if v == top]
-    return leaders[0] if len(leaders) == 1 else -1
+    if len(leaders) == 1:
+        return leaders[0]
+    stats = state._engine.stats()["players"]
+
+    def builds(i):
+        return stats[i]["settlements_built"] + stats[i]["cities_built"]
+
+    best = max(builds(i) for i in leaders)
+    tied = [i for i in leaders if builds(i) == best]
+    return tied[0] if len(tied) == 1 else -1
+
+
+def _vp_leader(state) -> int:
+    """Back-compat alias; delegates to the margin-aware tiebreak."""
+    return _vp_leader_margin(state)
 
 
 def _load_model(ckpt: Path, cfg, device: str):
