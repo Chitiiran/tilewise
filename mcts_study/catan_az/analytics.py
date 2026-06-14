@@ -105,23 +105,74 @@ def seat_bias(loop_root, *, iter_n: int) -> dict:
     return {"by_seat": by_seat, "total_games": total, "timeouts": timeouts}
 
 
-def liveness(loop_root, *, now=None, stale_after_seconds: int = 1800) -> dict:
+# Stage-keyed staleness budgets (BUG-2 fix): the heartbeat is only rewritten at
+# stage transitions, so a healthy multi-hour self-play stage legitimately has an
+# old ts. A flat 30-min threshold false-positives it. self-play/arena get hours;
+# train is short.
+_STAGE_STALE_SECONDS = {
+    "selfplay": 8 * 3600,    # 1000 games can take ~7-8h
+    "iterate": 8 * 3600,     # iterate covers train+arena which is long
+    "arena": 8 * 3600,
+    "train": 1800,
+    "done": 1800,
+}
+_DEFAULT_STALE_SECONDS = 1800
+
+
+def liveness(loop_root, *, now=None, stale_after_seconds=None) -> dict:
     """LIVE run health from status.json's heartbeat + daily_state.json progress.
-    The critic's #1 gap: a run that died 6h ago looked identical to a healthy
-    one. `alive` = heartbeat age < stale_after_seconds. Includes in-stage
-    progress (fresh_done/fresh_target) for an ETA."""
+    `alive` = heartbeat age < a STAGE-KEYED budget (BUG-2: self-play runs for
+    hours, so a flat 30-min threshold false-positives a healthy run). Pass
+    stale_after_seconds to override."""
     now = now if now is not None else time.time()
     status = _read_json_safe(Path(loop_root) / "status.json", {})
     ds = _read_json_safe(Path(loop_root) / "daily_state.json", {})
     ts = status.get("ts")
+    stage = status.get("stage")
     age = (now - ts) if isinstance(ts, (int, float)) else None
+    budget = (stale_after_seconds if stale_after_seconds is not None
+              else _STAGE_STALE_SECONDS.get(stage, _DEFAULT_STALE_SECONDS))
     return {
-        "alive": (age is not None and age < stale_after_seconds),
-        "stage": status.get("stage"),
+        "alive": (age is not None and age < budget),
+        "stage": stage,
         "iter": status.get("iter"),
         "age_seconds": age,
+        "stale_budget_seconds": budget,
         "progress": {"fresh_done": ds.get("fresh_done"),
                      "fresh_target": ds.get("fresh_target")},
+    }
+
+
+def selfplay_health(loop_root, *, iter_n: int) -> dict:
+    """Self-play degeneracy signal from games.parquet: mean game length + the
+    fraction of games hitting the step cap (200k). Collapsing/exploding game
+    length is the earliest sign self-play data is degenerate — and it poisons
+    everything downstream. (critic iter-3 #3)"""
+    import glob
+    import pandas as pd
+    dirs = glob.glob(str(Path(loop_root) / f"iter_{iter_n}" / "selfplay" /
+                         "*" / "games*.parquet"))
+    if not dirs:
+        return {"available": False, "n_games": 0}
+    lengths, timed = [], 0
+    n = 0
+    for f in dirs:
+        try:
+            df = pd.read_parquet(f, columns=["length_in_moves", "timed_out"])
+        except Exception:
+            continue
+        n += len(df)
+        lengths.extend(df["length_in_moves"].tolist())
+        timed += int(df["timed_out"].sum())
+    if n == 0:
+        return {"available": False, "n_games": 0}
+    cap_hits = sum(1 for x in lengths if x >= 200_000)
+    return {
+        "available": True,
+        "n_games": n,
+        "mean_length": sum(lengths) / len(lengths),
+        "step_cap_fraction": cap_hits / n,
+        "timed_out_fraction": timed / n,
     }
 
 
@@ -149,16 +200,32 @@ def training_health(loop_root, *, iter_n: int) -> dict:
 
 
 def _progress_rows(loop_root) -> list[dict]:
-    """Parse PROGRESS.md table rows -> {iter, generator, new_games, ...}."""
+    """Parse PROGRESS.md table rows by HEADER NAME (BUG-1 fix: the real on-disk
+    file is the legacy 8-col schema where new_games sits at a different index
+    than the new 9-col one; positional parsing read window_dirs as new_games and
+    the stale_data detector never fired). Header-name parsing survives both
+    schemas + any future reorder."""
     p = Path(loop_root) / "PROGRESS.md"
     if not p.exists():
         return []
+    lines = [ln for ln in p.read_text(encoding="utf-8").splitlines()
+             if ln.lstrip().startswith("|")]
+    header = None
     out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        cells = [c.strip() for c in line.split("|")[1:-1]]
-        if len(cells) >= 4 and cells[0].isdigit():   # data row
-            out.append({"iter": int(cells[0]), "champion": cells[1],
-                        "generator": cells[2], "new_games": _safe_int(cells[3])})
+    for ln in lines:
+        cells = [c.strip() for c in ln.split("|")[1:-1]]
+        if not cells:
+            continue
+        if header is None and "iter" in cells:
+            header = {name: i for i, name in enumerate(cells)}
+            continue
+        if header is None or not cells[header.get("iter", 0)].isdigit():
+            continue   # separator row or pre-header noise
+        get = lambda key, d="": (cells[header[key]] if key in header
+                                 and header[key] < len(cells) else d)
+        out.append({"iter": int(get("iter")), "champion": get("champion"),
+                    "generator": get("generator", get("champion")),
+                    "new_games": _safe_int(get("new_games"))})
     return out
 
 
@@ -206,14 +273,36 @@ def detect_failure_modes(loop_root, *, cfg=None) -> list[dict]:
                       "message": f"invalid (untrustworthy) verdict at iter(s) "
                                  f"{invalid_iters} — too many draws / too few decisive"})
 
-    # 4. High draw rate on the LATEST iter — nets converging (low signal).
-    #    (NOTE: timeout_rate is intentionally NOT flagged — under the VP-tiebreak
-    #    redesign a 100% timeout that's still DECISIVE is the expected steady
-    #    state, not a fault. Flagging it caused alarm fatigue. — critic fix.)
     last = metrics[-1]
+
+    # 4. High draw rate on the LATEST iter — nets converging (low signal).
     if last["draw_rate"] >= draw_cap:
         flags.append({"id": "high_draw_rate", "severity": "warn",
                       "message": f"iter {last['iter']}: {last['draw_rate']:.0%} "
                                  f"draws (>= {draw_cap:.0%}) — candidate ≈ champion"})
+
+    # 5. Training health of the LATEST iter — catch a broken candidate BEFORE
+    #    its ~14h arena (critic: the only detector that saves a run pre-arena).
+    th = training_health(loop_root, iter_n=last["iter"])
+    if th.get("nan_loss"):
+        flags.append({"id": "training_collapse", "severity": "error",
+                      "message": f"iter {last['iter']}: NaN training loss — "
+                                 f"candidate is broken"})
+    elif th.get("available") and th.get("epochs_trained", 0) <= 1:
+        flags.append({"id": "undertrained", "severity": "warn",
+                      "message": f"iter {last['iter']}: trained only "
+                                 f"{th['epochs_trained']} epoch(s) — early-stop "
+                                 f"fired immediately"})
+
+    # 6. Timeout change-point — a SHARP jump in timeout rate (steady 100% is the
+    #    expected VP-tiebreak steady state; a 40%->100% swing means something
+    #    changed). Replaces the deleted static timeout flag (critic §4).
+    if len(metrics) >= 2:
+        prev, cur = metrics[-2]["timeout_rate"], metrics[-1]["timeout_rate"]
+        if cur - prev >= 0.30:
+            flags.append({"id": "timeout_jump", "severity": "warn",
+                          "message": f"timeout rate jumped {prev:.0%}->{cur:.0%} "
+                                     f"(iter {metrics[-2]['iter']}->{last['iter']}) "
+                                     f"— behavior changed, inspect"})
 
     return flags

@@ -42,6 +42,11 @@ def create_dashboard(*, loop_root, web_port: int = 8000, cfg=None) -> FastAPI:
         from catan_az import analytics
         return analytics.training_health(loop_root, iter_n=iter_n)
 
+    @app.get("/api/selfplay/{iter_n}")
+    def selfplay(iter_n: int):
+        from catan_az import analytics
+        return analytics.selfplay_health(loop_root, iter_n=iter_n)
+
     @app.get("/api/metrics")
     def metrics():
         """Per-iteration derived metrics (winrate/draw/timeout/Elo trends)."""
