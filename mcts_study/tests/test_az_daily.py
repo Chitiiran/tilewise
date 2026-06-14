@@ -181,3 +181,31 @@ def test_generate_fresh_raises_on_zero_games(tmp_path, monkeypatch):
         daily.generate_fresh(cfg, iter_dir=tmp_path / "iter_1",
                              champion="c", champion_ckpt=tmp_path / "c.pt",
                              capped_procs=1, prior_dirs=[])
+
+
+def test_resumes_incomplete_iteration(tmp_path):
+    """An iteration with a dir but no PUBLISH.done must be RESUMED (its
+    self-play + train are salvaged via done-markers), not skipped to the next
+    number (2026-06-14: iter-3 training crash wasted 6h when resume jumped to
+    iter-4)."""
+    from catan_az.daily import _next_iter_number
+    # iter_1 fully done (PUBLISH.done), iter_3 started but incomplete.
+    (tmp_path / "iter_1").mkdir()
+    (tmp_path / "iter_1" / "PUBLISH.done").write_text("{}")
+    (tmp_path / "iter_3").mkdir()
+    (tmp_path / "iter_3" / "SELFPLAY.done").write_text("{}")  # no PUBLISH.done
+    assert _next_iter_number(tmp_path) == 3   # resume iter_3, not 4
+
+
+def test_next_iter_after_all_complete(tmp_path):
+    from catan_az.daily import _next_iter_number
+    (tmp_path / "iter_1").mkdir()
+    (tmp_path / "iter_1" / "PUBLISH.done").write_text("{}")
+    (tmp_path / "iter_2").mkdir()
+    (tmp_path / "iter_2" / "PUBLISH.done").write_text("{}")
+    assert _next_iter_number(tmp_path) == 3   # all done -> next is 3
+
+
+def test_next_iter_empty(tmp_path):
+    from catan_az.daily import _next_iter_number
+    assert _next_iter_number(tmp_path) == 1

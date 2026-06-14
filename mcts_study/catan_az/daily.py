@@ -44,12 +44,23 @@ def _stop_requested(loop_root: Path) -> bool:
 
 
 def _next_iter_number(loop_root: Path) -> int:
+    """The iteration to run next. If the latest iteration started but never
+    PUBLISHed (crash/interrupt mid-cycle), RESUME it — its self-play + train
+    are salvaged via done-markers — instead of abandoning that work and
+    starting a fresh number (2026-06-14: a training crash wasted 6h of iter-3
+    self-play when resume jumped to iter-4)."""
     nums = []
     for d in Path(loop_root).glob("iter_*"):
         part = d.name.split("_", 1)[1]
         if part.isdigit():
             nums.append(int(part))
-    return (max(nums) + 1) if nums else 1
+    if not nums:
+        return 1
+    latest = max(nums)
+    # Incomplete latest iteration (dir exists, no PUBLISH.done) -> resume it.
+    if not (Path(loop_root) / f"iter_{latest}" / "PUBLISH.done").exists():
+        return latest
+    return latest + 1
 
 
 def stagnation_holds_from_journal(journal_path: Path) -> int:
