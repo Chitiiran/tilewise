@@ -22,8 +22,22 @@ scale (fast, watched) **before** committing to the multi-day full run.
 | Training health (early-stop, checkpoints) | ✅ | iter_1 early-stop ep2 val_top1=0.505; iter_2 ep2 val_top1=0.454 |
 | Dashboard liveness across ALL stages | ✅ | self-play via `daily_state.json` mtime fallback; train/arena via `status.json` ts; both LIVE, no false flags |
 | Dashboard verdict + Elo render | ✅ | `/api/metrics` served iter_1 verdict=hold elo=1000.0 |
-| Graceful stop at `max_iters` | ✅ (by design) | `run_day` loops `while done < max_iters` (=2); also `holds>=max_iters_per_model` guard |
-| **Window-reset-on-promotion** | ⚠️ **NOT exercised** | both iters HOLD (50% < 65% bar) → no promotion → reset path never triggered. Unit-tested only (`ladder.promote(promoted_at_iter=)` + `last_promotion_iter()`). |
+| Graceful stop at `max_iters` | ✅ | proc exited; `status.json stage=max_iters_reached, MAX_ITERS=true, holds_since_promotion=2` |
+| Accumulating window (no reset) | ✅ | iter_2 PROGRESS `window_iters=1,2` — window spans both gen_iters (correct, no promotion to reset on) |
+| Failure-mode detectors on real signals | ✅ | final journal fires `stagnation` (warn), `invalid_verdict` (error, iter_2), `high_draw_rate` (warn, "iter 2: 68% draws — candidate ≈ champion") |
+| Invalid-gate path | ✅ | iter_2 verdict=invalid (68% draws ≥ 40% gate) — correctly not promoted |
+| **Window-reset-on-promotion** | ⚠️ **NOT exercised** | both iters non-promote (50%/44% < 65% bar) → no promotion → reset path never triggered. Unit-tested only (`ladder.promote(promoted_at_iter=)` + `last_promotion_iter()`). |
+
+## Final run result (both cycles complete)
+
+| iter | generator | new_games | window_iters | verdict | winrate | draws |
+|---|---|---|---|---|---|---|
+| 1 | az_iter_1 (champion) | 35 | 1 | hold | 50% | 21% |
+| 2 | cand_iter_1 (trained candidate) | 35 | 1,2 | invalid | 44% | 68% |
+
+Stopped at `max_iters_reached` (holds_since_promotion=2). Neither promoted —
+expected: a candidate one tiny iteration from its converged parent plays
+near-identically, so games don't resolve and draws climb (iter_2: 68%).
 
 **Verdict on the redesign:** every mechanism whose absence caused the
 2026-06-14 stale-data bug is now present and demonstrated on live data. The one
