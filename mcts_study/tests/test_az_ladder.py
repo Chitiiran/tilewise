@@ -61,3 +61,27 @@ def test_atomic_write_leaves_old_file_on_partial_write(tmp_path):
     l2 = Ladder(tmp_path)
     assert l2.champion()["name"] == "seed"
     assert json.loads(good)["champion"] == "seed"
+
+
+def test_last_promotion_iter_tracks_promotions(tmp_path):
+    from catan_az.ladder import Ladder
+    l = Ladder(tmp_path, champion_checkpoint="/c.pt", champion_name="seed")
+    assert l.last_promotion_iter() == 0          # fresh -> 0
+    l.register_candidate("az_iter_5", "/5.pt", created_iter=5)
+    l.promote("az_iter_5", promoted_at_iter=5)
+    assert l.last_promotion_iter() == 5
+    assert l.champion()["name"] == "az_iter_5"
+
+
+def test_promote_idempotent_sets_boundary(tmp_path):
+    """Re-promoting the SAME champion (run_iteration's PUBLISH already did it,
+    run_cycle re-calls with the boundary) updates last_promotion_iter WITHOUT
+    appending a duplicate history entry."""
+    from catan_az.ladder import Ladder
+    l = Ladder(tmp_path, champion_checkpoint="/c.pt", champion_name="seed")
+    l.register_candidate("az_iter_3", "/3.pt", created_iter=3)
+    l.promote("az_iter_3")                         # first promote (no boundary)
+    assert len(l.history()) == 1
+    l.promote("az_iter_3", promoted_at_iter=3)     # same champ -> just set boundary
+    assert len(l.history()) == 1                   # NOT 2
+    assert l.last_promotion_iter() == 3

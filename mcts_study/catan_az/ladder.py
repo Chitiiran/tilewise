@@ -33,6 +33,7 @@ class Ladder:
                     "elo": 1000.0, "games": 0, "created_iter": 0}},
                 "champion": champion_name,
                 "history": [],
+                "last_promotion_iter": 0,
             }
             self._save()
 
@@ -45,6 +46,11 @@ class Ladder:
 
     def history(self) -> list[dict]:
         return self._data["history"]
+
+    def last_promotion_iter(self) -> int:
+        """Iteration of the last promotion — the training-window reset boundary
+        (spec 2026-06-14). 0 on a fresh ladder."""
+        return self._data.get("last_promotion_iter", 0)
 
     # -- mutations --------------------------------------------------------
     def register_candidate(self, name: str, checkpoint: str, *, created_iter: int) -> None:
@@ -71,12 +77,19 @@ class Ladder:
         b["games"] += n
         self._save()
 
-    def promote(self, name: str) -> None:
+    def promote(self, name: str, *, promoted_at_iter: int | None = None) -> None:
+        """Crown `name`. Idempotent on the reset boundary: if `name` is already
+        champion (run_iteration's PUBLISH promoted it; run_cycle re-calls to set
+        the boundary), only update last_promotion_iter — don't append a
+        duplicate history entry (spec 2026-06-14)."""
         if name not in self._data["entries"]:
             raise KeyError(name)
-        self._data["history"].append({"promoted": name,
-                                      "previous": self._data["champion"]})
-        self._data["champion"] = name
+        if self._data["champion"] != name:
+            self._data["history"].append({"promoted": name,
+                                          "previous": self._data["champion"]})
+            self._data["champion"] = name
+        if promoted_at_iter is not None:
+            self._data["last_promotion_iter"] = promoted_at_iter
         self._save()
 
     # -- io ----------------------------------------------------------------
