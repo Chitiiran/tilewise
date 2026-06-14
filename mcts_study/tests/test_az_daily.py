@@ -83,3 +83,81 @@ def test_generate_fresh_skips_when_target_met(tmp_path, monkeypatch):
                                 champion="az_iter_1", champion_ckpt=tmp_path / "c.pt",
                                 capped_procs=5, prior_dirs=[p])
     assert dirs == [] and called["launched"] is False
+
+
+def test_run_cycle_generates_then_runs_iteration(tmp_path, monkeypatch):
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+    seen = {}
+
+    def fake_gen(cfg, **k):
+        seen["gen"] = True
+        return [tmp_path / "sp"]
+
+    monkeypatch.setattr(daily, "generate_fresh", fake_gen)
+    monkeypatch.setattr(daily, "_all_selfplay_dirs", lambda root: [])
+
+    def fake_run_iteration(cfg, loop_root, iter_n, *, existing_selfplay_dirs):
+        seen["iter"] = iter_n
+        seen["dirs"] = existing_selfplay_dirs
+        return "promote"
+
+    monkeypatch.setattr(daily, "run_iteration", fake_run_iteration)
+    monkeypatch.setattr(daily, "_champion_from_ladder",
+                        lambda root: ("az_iter_1", str(tmp_path / "c.pt")))
+    monkeypatch.setattr(daily, "archive_out_of_window", lambda **k: 0)
+    monkeypatch.setattr(daily, "select_window", lambda *a, **k: [])
+    v = daily.run_cycle(AzConfig(), tmp_path, 3, capped_procs=5)
+    assert v == "promote" and seen["iter"] == 3 and seen["gen"] is True
+
+
+def test_run_cycle_archives_after_publish(tmp_path, monkeypatch):
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+    called = {}
+    monkeypatch.setattr(daily, "generate_fresh", lambda cfg, **k: [])
+    monkeypatch.setattr(daily, "run_iteration", lambda *a, **k: "promote")
+    monkeypatch.setattr(daily, "_champion_from_ladder", lambda r: ("c", "/c.pt"))
+    monkeypatch.setattr(daily, "_all_selfplay_dirs", lambda r: [])
+    monkeypatch.setattr(daily, "select_window", lambda *a, **k: [])
+    monkeypatch.setattr(daily, "archive_out_of_window",
+                        lambda **k: called.setdefault("archived", True) or 0)
+    daily.run_cycle(AzConfig(), tmp_path, 1, capped_procs=5)
+    assert called.get("archived") is True
+
+
+def test_stagnation_holds_from_journal(tmp_path):
+    from catan_az.daily import stagnation_holds_from_journal
+    import csv
+    p = tmp_path / "journal.csv"
+    with open(p, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["iter", "verdict"])
+        w.writeheader()
+        for i, v in enumerate(["promote", "hold", "hold", "hold"], 1):
+            w.writerow({"iter": i, "verdict": v})
+    assert stagnation_holds_from_journal(p) == 3
+
+
+def test_run_day_stops_on_stagnation(tmp_path):
+    import csv
+    from catan_az.daily import run_day
+    from catan_az.config import AzConfig
+    # pre-seed journal with 4 holds so the FIRST cycle trips the 5-hold guard
+    # after writing its own hold.
+    jp = tmp_path / "journal.csv"
+    with open(jp, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["iter", "verdict"]); w.writeheader()
+        for i in range(1, 5):
+            w.writerow({"iter": i, "verdict": "hold"})
+    calls = []
+
+    def fake_cycle(cfg, loop_root, iter_n, capped_procs):
+        calls.append(iter_n)
+        with open(jp, "a", newline="") as f:
+            csv.DictWriter(f, fieldnames=["iter", "verdict"]).writerow(
+                {"iter": iter_n, "verdict": "hold"})
+        return "hold"
+
+    run_day(AzConfig(), loop_root=tmp_path, capped_procs=5,
+            cycle_fn=fake_cycle, max_iters=10, next_iter=5)
+    assert len(calls) == 1   # stopped after first cycle (5 trailing holds)

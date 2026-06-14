@@ -4,13 +4,18 @@ max_iters. Each cycle is fresh-ratio self-play + loop.run_iteration. A manifest
 (in the engine) bound loss to <=1 game. Spec 2026-06-13 §4-5."""
 from __future__ import annotations
 
+import csv as _csv
 import json
 import os
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .buffer import fresh_deficit
+from .archive import archive_out_of_window
+from .buffer import fresh_deficit, select_window
+from .ladder import Ladder
+from .loop import run_iteration
+from .status import StatusWriter
 
 
 @dataclass
@@ -47,10 +52,26 @@ def _next_iter_number(loop_root: Path) -> int:
     return (max(nums) + 1) if nums else 1
 
 
+def stagnation_holds_from_journal(journal_path: Path) -> int:
+    """Trailing consecutive non-promote verdicts (hold/invalid) — surfaced as
+    a flag, NOT an error (a HOLD is a result). Spec §7."""
+    if not Path(journal_path).exists():
+        return 0
+    with open(journal_path, newline="") as f:
+        rows = list(_csv.DictReader(f))
+    n = 0
+    for row in reversed(rows):
+        if row.get("verdict") in ("hold", "invalid"):
+            n += 1
+        else:
+            break
+    return n
+
+
 def run_day(cfg, *, loop_root: Path, capped_procs: int, cycle_fn,
             max_iters: int = 1000, next_iter: int | None = None) -> None:
-    """Run cycles until STOP / max_iters. cycle_fn(cfg, loop_root, iter_n,
-    capped_procs) -> verdict."""
+    """Run cycles until STOP / max_iters / stagnation. cycle_fn(cfg, loop_root,
+    iter_n, capped_procs) -> verdict."""
     loop_root = Path(loop_root)
     loop_root.mkdir(parents=True, exist_ok=True)
     n = next_iter if next_iter is not None else _next_iter_number(loop_root)
@@ -61,6 +82,13 @@ def run_day(cfg, *, loop_root: Path, capped_procs: int, cycle_fn,
         cycle_fn(cfg, loop_root, n, capped_procs)
         n += 1
         done += 1
+        # Surface stagnation (not an error) and stop the day so compute isn't
+        # burned grinding a stuck champion. Resumes next run.
+        holds = stagnation_holds_from_journal(loop_root / "journal.csv")
+        if holds >= cfg.stagnation_holds:
+            StatusWriter(loop_root).stage(n - 1, "stagnation",
+                                          STAGNATION=True, trailing_holds=holds)
+            break
 
 
 def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
@@ -108,3 +136,61 @@ def generate_fresh(cfg, *, iter_dir: Path, champion: str, champion_ckpt: Path,
     return _launch_selfplay_procs(cfg, Path(iter_dir) / "selfplay",
                                   champion_ckpt, deficit, capped_procs,
                                   champion, cfg.rules_id)
+
+
+def _champion_from_ladder(loop_root: Path):
+    c = Ladder(Path(loop_root)).champion()
+    return c["name"], c["checkpoint"]
+
+
+def _all_selfplay_dirs(loop_root: Path) -> list:
+    """All prior self-play run dirs, newest-iteration first."""
+    dirs = []
+    iters = sorted(Path(loop_root).glob("iter_*"),
+                   key=lambda p: int(p.name.split("_", 1)[1])
+                   if p.name.split("_", 1)[1].isdigit() else -1, reverse=True)
+    for it in iters:
+        sp = it / "selfplay"
+        if sp.exists():
+            dirs.extend(sorted(sp.glob("*self_play_async*"), reverse=True))
+    return dirs
+
+
+def run_cycle(cfg, loop_root: Path, iter_n: int, capped_procs: int) -> str:
+    """One full AZ cycle: fresh self-play -> run_iteration (train/arena/publish)
+    -> archive out-of-window games to HDD. Writes the manifest at each
+    transition. Returns the verdict. Spec §4-5, §8."""
+    loop_root = Path(loop_root)
+    iter_dir = loop_root / f"iter_{iter_n}"
+    champion, champion_ckpt = _champion_from_ladder(loop_root)
+
+    DailyManifest(iter=iter_n, stage="selfplay", champion=champion,
+                  fresh_target=0, fresh_done=0,
+                  rules_id=cfg.rules_id).save(loop_root)
+
+    prior = _all_selfplay_dirs(loop_root)
+    fresh_dirs = generate_fresh(cfg, iter_dir=iter_dir, champion=champion,
+                                champion_ckpt=Path(champion_ckpt),
+                                capped_procs=capped_procs, prior_dirs=prior)
+
+    DailyManifest(iter=iter_n, stage="iterate", champion=champion,
+                  fresh_target=0, fresh_done=len(fresh_dirs),
+                  rules_id=cfg.rules_id).save(loop_root)
+
+    all_fresh = fresh_dirs + prior
+    verdict = run_iteration(cfg, loop_root, iter_n,
+                            existing_selfplay_dirs=[str(d) for d in all_fresh])
+
+    # Archive out-of-window games to HDD (after publish, never deletes).
+    try:
+        window = select_window(all_fresh, cfg.window_games, rules_id=cfg.rules_id)
+    except ValueError:
+        window = all_fresh
+    archive_out_of_window(window_dirs=window, all_dirs=all_fresh,
+                          archive_root=Path(cfg.archive_root),
+                          rules_id=cfg.rules_id)
+
+    DailyManifest(iter=iter_n, stage="done", champion=champion,
+                  fresh_target=0, fresh_done=len(fresh_dirs),
+                  rules_id=cfg.rules_id).save(loop_root)
+    return verdict
