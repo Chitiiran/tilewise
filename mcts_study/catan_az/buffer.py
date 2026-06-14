@@ -9,6 +9,8 @@ No torch imports — pure pandas bookkeeping, cheap to unit test.
 """
 from __future__ import annotations
 
+import json as _json
+import math as _math
 from pathlib import Path
 
 import pandas as pd
@@ -22,16 +24,40 @@ def count_games(run_dir: Path) -> int:
     return total
 
 
-def select_window(iter_dirs_newest_first: list[Path], window_games: int) -> list[Path]:
+def _read_meta(run_dir: Path) -> dict:
+    """Run-dir tags {rules_id, champion}, or {} if untagged (legacy dirs)."""
+    p = Path(run_dir) / "meta.json"
+    return _json.loads(p.read_text()) if p.exists() else {}
+
+
+def fresh_deficit(iter_dirs_newest_first, *, champion: str, rules_id: str,
+                  window_games: int, fresh_ratio: float) -> int:
+    """Games still needed so current-champion games are >= fresh_ratio of the
+    window. Counts only dirs tagged with `champion` AND `rules_id` (spec §5)."""
+    fresh = 0
+    for d in iter_dirs_newest_first:
+        m = _read_meta(d)
+        if m.get("champion") == champion and m.get("rules_id") == rules_id:
+            fresh += count_games(d)
+    target = _math.ceil(fresh_ratio * window_games)
+    return max(0, target - fresh)
+
+
+def select_window(iter_dirs_newest_first: list[Path], window_games: int,
+                  rules_id: str | None = None) -> list[Path]:
     """Take newest-first run dirs until their game counts sum >= window_games.
 
     Caller supplies dirs ordered newest-first (the loop knows iteration
-    order). Empty dirs are skipped. Raises if no dir contains any game —
-    training on nothing should fail loudly at selection, not mid-train.
+    order). Empty dirs are skipped. When `rules_id` is given, only dirs tagged
+    with that rules_id are eligible (so a future engine-fidelity bump flushes
+    stale-rules games instead of poisoning the window). Raises if no dir
+    contains any eligible game — training on nothing should fail loudly.
     """
     selected: list[Path] = []
     total = 0
     for d in iter_dirs_newest_first:
+        if rules_id is not None and _read_meta(d).get("rules_id") != rules_id:
+            continue
         n = count_games(d)
         if n == 0:
             continue
@@ -40,5 +66,6 @@ def select_window(iter_dirs_newest_first: list[Path], window_games: int) -> list
         if total >= window_games:
             break
     if not selected:
-        raise ValueError(f"buffer: no games in any of {len(iter_dirs_newest_first)} run dirs")
+        raise ValueError(
+            f"buffer: no games in any of {len(iter_dirs_newest_first)} run dirs")
     return selected
