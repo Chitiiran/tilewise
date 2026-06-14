@@ -221,7 +221,48 @@ def run_cycle(cfg, loop_root: Path, iter_n: int, capped_procs: int) -> str:
     DailyManifest(iter=iter_n, stage="done", champion=champion,
                   fresh_target=0, fresh_done=len(fresh_dirs),
                   rules_id=cfg.rules_id).save(loop_root)
+
+    # PROGRESS.md: the at-a-glance "what did this iter train on + did it make
+    # new data?" record (the question that needed archaeology on 2026-06-14).
+    _append_progress_row(loop_root, iter_n, champion, fresh_dirs, window)
     return verdict
+
+
+def _iters_of_dirs(dirs) -> list:
+    """Which iter_<N> each run dir belongs to (by path), de-duped."""
+    out = set()
+    for d in dirs:
+        for part in Path(d).parts:
+            if part.startswith("iter_") and part.split("_", 1)[1].isdigit():
+                out.add(int(part.split("_", 1)[1]))
+    return sorted(out)
+
+
+def _append_progress_row(loop_root, iter_n, champion, fresh_dirs, window):
+    from .buffer import count_games
+    from .progress import append_progress
+    import csv as _c
+    new_games = sum(count_games(d) for d in fresh_dirs)
+    # read the just-published journal row for winrate/draws
+    wr = dr = 0.0
+    verdict = "?"
+    jp = Path(loop_root) / "journal.csv"
+    if jp.exists():
+        rows = list(_c.DictReader(open(jp)))
+        for r in reversed(rows):
+            if str(r.get("iter")) == str(iter_n):
+                wr = float(r.get("arena_winrate", 0) or 0)
+                c = int(r.get("arena_wins_cand", 0) or 0)
+                ch = int(r.get("arena_wins_champ", 0) or 0)
+                d = int(r.get("arena_draws", 0) or 0)
+                g = c + ch + d
+                dr = d / g if g else 0.0
+                verdict = r.get("verdict", "?")
+                break
+    append_progress(loop_root, iter_n=iter_n, champion=champion,
+                    new_games=new_games, window_games=len(window),
+                    window_dirs=len(window), all_from_iters=_iters_of_dirs(window),
+                    verdict=verdict, winrate=wr, draw_rate=dr)
 
 
 def cli_main():
