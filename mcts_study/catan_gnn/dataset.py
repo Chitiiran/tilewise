@@ -20,6 +20,7 @@ applied verbatim from action_history but don't advance the move counter.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -84,6 +85,14 @@ class CatanReplayDataset(Dataset):
         return len(self._index)
 
     def __getitem__(self, i: int):
+        # Resilience (2026-06-14): a single un-replayable position must not
+        # crash training — substitute the next valid neighbor + log. A rare,
+        # non-reproducible replay failure on one self-play game killed iter-3
+        # training after 6h of self-play; defense-in-depth (spec 2026-06-13 §2)
+        # turns that fatal error into a skipped sample.
+        return resilient_getitem(self, i)
+
+    def _replay_getitem(self, i: int):
         row = self._index.iloc[i]
         seed = int(row["seed"])
         move_index = int(row["move_index"])
@@ -151,6 +160,27 @@ class CatanReplayDataset(Dataset):
         legal_mask = torch.from_numpy(np.array(row["legal_action_mask"], dtype=np.bool_))
 
         return data, value, policy, legal_mask
+
+
+def resilient_getitem(ds, i: int, max_tries: int = 64):
+    """Return ds._replay_getitem(i), or the next valid neighbor if it can't be
+    replayed. A single un-replayable position (rare, non-reproducible data/
+    engine glitch — 2026-06-14 iter-3) must NOT crash training; we skip-and-
+    substitute + log, keeping the batch full. Raises only if `max_tries`
+    consecutive positions all fail (genuine corruption, not a one-off)."""
+    n = len(ds)
+    for k in range(max_tries):
+        j = (i + k) % n
+        try:
+            return ds._replay_getitem(j)
+        except Exception as ex:  # noqa: BLE001 — any replay failure is skippable
+            if k == 0:
+                logging.warning("dataset: skipping un-replayable position %d "
+                                "(%s); substituting a neighbor", i, ex)
+            continue
+    raise RuntimeError(
+        f"dataset: no replayable position within {max_tries} of index {i} — "
+        f"this indicates real corruption, not a one-off skip.")
 
 
 class CachedDataset(Dataset):
