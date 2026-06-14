@@ -30,6 +30,33 @@ def _read_meta(run_dir: Path) -> dict:
     return _json.loads(p.read_text()) if p.exists() else {}
 
 
+def gen_window(dirs, *, gen_iter_min: int, rules_id: str) -> list:
+    """Run dirs whose gen_iter >= gen_iter_min AND rules_id matches — the
+    recency-based training window (spec 2026-06-14 §4). Missing gen_iter
+    (legacy {champion,rules_id} dirs) = 0, so they're excluded by any boundary
+    >= 1. This replaces name-based fresh selection and fixes the stale-data bug:
+    a sticky champion no longer makes old games count as fresh forever."""
+    out = []
+    for d in dirs:
+        m = _read_meta(d)
+        if m.get("rules_id") != rules_id:
+            continue
+        if int(m.get("gen_iter", 0)) >= gen_iter_min:
+            out.append(d)
+    return out
+
+
+def own_iter_games(dirs, *, gen_iter: int) -> int:
+    """Games generated specifically in `gen_iter` — the per-iteration quota
+    counter. Counting ONLY this iteration's own games is what kills the bug
+    where other iterations' games silently satisfied the quota (2026-06-14)."""
+    total = 0
+    for d in dirs:
+        if int(_read_meta(d).get("gen_iter", -1)) == gen_iter:
+            total += count_games(d)
+    return total
+
+
 def fresh_deficit(iter_dirs_newest_first, *, champion: str, rules_id: str,
                   window_games: int, fresh_ratio: float) -> int:
     """Games still needed so current-champion games are >= fresh_ratio of the
