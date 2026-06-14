@@ -14,7 +14,8 @@ from pathlib import Path
 @dataclass(frozen=True)
 class AzConfig:
     # Self-play
-    games_per_iter: int = 400          # ≈2.5-3h at measured ~150 games/h
+    games_per_iter: int = 1000         # candidate self-play, ALWAYS generated
+                                       # (redesign 2026-06-14; ~7.4h/iter)
     sims: int = 200
     dirichlet_alpha: float = 0.8
     dirichlet_eps: float = 0.25
@@ -31,8 +32,10 @@ class AzConfig:
     policy_sharpen: float = 1.0        # canonical targets; sharpening = flagged experiment
     batch_size: int = 64
     # Arena
-    arena_games: int = 120             # 4 rotations x 30 shared seeds
-    promote_threshold: float = 0.55    # strictly-greater promotes (AGZ gate)
+    arena_games: int = 300             # 65% bar needs the power: CI ±6.6pp
+                                       # (vs ±11pp at 120). 4 rotations x 75.
+    promote_threshold: float = 0.65    # strictly-greater; demand clear improvement
+    max_iters_per_model: int = 10      # stop after 10 iters w/o promotion -> user
     arena_timeout_rate_max: float = 0.05   # legacy; surfaced, no longer a gate
     # Validity guards under VP-leader tiebreak (2026-06-13): a timed-out game
     # is decided by VP leader, so the gate keys on genuine no-signal games

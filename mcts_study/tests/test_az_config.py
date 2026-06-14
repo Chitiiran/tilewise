@@ -7,7 +7,7 @@ import pytest
 def test_defaults_match_spec():
     from catan_az.config import AzConfig
     cfg = AzConfig()
-    assert cfg.games_per_iter == 400
+    assert cfg.games_per_iter == 1000  # redesign 2026-06-14
     assert cfg.window_games == 1200
     assert cfg.sims == 200
     assert cfg.dirichlet_alpha == 0.8
@@ -17,8 +17,8 @@ def test_defaults_match_spec():
     assert cfg.max_epochs == 4
     assert cfg.early_stop is True
     assert cfg.policy_sharpen == 1.0
-    assert cfg.arena_games == 120
-    assert cfg.promote_threshold == 0.55
+    assert cfg.arena_games == 300
+    assert cfg.promote_threshold == 0.65
     assert cfg.arena_timeout_rate_max == 0.05
     assert cfg.arena_game_max_seconds == 600.0
     assert cfg.arena_max_draw_rate == 0.40

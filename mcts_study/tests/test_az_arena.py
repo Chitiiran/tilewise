@@ -33,12 +33,12 @@ def test_seed_plan_unique_and_shared(tmp_path):
 def test_should_promote_threshold_strictly_greater():
     from catan_az.arena import ArenaResult, should_promote
     from catan_az.config import AzConfig
-    cfg = AzConfig()
-    # winrate over DECISIVE games. 66/120 = 55.0% exactly -> hold.
-    r = ArenaResult(wins_cand=66, wins_champ=54, draws=0, timeouts=0)
+    cfg = AzConfig()   # promote_threshold = 0.65 (redesign)
+    # winrate over DECISIVE games. 65/100 = 65.0% exactly -> hold (strictly >).
+    r = ArenaResult(wins_cand=65, wins_champ=35, draws=0, timeouts=0)
     assert should_promote(r, cfg) == "hold"
-    # 67/120 = 55.8% -> promote
-    r = ArenaResult(wins_cand=67, wins_champ=53, draws=0, timeouts=0)
+    # 66/100 = 66.0% -> promote
+    r = ArenaResult(wins_cand=66, wins_champ=34, draws=0, timeouts=0)
     assert should_promote(r, cfg) == "promote"
 
 
@@ -47,11 +47,11 @@ def test_timeouts_no_longer_invalidate_when_decided():
     the games were decided by VP leader, not censored (2026-06-13)."""
     from catan_az.arena import ArenaResult, should_promote
     from catan_az.config import AzConfig
-    cfg = AzConfig()
-    # All 120 timed out but every one was VP-decided: 75 cand / 45 champ.
-    r = ArenaResult(wins_cand=75, wins_champ=45, draws=0, timeouts=120)
-    assert r.winrate_cand == pytest.approx(75 / 120)
-    assert should_promote(r, cfg) == "promote"
+    cfg = AzConfig()   # promote_threshold = 0.65
+    # All 120 timed out but every one VP-decided: 84 cand / 36 champ = 70% > 65%.
+    r = ArenaResult(wins_cand=84, wins_champ=36, draws=0, timeouts=120)
+    assert r.winrate_cand == pytest.approx(84 / 120)
+    assert should_promote(r, cfg) == "promote"   # valid (decided), clears bar
 
 
 def test_high_draw_rate_invalidates():
