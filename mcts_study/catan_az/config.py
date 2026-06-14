@@ -33,7 +33,13 @@ class AzConfig:
     # Arena
     arena_games: int = 120             # 4 rotations x 30 shared seeds
     promote_threshold: float = 0.55    # strictly-greater promotes (AGZ gate)
-    arena_timeout_rate_max: float = 0.05
+    arena_timeout_rate_max: float = 0.05   # legacy; surfaced, no longer a gate
+    # Validity guards under VP-leader tiebreak (2026-06-13): a timed-out game
+    # is decided by VP leader, so the gate keys on genuine no-signal games
+    # (VP ties = draws) and on having enough decisive games to trust the
+    # winrate — not on how many stalled past the wall-clock cap.
+    arena_max_draw_rate: float = 0.40      # too many VP ties -> untrustworthy
+    arena_min_decisive: int = 40           # need >=N decided games for a verdict
     arena_sims: int = 200
     # Per-game wall-clock cap: bounds the rare pathological game that crawls
     # toward the 200k step cap and would otherwise hold the whole arena's

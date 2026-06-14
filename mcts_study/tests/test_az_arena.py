@@ -34,7 +34,7 @@ def test_should_promote_threshold_strictly_greater():
     from catan_az.arena import ArenaResult, should_promote
     from catan_az.config import AzConfig
     cfg = AzConfig()
-    # 66/120 = 55.0% exactly -> hold (strictly greater promotes)
+    # winrate over DECISIVE games. 66/120 = 55.0% exactly -> hold.
     r = ArenaResult(wins_cand=66, wins_champ=54, draws=0, timeouts=0)
     assert should_promote(r, cfg) == "hold"
     # 67/120 = 55.8% -> promote
@@ -42,21 +42,45 @@ def test_should_promote_threshold_strictly_greater():
     assert should_promote(r, cfg) == "promote"
 
 
-def test_should_promote_timeout_guard_invalidates():
+def test_timeouts_no_longer_invalidate_when_decided():
+    """Under VP-tiebreak a 100%-timeout arena is VALID if it's decisive —
+    the games were decided by VP leader, not censored (2026-06-13)."""
     from catan_az.arena import ArenaResult, should_promote
     from catan_az.config import AzConfig
     cfg = AzConfig()
-    # Great winrate but 8/120 = 6.7% timeouts > 5% cap -> invalid (e5 lesson:
-    # wall-clock-censored winrates are not real).
-    r = ArenaResult(wins_cand=80, wins_champ=32, draws=0, timeouts=8)
+    # All 120 timed out but every one was VP-decided: 75 cand / 45 champ.
+    r = ArenaResult(wins_cand=75, wins_champ=45, draws=0, timeouts=120)
+    assert r.winrate_cand == pytest.approx(75 / 120)
+    assert should_promote(r, cfg) == "promote"
+
+
+def test_high_draw_rate_invalidates():
+    """Too many VP ties (genuine no-signal games) -> invalid."""
+    from catan_az.arena import ArenaResult, should_promote
+    from catan_az.config import AzConfig
+    cfg = AzConfig()
+    # 60 draws / 120 = 50% > 40% cap.
+    r = ArenaResult(wins_cand=40, wins_champ=20, draws=60, timeouts=120)
     assert should_promote(r, cfg) == "invalid"
 
 
-def test_draws_count_in_denominator():
+def test_too_few_decisive_invalidates():
+    from catan_az.arena import ArenaResult, should_promote
+    from catan_az.config import AzConfig
+    cfg = AzConfig()
+    # Only 30 decisive (< 40 min) even though draw rate is fine.
+    r = ArenaResult(wins_cand=20, wins_champ=10, draws=5, timeouts=0)
+    assert r.decisive == 30
+    assert should_promote(r, cfg) == "invalid"
+
+
+def test_winrate_over_decisive_only():
     from catan_az.arena import ArenaResult
     r = ArenaResult(wins_cand=60, wins_champ=40, draws=20, timeouts=0)
     assert r.games == 120
-    assert r.winrate_cand == pytest.approx(60 / 120)
+    assert r.decisive == 100
+    assert r.winrate_cand == pytest.approx(60 / 100)   # draws excluded
+    assert r.draw_rate == pytest.approx(20 / 120)
 
 
 def test_result_json_round_trip(tmp_path):
@@ -69,6 +93,101 @@ def test_result_json_round_trip(tmp_path):
     assert back == r
 
 
+def test_timeout_credits_vp_leader(monkeypatch):
+    """A game that never terminates is credited to the current VP leader,
+    with timed_out=True (2026-06-13 VP-tiebreak)."""
+    import asyncio
+
+    from catan_az import arena as arena_mod
+
+    class FakeEngine:
+        def vp(self, p):
+            return [3, 9, 5, 2][p]   # seat 1 leads
+
+    class NeverEndingState:
+        def __init__(self):
+            self._engine = FakeEngine()
+
+        def is_terminal(self):
+            return False
+
+        def is_chance_node(self):
+            return False
+
+        def legal_actions(self):
+            return [0, 1]
+
+        def current_player(self):
+            return 0
+
+        def apply_action(self, a):
+            pass
+
+    class FakeGame:
+        def new_initial_state(self, seed):
+            return NeverEndingState()
+
+    class FakeMcts:
+        async def search(self, state, n_sims):
+            return {0: 1}
+
+        def best_action(self, vc):
+            return 0
+
+    winner, timed_out = asyncio.run(arena_mod._play_arena_game(
+        game=FakeGame(), seed=1, seating=["cand", "champ", "cand", "champ"],
+        mcts_cand=FakeMcts(), mcts_champ=FakeMcts(), sims=1, max_seconds=0.2))
+    assert timed_out is True
+    assert winner == 1          # VP leader, not -1
+
+
+def test_timeout_vp_tie_is_draw(monkeypatch):
+    """A timed-out game tied on top VP -> no winner (draw)."""
+    import asyncio
+
+    from catan_az import arena as arena_mod
+
+    class FakeEngine:
+        def vp(self, p):
+            return [9, 9, 4, 2][p]   # seats 0 and 1 tied at top
+
+    class NeverEndingState:
+        def __init__(self):
+            self._engine = FakeEngine()
+
+        def is_terminal(self):
+            return False
+
+        def is_chance_node(self):
+            return False
+
+        def legal_actions(self):
+            return [0, 1]
+
+        def current_player(self):
+            return 0
+
+        def apply_action(self, a):
+            pass
+
+    class FakeGame:
+        def new_initial_state(self, seed):
+            return NeverEndingState()
+
+    class FakeMcts:
+        async def search(self, state, n_sims):
+            return {0: 1}
+
+        def best_action(self, vc):
+            return 0
+
+    winner, timed_out = asyncio.run(arena_mod._play_arena_game(
+        game=FakeGame(), seed=1, seating=["cand"] * 4,
+        mcts_cand=FakeMcts(), mcts_champ=FakeMcts(), sims=1, max_seconds=0.2))
+    assert timed_out is True
+    assert winner == -1         # tie -> draw
+
+
 def test_play_arena_game_wall_clock_cap(monkeypatch):
     """A game that never terminates must hit the wall-clock cap and return
     timed_out=True, instead of grinding to the 200k step cap (2026-06-13
@@ -77,7 +196,14 @@ def test_play_arena_game_wall_clock_cap(monkeypatch):
 
     from catan_az import arena as arena_mod
 
+    class _ZeroEngine:
+        def vp(self, p):
+            return 0   # all tied -> VP-tiebreak yields no winner
+
     class NeverEndingState:
+        def __init__(self):
+            self._engine = _ZeroEngine()
+
         def is_terminal(self):
             return False
 

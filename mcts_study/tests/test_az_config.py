@@ -21,6 +21,8 @@ def test_defaults_match_spec():
     assert cfg.promote_threshold == 0.55
     assert cfg.arena_timeout_rate_max == 0.05
     assert cfg.arena_game_max_seconds == 600.0
+    assert cfg.arena_max_draw_rate == 0.40
+    assert cfg.arena_min_decisive == 40
     assert cfg.anchor_every == 5
     assert cfg.anchor_games == 60
     assert cfg.vp_target == 10

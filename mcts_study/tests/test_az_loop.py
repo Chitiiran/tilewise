@@ -157,7 +157,8 @@ def test_invalid_arena_neither_promotes_nor_marks_done(loop_env):
     root, _, sp, tr, _, _ = loop_env
 
     def censored_arena(cfg, cand, champ, iter_dir):
-        return ArenaResult(wins_cand=80, wins_champ=30, draws=0, timeouts=10)
+        # Too many VP ties (no-signal) -> invalid under the new draw-rate guard.
+        return ArenaResult(wins_cand=40, wins_champ=20, draws=60, timeouts=120)
 
     verdict = run_iteration(AzConfig(), root, 1, selfplay_fn=sp, train_fn=tr,
                             arena_fn=censored_arena)

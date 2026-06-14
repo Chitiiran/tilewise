@@ -51,16 +51,32 @@ class ArenaResult:
 
     @property
     def games(self) -> int:
+        # Every game lands in exactly one of wins_cand / wins_champ / draws —
+        # timed-out games are now credited to their VP-leader (a win) or, if
+        # tied, a draw. So this sums to the full game count. (timeouts is a
+        # parallel tally for observability, NOT a 4th bucket.)
         return self.wins_cand + self.wins_champ + self.draws
 
     @property
+    def decisive(self) -> int:
+        return self.wins_cand + self.wins_champ
+
+    @property
     def winrate_cand(self) -> float:
-        return self.wins_cand / self.games if self.games else 0.0
+        # Winrate over DECISIVE games (a VP-tie draw is no signal either way).
+        return self.wins_cand / self.decisive if self.decisive else 0.0
+
+    @property
+    def draw_rate(self) -> float:
+        return self.draws / self.games if self.games else 0.0
 
     @property
     def timeout_rate(self) -> float:
-        total = self.games + self.timeouts
-        return self.timeouts / total if total else 0.0
+        # Fraction of games that went to the VP-leader tiebreak (stalled past
+        # the wall-clock cap). High is expected for closely-matched nets and
+        # is NO LONGER a validity problem (those games are now decided), but
+        # we still surface it.
+        return self.timeouts / self.games if self.games else 0.0
 
     def to_json(self, path: Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2))
@@ -71,8 +87,18 @@ class ArenaResult:
 
 
 def should_promote(result: ArenaResult, cfg) -> str:
-    """'promote' | 'hold' | 'invalid' (timeout-censored, not trustworthy)."""
-    if result.timeout_rate > cfg.arena_timeout_rate_max:
+    """'promote' | 'hold' | 'invalid'.
+
+    With VP-leader tiebreak, timed-out games ARE decisive, so the validity
+    guard now keys on DRAWS (VP ties = genuine no-signal games) and on having
+    enough decisive games to trust the winrate — not on the timeout rate.
+    Promote iff the candidate's winrate over decisive games clears the bar.
+    """
+    if result.games == 0:
+        return "invalid"
+    if result.draw_rate > cfg.arena_max_draw_rate:
+        return "invalid"
+    if result.decisive < cfg.arena_min_decisive:
         return "invalid"
     if result.winrate_cand > cfg.promote_threshold:
         return "promote"
@@ -99,8 +125,7 @@ async def _play_arena_game(*, game, seed: int, seating: list[str],
     deadline = (_t.monotonic() + max_seconds) if max_seconds else None
     while not state.is_terminal() and steps < max_steps:
         if deadline is not None and _t.monotonic() > deadline:
-            return -1, True   # wall-clock timeout
-        # step-count refresh keeps the check cheap (no per-inner-loop time call)
+            return _vp_leader(state), True   # wall-clock timeout -> VP tiebreak
         if state.is_chance_node():
             outs = state.chance_outcomes()
             r = chance_rng.random()
@@ -123,9 +148,26 @@ async def _play_arena_game(*, game, seed: int, seating: list[str],
         state.apply_action(int(mcts.best_action(visit_counts)))
         steps += 1
     if not state.is_terminal():
-        return -1, True
+        # Step-cap exit also uses the VP tiebreak.
+        return _vp_leader(state), True
     rs = state.returns()
     return (rs.index(1.0) if 1.0 in rs else -1), False
+
+
+def _vp_leader(state) -> int:
+    """Seat with the strictly-highest current VP, or -1 on a tie.
+
+    VP-leader tiebreak for timed-out games: full-Catan games between two
+    closely-matched GNN nets routinely fail to close out within any wall-clock
+    cap (the documented stall pathology — 2026-06-13 iter-2 arena was 100%
+    timeouts vs iter-1's 0%). Discarding these as no-result makes the gate
+    unable to evaluate similar nets at all. Crediting whoever is closest to
+    winning when time runs out recovers the signal; a true VP tie is a draw.
+    """
+    vps = [int(state._engine.vp(i)) for i in range(4)]
+    top = max(vps)
+    leaders = [i for i, v in enumerate(vps) if v == top]
+    return leaders[0] if len(leaders) == 1 else -1
 
 
 def _load_model(ckpt: Path, cfg, device: str):
@@ -222,9 +264,12 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
 
     result = ArenaResult()
     for rec in done.values():
+        # A timed-out game is now credited to its VP-leader (winner_role set);
+        # count it toward wins AND toward the timeout tally (observability +
+        # rate guard). Only a VP-tie timeout (winner_role None) is a draw.
         if rec["timed_out"]:
             result.timeouts += 1
-        elif rec["winner_role"] == "cand":
+        if rec["winner_role"] == "cand":
             result.wins_cand += 1
             result.per_rotation[rec["rot"]] += 1
         elif rec["winner_role"] == "champ":
