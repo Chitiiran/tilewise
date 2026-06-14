@@ -37,9 +37,18 @@ move_index exceeds it.
 
 ### Tracking for each data-gen cycle
 The dataset logs `dropped N/M divergent positions (X%)` at build. **Watch this
-number.** Expected ~0.05%. If it spikes (e.g. >1%), the divergence is getting
+number.** Expected ~0.05-0.1%. If it spikes (e.g. >1%), the divergence is getting
 worse — likely because an engine-fidelity change widened the generator↔replay
 gap — and is the trigger to prioritize the recording redesign below.
+
+**Observed drop rates (running log):**
+| date | corpus | dropped | rate |
+|---|---|---|---|
+| 2026-06-14 | iter-3 (810 games, 189k pos) | 91 | 0.048% |
+| 2026-06-14 | iter-3 + top-up (840 games, 225k pos) | 204 | 0.091% |
+
+Rate is stable in the ~0.05-0.1% band; no spike. (The increase tracks corpus
+size, not a worsening per-game divergence.)
 
 ## Why replay-from-history won't scale — the real fix (NEXT CYCLE)
 
