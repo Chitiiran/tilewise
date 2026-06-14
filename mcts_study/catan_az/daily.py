@@ -103,12 +103,12 @@ def run_day(cfg, *, loop_root: Path, capped_procs: int, cycle_fn,
 
 
 def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
-                           champion, rules_id):
+                           generator_name, gen_iter, rules_id):
     """Launch n_procs LOW-PRIORITY (nice) self_play_async procs splitting
     n_games, blocking until all exit. Each run dir is tagged with meta.json
-    {rules_id, champion} (the experiment doesn't know about them). Returns the
-    run dirs created. Per-game flush in the engine bounds loss to <=1 game on
-    a kill. (Spec §3b: nice workers yield to foreground work.)"""
+    {rules_id, generator_name, gen_iter} — recording WHICH net made the games
+    and WHICH iteration, the dimension whose absence caused the stale-data bug
+    (2026-06-14). Per-game flush bounds loss to <=1 game on a kill."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     per = max(1, n_games // max(1, n_procs))
@@ -134,35 +134,32 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
         p.wait()
     dirs = sorted(out_dir.glob("*self_play_async*"))
     for d in dirs:
-        (d / "meta.json").write_text(
-            json.dumps({"rules_id": rules_id, "champion": champion}))
+        (d / "meta.json").write_text(json.dumps(
+            {"rules_id": rules_id, "generator_name": generator_name,
+             "gen_iter": gen_iter}))
     return dirs
 
 
-def generate_fresh(cfg, *, iter_dir: Path, champion: str, champion_ckpt: Path,
-                   capped_procs: int, prior_dirs: list) -> list:
-    """Generate current-champion self-play until fresh games >= fresh_ratio of
-    the window. Resumable: counts existing fresh first, generates only the
-    deficit (so a kill mid-self-play resumes toward the target, never
-    regenerates). Spec §5."""
-    deficit = fresh_deficit(prior_dirs, champion=champion, rules_id=cfg.rules_id,
-                            window_games=cfg.window_games,
-                            fresh_ratio=cfg.fresh_ratio)
+def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
+                        capped_procs: int, prior_dirs: list) -> list:
+    """Generate exactly cfg.games_per_iter NEW games with `generator` for this
+    iteration (spec 2026-06-14 §4). Resumable: counts ONLY this iteration's own
+    gen_iter games and generates the remainder — so a kill resumes toward the
+    quota, and other iterations' games never satisfy it (the stale-data bug)."""
+    from .buffer import count_games, own_iter_games
+    gen_name, gen_ckpt = generator
+    have = own_iter_games(prior_dirs, gen_iter=gen_iter)
+    deficit = max(0, cfg.games_per_iter - have)
     if deficit <= 0:
         return []
     dirs = _launch_selfplay_procs(cfg, Path(iter_dir) / "selfplay",
-                                  champion_ckpt, deficit, capped_procs,
-                                  champion, cfg.rules_id)
-    # Resilience: a crashed self-play proc leaves an empty dir; that would
-    # surface as a cryptic "no games in window" later. Fail loud + located
-    # here instead (e.g. arch mismatch, OOM). Spec §2 (env failures surfaced).
-    from .buffer import count_games
+                                  Path(gen_ckpt), deficit, capped_procs,
+                                  gen_name, gen_iter, cfg.rules_id)
     produced = sum(count_games(d) for d in dirs)
     if produced == 0:
         raise RuntimeError(
-            f"self-play produced 0 games in {len(dirs)} dir(s) under "
-            f"{Path(iter_dir) / 'selfplay'} — check the proc logs (arch "
-            f"mismatch / OOM / bad checkpoint {champion_ckpt}).")
+            f"self-play produced 0 games for iter {gen_iter} (generator "
+            f"{gen_name}, ckpt {gen_ckpt}) — check proc logs (arch / OOM).")
     return dirs
 
 
