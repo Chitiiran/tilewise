@@ -194,3 +194,29 @@ def run_cycle(cfg, loop_root: Path, iter_n: int, capped_procs: int) -> str:
                   fresh_target=0, fresh_done=len(fresh_dirs),
                   rules_id=cfg.rules_id).save(loop_root)
     return verdict
+
+
+def cli_main():
+    """Entry: preflight -> run_day. Used by scripts/run_az_day.sh."""
+    import argparse
+
+    from .config import AzConfig
+    from .preflight import preflight
+    p = argparse.ArgumentParser()
+    p.add_argument("--loop-root", type=Path, required=True)
+    p.add_argument("--max-iters", type=int, default=1000)
+    p.add_argument("--config", type=Path, default=None)
+    args = p.parse_args()
+    cfg = AzConfig.from_json(args.config) if args.config else AzConfig()
+    res = preflight(cfg, loop_root=args.loop_root,
+                    archive_root=Path(cfg.archive_root))
+    if not res.ok:
+        print("[az-day] preflight FAILED:", "; ".join(res.reasons))
+        raise SystemExit(1)
+    print(f"[az-day] preflight ok, {res.capped_procs} procs")
+    run_day(cfg, loop_root=args.loop_root, capped_procs=res.capped_procs,
+            cycle_fn=run_cycle, max_iters=args.max_iters)
+
+
+if __name__ == "__main__":
+    cli_main()
