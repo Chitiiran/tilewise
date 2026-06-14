@@ -63,17 +63,39 @@ def test_liveness_falls_back_to_daily_state_mtime(tmp_path):
     assert L["stale_budget_seconds"] == 8 * 3600   # self-play gets the long budget
 
 
-def test_liveness_status_json_still_wins_when_present(tmp_path):
-    """status.json's explicit ts is authoritative when present — the
-    daily_state fallback must not override a real stage-transition heartbeat."""
+def test_liveness_status_json_wins_when_fresher(tmp_path):
+    """status.json's explicit ts is authoritative when it is the FRESHER
+    heartbeat (a recent stage-transition)."""
     from catan_az.analytics import liveness
     (tmp_path / "status.json").write_text(json.dumps(
         {"iter": 7, "stage": "arena", "ts": time.time()}))
     (tmp_path / "daily_state.json").write_text(json.dumps(
         {"iter": 7, "stage": "iterate", "fresh_target": 40, "fresh_done": 40}))
     L = liveness(tmp_path, now=time.time())
-    assert L["stage"] == "arena"              # status.json wins
+    assert L["stage"] == "arena"              # status.json (fresher) wins
     assert L["iter"] == 7
+
+
+def test_liveness_daily_state_wins_when_status_is_stale(tmp_path):
+    """Production 2026-06-14: a NEW run resumes a root whose OLD status.json
+    (last stage-transition 8h ago) shadows the live daily_state.json. status.json
+    is present with a real ts, but it is STALER than daily_state's mtime — the
+    fresher daily_state heartbeat must win, else the dashboard shows the dead
+    old iteration while a new one runs."""
+    import os
+    from catan_az.analytics import liveness
+    old = time.time() - 8 * 3600
+    (tmp_path / "status.json").write_text(json.dumps(
+        {"iter": 5, "stage": "arena", "ts": old}))
+    ds = tmp_path / "daily_state.json"
+    ds.write_text(json.dumps(
+        {"iter": 6, "stage": "selfplay", "fresh_target": 1000, "fresh_done": 0}))
+    # daily_state mtime is "now" (just written) -> the fresher heartbeat
+    L = liveness(tmp_path, now=time.time())
+    assert L["stage"] == "selfplay"           # live iter_6, not stale iter_5
+    assert L["iter"] == 6
+    assert L["alive"] is True                 # selfplay budget, age ~0
+    assert L["age_seconds"] < 60
 
 
 # ---- training health ----

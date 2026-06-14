@@ -132,18 +132,28 @@ def liveness(loop_root, *, now=None, stale_after_seconds=None) -> dict:
     status = _read_json_safe(Path(loop_root) / "status.json", {})
     ds_path = Path(loop_root) / "daily_state.json"
     ds = _read_json_safe(ds_path, {})
-    ts = status.get("ts")
-    stage = status.get("stage")
-    iter_n = status.get("iter")
-    # status.json is only written at stage TRANSITIONS; run_cycle rewrites
-    # daily_state.json (atomically) at every stage, so its mtime is the live
-    # heartbeat during the hours-long self-play stage. Fall back to it when
-    # status.json has no usable ts (pilot 2026-06-14: dashboard read "NOT
-    # RUNNING" for the whole self-play stage because only daily_state existed).
-    if not isinstance(ts, (int, float)) and ds_path.exists():
-        ts = ds_path.stat().st_mtime
-        stage = ds.get("stage", stage)
-        iter_n = ds.get("iter", iter_n)
+    status_ts = status.get("ts")
+    ds_ts = ds_path.stat().st_mtime if ds_path.exists() else None
+    # Pick the FRESHER heartbeat. status.json is written only at stage
+    # TRANSITIONS; run_cycle rewrites daily_state.json (atomically) at every
+    # stage, so its mtime tracks the live stage. Two cases this must handle:
+    #  - self-play stage: no recent status.json -> daily_state mtime is the
+    #    heartbeat (pilot 2026-06-14: dashboard read "NOT RUNNING" otherwise).
+    #  - a NEW run resuming a root whose OLD status.json is hours stale: the
+    #    fresh daily_state must WIN, else the dashboard shows the dead old
+    #    iteration while a new one runs (production 2026-06-14).
+    # Favor status.json on a near-tie (both written at the same stage
+    # transition); daily_state wins only when it is MEANINGFULLY fresher (the
+    # stale-old-status resume case), guarded by a margin so simultaneous writes
+    # don't flip non-deterministically on filesystem mtime jitter.
+    _FRESHER_MARGIN = 60.0
+    use_ds = (ds_ts is not None and
+              (not isinstance(status_ts, (int, float))
+               or ds_ts > status_ts + _FRESHER_MARGIN))
+    if use_ds:
+        ts, stage, iter_n = ds_ts, ds.get("stage"), ds.get("iter")
+    else:
+        ts, stage, iter_n = status_ts, status.get("stage"), status.get("iter")
     age = (now - ts) if isinstance(ts, (int, float)) else None
     budget = (stale_after_seconds if stale_after_seconds is not None
               else _STAGE_STALE_SECONDS.get(stage, _DEFAULT_STALE_SECONDS))
