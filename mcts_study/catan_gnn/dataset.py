@@ -80,6 +80,26 @@ class CatanReplayDataset(Dataset):
             int(s): list(h) for s, h in zip(games["seed"], games["action_history"])
         }
         self._index = moves[moves["seed"].isin(self._winner_by_seed.keys())].reset_index(drop=True)
+        # Build-time divergence filter (2026-06-14): for some self-play games the
+        # action_history replay reproduces FEWER gated decisions for a player
+        # than the recorder logged move rows (recorder<->replay determinism
+        # divergence). Those move rows can never be replayed and would crash
+        # training. Replay each game ONCE (per-game, not per-position) to get
+        # the replayable decision count per player, then drop out-of-range rows.
+        # ~0.05% of positions dropped on the iter-3 corpus. See
+        # 2026-06-14-recorder-replay-divergence-and-recording-roadmap.md.
+        counts_by_seed = {
+            seed: replayable_decision_counts(seed=seed, history=hist)
+            for seed, hist in self._history_by_seed.items()
+        }
+        before = len(self._index)
+        self._index = _drop_divergent_rows(self._index, counts_by_seed
+                                           ).reset_index(drop=True)
+        dropped = before - len(self._index)
+        if dropped:
+            logging.warning("dataset: dropped %d/%d divergent (un-replayable) "
+                            "positions (%.3f%%) — recorder<->replay divergence",
+                            dropped, before, 100.0 * dropped / max(1, before))
 
     def __len__(self) -> int:
         return len(self._index)
@@ -160,6 +180,42 @@ class CatanReplayDataset(Dataset):
         legal_mask = torch.from_numpy(np.array(row["legal_action_mask"], dtype=np.bool_))
 
         return data, value, policy, legal_mask
+
+
+def replayable_decision_counts(*, seed: int, history) -> dict:
+    """Replay a game's action_history once and return, per player, how many
+    GATED decisions (len(legal) > 1, that player to move) the history actually
+    reproduces. This is the recorder's move_index ceiling per player: a move
+    row with move_index >= this count diverges and can't be replayed.
+
+    Mirrors CatanReplayDataset's replay gating EXACTLY so the counts match what
+    __getitem__ would reach. (2026-06-14 divergence filter.)"""
+    engine = _engine.Engine(int(seed))
+    counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    for action_id in history:
+        if engine.is_terminal():
+            break
+        a = int(action_id)
+        if engine.is_chance_pending():
+            engine.apply_chance_outcome(a & 0x7FFF_FFFF)
+            continue
+        legal = engine.legal_actions()
+        if len(legal) > 1:
+            counts[int(engine.current_player())] += 1
+        engine.step(a)
+    return counts
+
+
+def _drop_divergent_rows(moves, counts_by_seed):
+    """Drop move rows whose move_index >= the replayable decision count for
+    that (seed, current_player). Vectorized over the moves frame."""
+    import numpy as np
+    ceil = np.array([
+        counts_by_seed.get(int(s), {}).get(int(p), 0)
+        for s, p in zip(moves["seed"], moves["current_player"])
+    ])
+    keep = moves["move_index"].to_numpy() < ceil
+    return moves[keep]
 
 
 def resilient_getitem(ds, i: int, max_tries: int = 64):
