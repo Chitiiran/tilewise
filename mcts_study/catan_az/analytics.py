@@ -201,6 +201,65 @@ def selfplay_health(loop_root, *, iter_n: int) -> dict:
     }
 
 
+def selfplay_live(loop_root, *, iter_n: int, target: int, now=None) -> dict:
+    """LIVE data-generation view for the RUNNING self-play stage.
+
+    Reads the per-seed shards (`games.seed=*.parquet`) as they land — the
+    pre-compaction form that exists DURING the stage — so the dashboard has a
+    window into the hours-long self-play instead of going dark until it's done.
+    Reports progress toward target, generation rate (from shard mtimes), data
+    quality (game length, timeouts), and winner-seat balance (a board-fairness
+    sanity check). Also matches the compacted form so it keeps working after the
+    stage ends (glob is `games*.parquet`)."""
+    import glob
+
+    import pandas as pd
+    now = now if now is not None else time.time()
+    shards = glob.glob(str(Path(loop_root) / f"iter_{iter_n}" / "selfplay" /
+                           "*" / "games*.parquet"))
+    if not shards:
+        return {"available": False, "games_done": 0, "target": target}
+    lengths, timed, mtimes = [], 0, []
+    seat_wins = {"0": 0, "1": 0, "2": 0, "3": 0}
+    n = 0
+    for f in shards:
+        try:
+            df = pd.read_parquet(f, columns=["winner", "length_in_moves",
+                                             "timed_out"])
+        except Exception:
+            continue
+        df = df[df["winner"] != -1]              # drop phantom aborted games
+        if df.empty:
+            continue
+        n += len(df)
+        lengths.extend(df["length_in_moves"].tolist())
+        timed += int(df["timed_out"].sum())
+        for w in df["winner"].tolist():
+            if str(int(w)) in seat_wins:
+                seat_wins[str(int(w))] += 1
+        mtimes.append(Path(f).stat().st_mtime)
+    if n == 0:
+        return {"available": False, "games_done": 0, "target": target}
+    # rate from the span of shard mtimes (first game finalised -> now). Using
+    # `now` (not max mtime) so the rate reflects the live wall-clock, including
+    # games currently in flight.
+    span_h = max((now - min(mtimes)) / 3600.0, 1e-6)
+    rate = n / span_h
+    remaining = max(0, target - n)
+    return {
+        "available": True,
+        "games_done": n,
+        "target": target,
+        "fraction": n / target if target else 0.0,
+        "mean_length": sum(lengths) / len(lengths),
+        "max_length": max(lengths),
+        "timed_out_fraction": timed / n,
+        "seat_wins": seat_wins,
+        "games_per_hour": round(rate, 1),
+        "eta_hours": round(remaining / rate, 2) if rate > 0 else None,
+    }
+
+
 def training_health(loop_root, *, iter_n: int) -> dict:
     """Per-iteration training health from training_log.json — catches a broken
     candidate BEFORE its ~14h arena runs (critic's highest-value miss).

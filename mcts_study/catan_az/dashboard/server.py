@@ -47,6 +47,18 @@ def create_dashboard(*, loop_root, web_port: int = 8000, cfg=None) -> FastAPI:
         from catan_az import analytics
         return analytics.selfplay_health(loop_root, iter_n=iter_n)
 
+    @app.get("/api/selfplay-live")
+    def selfplay_live():
+        """Live data-generation view for the running self-play stage: progress,
+        rate/ETA, data quality, winner-seat balance. Keyed off the live iter."""
+        from catan_az import analytics
+        live = analytics.liveness(loop_root)
+        it = live.get("iter")
+        if it is None:
+            return {"available": False, "games_done": 0}
+        return analytics.selfplay_live(loop_root, iter_n=it,
+                                       target=cfg.games_per_iter)
+
     @app.get("/api/metrics")
     def metrics():
         """Per-iteration derived metrics (winrate/draw/timeout/Elo trends)."""

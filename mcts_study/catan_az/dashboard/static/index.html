@@ -14,6 +14,10 @@
  .flag.warn{background:#3a2f12;color:#fcd34d;border-left:3px solid #fbbf24}
  .ok{color:#4ade80} .bar{height:6px;background:#2a2e38;border-radius:3px;overflow:hidden;margin-top:.3rem}
  .bar>div{height:100%;background:#2563eb} svg{display:block}
+ .spstats{display:grid;grid-template-columns:repeat(4,1fr);gap:.6rem;margin-top:.7rem}
+ .spstats .s{background:#0f1115;border-radius:6px;padding:.5rem .6rem}
+ .spstats .s .v{font-size:1.15rem;font-weight:700} .spstats .s .l{font-size:.72rem;color:#8b93a3;text-transform:uppercase;letter-spacing:.04em}
+ .seatbar{display:flex;gap:3px;margin-top:.2rem} .seatbar>span{flex:1;text-align:center;font-size:.7rem;padding:.15rem 0;border-radius:3px;background:#1f2530}
 </style></head><body>
 <h1>Catan AZ — Live Analytics</h1>
 
@@ -28,6 +32,12 @@
     <div id="elo" class="muted"></div>
     <a class="play" id="play" href="#">▶ Play the champion</a>
   </div>
+</div>
+
+<div class="card" id="sp-card" style="display:none"><h2>Live data generation (self-play)</h2>
+  <div id="sp-head" class="muted"></div>
+  <div class="bar" id="sp-bar"><div></div></div>
+  <div class="spstats" id="sp-stats"></div>
 </div>
 
 <div class="card"><h2>Failure-mode alarms</h2><div id="flags"><span class="ok">✓ no alarms</span></div></div>
@@ -66,6 +76,8 @@ async function tick(){
   const fl=$('flags');
   if(!s.flags||!s.flags.length){fl.innerHTML='<span class="ok">✓ no alarms</span>';}
   else fl.innerHTML=s.flags.map(f=>`<div class="flag ${f.severity}">${f.severity==='error'?'⛔':'⚠'} <b>${f.id}</b> — ${f.message}</div>`).join('');
+  // live data-generation card — only while self-play is producing games
+  await drawSelfplay();
   // metrics table + chart — training data is now INLINE in /api/metrics
   // (NEW-2 fix: no per-row /api/training fetch storm every 5s).
   const m=await j('/api/metrics'); const its=(m&&m.iterations)||[];
@@ -83,6 +95,25 @@ async function tick(){
   }
   drawChart(its);
 }
+async function drawSelfplay(){
+  const sp=await j('/api/selfplay-live'); const card=$('sp-card');
+  if(!sp||!sp.available||!sp.games_done){card.style.display='none';return;}
+  card.style.display='';
+  const frac=sp.fraction||0;
+  $('sp-bar').firstChild.style.width=(100*frac)+'%';
+  const eta=(sp.eta_hours!=null)?(sp.eta_hours<1?Math.round(sp.eta_hours*60)+'m':sp.eta_hours.toFixed(1)+'h'):'?';
+  $('sp-head').textContent=`${sp.games_done} / ${sp.target} games · ${(100*frac).toFixed(1)}% · ${sp.games_per_hour}/hr · ETA ${eta}`;
+  // winner-seat balance bar (board fairness — a healthy run is ~even)
+  const sw=sp.seat_wins||{}, tot=Object.values(sw).reduce((a,b)=>a+b,0)||1;
+  const seatHtml=[0,1,2,3].map(k=>{const w=sw[k]||0;const pct=Math.round(100*w/tot);
+    return `<span>S${k}<br>${pct}%</span>`}).join('');
+  $('sp-stats').innerHTML=
+    stat(sp.mean_length.toFixed(0),'mean game length')+
+    stat(sp.max_length,'longest game')+
+    stat((100*sp.timed_out_fraction).toFixed(0)+'%','timed out')+
+    `<div class="s"><div class="l">winner seat balance</div><div class="seatbar">${seatHtml}</div></div>`;
+}
+function stat(v,l){return `<div class="s"><div class="v">${v}</div><div class="l">${l}</div></div>`}
 function drawChart(its){
   // NEW-1 fix: plot BOTH Elo (the time-to-strength decision variable) and
   // winrate. Elo on a left auto-scaled axis (blue), winrate 0..1 right (amber)

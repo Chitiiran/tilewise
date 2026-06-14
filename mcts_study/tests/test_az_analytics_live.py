@@ -271,6 +271,51 @@ def test_selfplay_health_from_parquet(tmp_path):
     assert h["step_cap_fraction"] > 0   # one game hit the cap
 
 
+def test_selfplay_live_progress_rate_quality_and_seat_balance(tmp_path):
+    """Live data-generation view for the RUNNING self-play stage: reads the
+    per-seed shards as they land (not the post-stage compacted parquet) and
+    reports progress toward target, generation rate, data quality, and
+    winner-seat balance (board-fairness)."""
+    import os
+
+    import pandas as pd
+
+    from catan_az.analytics import selfplay_live
+    d = tmp_path / "iter_6" / "selfplay" / "run1"
+    d.mkdir(parents=True)
+    # 4 finished games as per-seed shards (the live, pre-compaction form)
+    for i, (seed, winner, length, to) in enumerate([
+        (91_000_000, 0, 300, False),
+        (91_000_001, 1, 350, False),
+        (91_000_002, 0, 9000, True),     # a long timed-out game
+        (91_000_003, 2, 320, False),
+    ]):
+        p = d / f"games.seed={seed}.parquet"
+        pd.DataFrame({"seed": [seed], "winner": [winner],
+                      "length_in_moves": [length], "timed_out": [to]}).to_parquet(p)
+
+    live = selfplay_live(tmp_path, iter_n=6, target=1000,
+                         now=os.path.getmtime(d / "games.seed=91000003.parquet") + 1)
+    assert live["available"] is True
+    assert live["games_done"] == 4
+    assert live["target"] == 1000
+    assert round(live["fraction"], 3) == 0.004
+    assert live["mean_length"] == (300 + 350 + 9000 + 320) / 4
+    assert live["timed_out_fraction"] == 0.25          # one of four
+    # winner-seat balance: seat 0 won twice, seats 1 & 2 once, seat 3 never
+    assert live["seat_wins"] == {"0": 2, "1": 1, "2": 1, "3": 0}
+    # rate + ETA are derived from shard mtimes spanning the generation window
+    assert "games_per_hour" in live and live["games_per_hour"] >= 0
+    assert "eta_hours" in live
+
+
+def test_selfplay_live_unavailable_before_any_shard(tmp_path):
+    from catan_az.analytics import selfplay_live
+    live = selfplay_live(tmp_path, iter_n=6, target=1000)
+    assert live["available"] is False
+    assert live["games_done"] == 0
+
+
 def test_metrics_includes_training_inline(tmp_path):
     """NEW-2 fix: fold training data into iteration_metrics so the frontend
     doesn't N+1 fetch /api/training per row per 5s poll."""
