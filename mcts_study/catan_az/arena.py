@@ -27,6 +27,28 @@ def seating_for_rotation(rot: int) -> list[str]:
     return _BASE[rot:] + _BASE[:rot]
 
 
+def _read_arena_results(results_path: Path) -> dict[int, dict]:
+    """Resume map seed -> result, tolerant of a torn final line.
+
+    M3 (deep-inspect HIGH): a crash mid-write leaves a half-written final line in
+    results.jsonl. A bare json.loads would raise JSONDecodeError and poison-pill
+    the iteration forever (it never returns, ARENA never marks done, no human is
+    present). Skip un-parseable lines, mirroring analytics.py's reader of the
+    same file."""
+    done: dict[int, dict] = {}
+    if not Path(results_path).exists():
+        return done
+    for line in Path(results_path).read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue                      # torn/partial line from a crash
+        done[rec["seed"]] = rec
+    return done
+
+
 def seed_plan(*, seed_base: int, games: int) -> list[tuple[int, int]]:
     """(rotation, seed) pairs: games/4 per rotation, distinct seed per game.
 
@@ -203,12 +225,7 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
-    done: dict[int, dict] = {}
-    if results_path.exists():
-        for line in results_path.read_text().splitlines():
-            if line.strip():
-                rec = json.loads(line)
-                done[rec["seed"]] = rec
+    done = _read_arena_results(results_path)
 
     async def _main() -> None:
         model_cand = _load_model(candidate_ckpt, cfg, device)
@@ -264,8 +281,22 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
         plan = [(rot, seed) for rot, seed in
                 seed_plan(seed_base=seed_base, games=cfg.arena_games)
                 if seed not in done]
-        await asyncio.gather(*(one(rot, seed) for rot, seed in plan),
-                             return_exceptions=False)
+        # M3 (deep-inspect): return_exceptions=True so one game's deterministic
+        # engine/MCTS exception can't abort the whole arena (losing all in-flight
+        # GPU work) and — worse — poison-pill the iteration on every restart
+        # (the failing seed is never written to `done`, so it's replanned
+        # forever with no human present). Log failures; completed games are
+        # already durable in results.jsonl.
+        outcomes = await asyncio.gather(
+            *(one(rot, seed) for rot, seed in plan), return_exceptions=True)
+        failures = [(plan[i], o) for i, o in enumerate(outcomes)
+                    if isinstance(o, BaseException)]
+        for (rot, seed), exc in failures:
+            print(f"[arena] game rot={rot} seed={seed} FAILED: "
+                  f"{type(exc).__name__}: {exc}")
+        if failures:
+            print(f"[arena] WARNING: {len(failures)}/{len(plan)} games errored "
+                  f"(excluded from the verdict; not retried)")
         await ev_cand.stop()
         await ev_champ.stop()
         f.close()

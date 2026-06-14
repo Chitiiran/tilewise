@@ -102,6 +102,17 @@ def run_day(cfg, *, loop_root: Path, capped_procs: int, cycle_fn,
             break
 
 
+def _worker_seed_base(*, gen_iter: int, i: int) -> int:
+    """Seed-base for self-play worker `i` in iteration `gen_iter`.
+
+    M1 (deep-inspect HIGH): the seed-base MUST include the iteration term, else
+    every iteration replays the identical board set and the run can only
+    memorise a fixed ~1000 boards — scientifically worthless. The per-iter block
+    (10M) is wide enough that a worker's 1000-game seed range never collides
+    with another iter/worker across a 10-iter x 7-worker grid."""
+    return 31_000_000 + gen_iter * 10_000_000 + i * 1_000_000
+
+
 def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                            generator_name, gen_iter, rules_id):
     """Launch n_procs LOW-PRIORITY (nice) self_play_async procs splitting
@@ -114,7 +125,7 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
     per = max(1, n_games // max(1, n_procs))
     procs = []
     for i in range(n_procs):
-        sb = 31_000_000 + i * 1_000_000
+        sb = _worker_seed_base(gen_iter=gen_iter, i=i)
         cmd = ["nice", "-n", str(cfg.worker_nice),
                "python", "-m", "catan_mcts.experiments.self_play_async",
                "--out-root", str(out_dir), "--checkpoint", str(checkpoint),
@@ -129,14 +140,37 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                "--max-seconds", "21600"]
         if not cfg.bonuses:
             cmd.append("--no-bonuses")
-        procs.append(subprocess.Popen(cmd))
+        # start_new_session so the workers form their own process group: lets a
+        # cleanup handler kill the whole group and avoids a stray Ctrl-C
+        # propagating from the parent's terminal (deep-inspect MED: orphan GPU
+        # workers / parent-death leakage).
+        procs.append(subprocess.Popen(cmd, start_new_session=True))
+    # M4 (deep-inspect HIGH): a per-worker wait timeout so one hung worker can't
+    # stall the iteration for hours; kill + log if it overruns its budget.
+    wait_budget = 21600 + 600    # worker max_seconds + margin
+    nonzero = []
     for p in procs:
-        p.wait()
+        try:
+            p.wait(timeout=wait_budget)
+        except subprocess.TimeoutExpired:
+            print(f"[selfplay] worker pid={p.pid} exceeded {wait_budget}s — killing")
+            p.kill()
+            p.wait()
+        if p.returncode not in (0, None):
+            nonzero.append((p.pid, p.returncode))
+    # M4: surface dead workers loudly — a CUDA-OOM race that kills some of the 7
+    # workers must NOT silently train the iteration on a fraction of the data.
+    if nonzero:
+        print(f"[selfplay] WARNING: {len(nonzero)}/{len(procs)} workers exited "
+              f"non-zero: {nonzero}")
     dirs = sorted(out_dir.glob("*self_play_async*"))
     for d in dirs:
-        (d / "meta.json").write_text(json.dumps(
+        # atomic meta.json tag (M2-class: a torn write would orphan the dir).
+        tmp = d / "meta.json.tmp"
+        tmp.write_text(json.dumps(
             {"rules_id": rules_id, "generator_name": generator_name,
              "gen_iter": gen_iter}))
+        os.replace(tmp, d / "meta.json")
     return dirs
 
 
@@ -155,11 +189,18 @@ def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
     dirs = _launch_selfplay_procs(cfg, Path(iter_dir) / "selfplay",
                                   Path(gen_ckpt), deficit, capped_procs,
                                   gen_name, gen_iter, cfg.rules_id)
-    produced = sum(count_games(d) for d in dirs)
-    if produced == 0:
+    # M4 (deep-inspect HIGH): count THIS iteration's OWN games (prior own-iter
+    # games + what we just produced) and fail loud if we fell well short of the
+    # quota — instead of the binary produced==0 cliff that let a 30/1000
+    # iteration pass silently after a partial worker death / OOM.
+    have_after = own_iter_games(list(dirs) + list(prior_dirs), gen_iter=gen_iter)
+    floor = int(0.8 * cfg.games_per_iter)
+    if have_after < floor:
         raise RuntimeError(
-            f"self-play produced 0 games for iter {gen_iter} (generator "
-            f"{gen_name}, ckpt {gen_ckpt}) — check proc logs (arch / OOM).")
+            f"self-play for iter {gen_iter} produced only {have_after} own-iter "
+            f"games (quota {cfg.games_per_iter}, floor {floor}; generator "
+            f"{gen_name}, ckpt {gen_ckpt}) — likely partial worker death / OOM. "
+            f"Refusing to train on a fraction of the data; fix and resume.")
     return dirs
 
 

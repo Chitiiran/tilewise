@@ -17,11 +17,21 @@ import pandas as pd
 
 
 def count_games(run_dir: Path) -> int:
-    """Total finished games across a run dir's games*.parquet shards."""
-    total = 0
+    """Unique FINISHED games across a run dir's games*.parquet shards.
+
+    Dedup by seed and drop phantom winner=-1 rows (recorder.py:192-201 fallback
+    finalize for aborted games). After a crash both per-seed shards and a
+    compacted/_remainder shard can coexist, so a naive sum double-counts the same
+    seed and over-reports the quota (deep-inspect LOW, cheap fix)."""
+    seeds: set[int] = set()
     for shard in Path(run_dir).glob("games*.parquet"):
-        total += len(pd.read_parquet(shard, columns=["seed"]))
-    return total
+        try:
+            cols = pd.read_parquet(shard, columns=["seed", "winner"])
+            cols = cols[cols["winner"] != -1]
+        except (ValueError, KeyError):
+            cols = pd.read_parquet(shard, columns=["seed"])   # legacy: no winner
+        seeds.update(int(s) for s in cols["seed"].tolist())
+    return len(seeds)
 
 
 def _read_meta(run_dir: Path) -> dict:

@@ -64,7 +64,18 @@ class Ladder:
 
     def record_arena(self, name_a: str, name_b: str, *, wins_a: int,
                      wins_b: int, draws: int = 0) -> None:
-        """Zero-sum Elo update from an arena series (draws count half)."""
+        """Zero-sum Elo update from an arena series (draws count half).
+
+        IDEMPOTENT per candidate (M2, deep-inspect HIGH): a crash after this
+        ._save() but before PUBLISH.done re-runs the whole PUBLISH block on
+        resume. Without the guard the Elo delta + games count are applied twice
+        (the 2026-06-13 "240 games + duplicate promote" incident). `name_a` is
+        the iter-unique candidate (az_iter_N), so it's a sound idempotency key —
+        a candidate's arena is recorded at most once. Persisted to ladder.json
+        so a fresh Ladder built on resume still sees the guard."""
+        applied = self._data.setdefault("applied_arenas", [])
+        if name_a in applied:
+            return
         a, b = self._data["entries"][name_a], self._data["entries"][name_b]
         n = wins_a + wins_b + draws
         if n == 0:
@@ -75,6 +86,7 @@ class Ladder:
         b["elo"] -= delta
         a["games"] += n
         b["games"] += n
+        applied.append(name_a)
         self._save()
 
     def promote(self, name: str, *, promoted_at_iter: int | None = None) -> None:
