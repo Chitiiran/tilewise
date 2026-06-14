@@ -54,6 +54,30 @@ The existing `catan_az/loop.py` stays the iteration engine; `daily.py`
 orchestrates many iterations. Minimal hooks added to existing code: a `rules_id`
 + `champion_name` tag per run dir, and a fresh-ratio path in `buffer.py`.
 
+## 3b. Worker sizing & CPU courtesy (hardware-grounded)
+
+Measured box: **Ryzen 5 5600H — 6 physical cores / 12 logical threads**, **54 GB
+RAM** (WSL), **4 GB VRAM** (GTX 1650). The three resources are independent:
+
+| Resource | Size | Per self-play proc | Binding? |
+|---|---|---|---|
+| CPU threads | 12 | ~1 thread (GIL-bound asyncio) | no — 7 procs leaves 5 threads |
+| RAM | 54 GB | ~1 GB | no — fits dozens |
+| **VRAM** | **4 GB** | **~535 MB (CUDA context)** | **YES — ~7 procs max** |
+
+So self-play is **VRAM-capped at ~7 GPU procs** (GPU-only, per user). `worker_procs_max
+= 7`; preflight fits as many as free VRAM allows. (A mixed GPU+CPU-inference pool
+could reach 10 by running some workers' tiny net on CPU/RAM — **deferred**, noted
+as the lever to raise the cap later.)
+
+**CPU courtesy:** all self-play workers run at low OS priority
+(`nice`/`ionice`, `worker_nice = 10`) by default, so the user's foreground work
+(<4h/day) preempts them automatically — training slows while they work, speeds up
+when they leave, **without pausing or losing a game**. The ~20h/day undisturbed
+runs at full throttle. A manual `STOP` sentinel fully pauses (clean, ≤1-game
+loss) for when the user wants the CPU entirely. Auto-throttle (`--pause-if-busy`)
+is **deferred to v1.1** — low-priority workers cover the need.
+
 ## 4. Resumability — ≤1 game loss
 
 Layers, each already or newly checkpointed:
@@ -99,8 +123,13 @@ Run before each cycle. **Hard** = abort with a clear logged reason + notify;
 | Editable install path == this worktree | self-heal | `maturin develop --release` if stale, else proceed |
 | Stale `catan_az`/`self_play_async` procs from a dead run | self-heal | reap them |
 | PID-file lock already held | hard | refuse double-run |
-| GPU busy (mem-used or util > threshold, or foreign proc) | **hard** | abort — don't fight another GPU job |
-| RAM free < `ram_budget` | soft | cap concurrent self-play procs from the budget |
+| **Free VRAM** (GPU) | soft | cap self-play procs to `min(worker_procs_max, free_vram / per_proc_vram)` — hard-stop before OOM, never launch more than VRAM holds |
+| RAM free < `ram_budget` | soft | (rarely binds — 54 GB) cap procs from the budget |
+
+**No GPU-busy abort.** The user shares the GPU with small foreign tasks; training
+is CPU-bound (GPU ~25-56% utilized at 5 procs), so foreign GPU use has ample
+headroom. The only GPU constraint is **VRAM capacity** (4 GB GTX 1650), handled
+by the VRAM cap above.
 
 ## 7. Observability + dashboard
 
@@ -174,6 +203,9 @@ for continual training. Mitigations built in now:
 
 - Cron installation itself (built cron-ready; user wires the scheduler).
 - Multi-GPU / Rust self-play (the throughput lever; separate work).
+- Mixed GPU+CPU-inference worker pool (the lever to raise the 7-proc VRAM cap
+  toward 10 — deferred; §3b).
+- `--pause-if-busy` auto-throttle (v1.1; low-priority workers cover v1).
 - Promote-by-margin (noted in §9 as first tuning if plateaus persist).
 - Engine-fidelity changes (robber/trades) — separate specs; this design only
   makes the window `rules_id`-safe for them.
@@ -183,10 +215,11 @@ for continual training. Mitigations built in now:
 ```
 fresh_ratio: float = 0.70
 rules_id: str = "v3-full"          # vp10+bonuses+current action space
+worker_procs_max: int = 7          # VRAM cap on the 4 GB GTX 1650 (GPU-only)
+per_proc_vram_mb: float = 535.0    # measured CUDA-context cost per self-play proc
+worker_nice: int = 10              # low OS priority -> yields to foreground work
 min_fast_gb: float = 10.0
 min_hdd_gb: float = 20.0
-gpu_busy_mem_mb: float = 500.0     # foreign GPU usage above this => abort
-gpu_busy_util_pct: float = 20.0
 stagnation_holds: int = 5
 archive_root: str = "/mnt/d/catan_az_archive"   # HDD
 dashboard_port: int = 8099
