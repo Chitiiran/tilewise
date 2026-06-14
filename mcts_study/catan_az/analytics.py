@@ -54,8 +54,10 @@ def iteration_metrics(loop_root) -> list[dict]:
                     _i(r, "arena_draws"))
         to = _i(r, "arena_timeouts")
         g = c + ch + d
+        it = _i(r, "iter")
+        th = training_health(loop_root, iter_n=it)   # folded in (NEW-2: no N+1)
         out.append({
-            "iter": _i(r, "iter"),
+            "iter": it,
             "verdict": r.get("verdict", "?"),
             "winrate": _f(r, "arena_winrate"),
             "draw_rate": (d / g) if g else 0.0,
@@ -64,6 +66,8 @@ def iteration_metrics(loop_root) -> list[dict]:
             "games": g,
             "elo": _f(r, "champion_elo_after"),
             "champion": r.get("champion", ""),
+            "epochs_trained": th.get("epochs_trained", 0),
+            "val_top1": th.get("final_val_top1"),
         })
     return out
 
@@ -293,6 +297,16 @@ def detect_failure_modes(loop_root, *, cfg=None) -> list[dict]:
                       "message": f"iter {last['iter']}: trained only "
                                  f"{th['epochs_trained']} epoch(s) — early-stop "
                                  f"fired immediately"})
+
+    # 5b. Elo PLATEAU — fires EARLIER than holds_since_promotion: a flattening
+    #     Elo slope over recent iters is the slow-failure signal (the expensive
+    #     one on a 6-day run). |Δelo| over last 3 iters < epsilon -> warn.
+    if len(metrics) >= 3:
+        recent = [m["elo"] for m in metrics[-3:]]
+        if max(recent) - min(recent) < 0.5:   # essentially no Elo movement
+            flags.append({"id": "plateau", "severity": "warn",
+                          "message": f"Elo flat (~{recent[-1]:.0f}) over last 3 "
+                                     f"iters — likely plateaued, consider stopping"})
 
     # 6. Timeout change-point — a SHARP jump in timeout rate (steady 100% is the
     #    expected VP-tiebreak steady state; a 40%->100% swing means something

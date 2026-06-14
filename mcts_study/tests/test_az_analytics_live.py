@@ -216,3 +216,33 @@ def test_selfplay_health_from_parquet(tmp_path):
     assert h["n_games"] == 3
     assert h["mean_length"] == (600 + 800 + 200000) / 3
     assert h["step_cap_fraction"] > 0   # one game hit the cap
+
+
+def test_metrics_includes_training_inline(tmp_path):
+    """NEW-2 fix: fold training data into iteration_metrics so the frontend
+    doesn't N+1 fetch /api/training per row per 5s poll."""
+    from catan_az.analytics import iteration_metrics
+    _journal(tmp_path / "journal.csv", [
+        {"iter": 3, "verdict": "hold", "arena_wins_cand": 50, "arena_wins_champ": 50,
+         "arena_draws": 0, "arena_timeouts": 0, "arena_winrate": 0.5,
+         "champion_elo_after": 1004}])
+    d = tmp_path / "iter_3" / "training"; d.mkdir(parents=True)
+    (d / "training_log.json").write_text(json.dumps({"epochs": [
+        {"epoch": 1, "train_loss_total": 2.3, "val_policy_top1_acc": 0.46},
+        {"epoch": 2, "train_loss_total": 2.0, "val_policy_top1_acc": 0.45}]}))
+    m = iteration_metrics(tmp_path)
+    assert m[0]["epochs_trained"] == 2
+    assert m[0]["val_top1"] == 0.45
+
+
+def test_plateau_flag(tmp_path):
+    """NEW-1/critic #1: Elo-slope-flattening fires EARLIER than holds-since-
+    promotion. Flat Elo over recent iters -> plateau warn."""
+    from catan_az.analytics import detect_failure_modes
+    _journal(tmp_path / "journal.csv", [
+        {"iter": i, "verdict": "hold", "arena_wins_cand": 50, "arena_wins_champ": 50,
+         "arena_draws": 0, "arena_timeouts": 0, "arena_winrate": 0.5,
+         "champion_elo_after": 1004.0}    # flat Elo, no movement
+        for i in (1, 2, 3, 4)])
+    flags = detect_failure_modes(tmp_path)
+    assert any(f["id"] == "plateau" for f in flags)
