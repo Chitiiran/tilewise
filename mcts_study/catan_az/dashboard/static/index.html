@@ -1,0 +1,43 @@
+<!doctype html><html><head><meta charset="utf-8"><title>AZ Daily</title>
+<style>
+ body{font-family:system-ui;margin:2rem;background:#0f1115;color:#e6e6e6}
+ .card{background:#1a1d24;border-radius:8px;padding:1rem 1.5rem;margin:1rem 0}
+ h1{font-size:1.4rem} .big{font-size:2rem;font-weight:700}
+ table{border-collapse:collapse;width:100%} td,th{padding:.3rem .6rem;text-align:left;border-bottom:1px solid #2a2e38}
+ .promote{color:#4ade80} .hold,.invalid{color:#fbbf24}
+ a.play{display:inline-block;margin-top:.5rem;background:#2563eb;color:#fff;padding:.4rem .8rem;border-radius:6px;text-decoration:none}
+ .flag{color:#f87171;font-weight:700}
+ .muted{color:#8b93a3;font-size:.85rem}
+</style></head><body>
+<h1>Catan AZ — Daily Training</h1>
+<div class="card"><div class="muted">Champion</div>
+  <div class="big" id="champ">—</div>
+  <div id="elo"></div>
+  <a class="play" id="play" href="#">▶ Play the champion</a>
+</div>
+<div class="card"><div class="muted">Current run</div><div id="status">—</div><div id="stag" class="flag"></div></div>
+<div class="card"><div class="muted">Last 10 iterations</div><table id="journal"><thead>
+  <tr><th>iter</th><th>verdict</th><th>winrate</th><th>draws</th></tr></thead><tbody></tbody></table></div>
+<script>
+async function tick(){
+  try{
+    const s = await (await fetch('/api/summary')).json();
+    const c = s.champion||{};
+    document.getElementById('champ').textContent = c.name||'—';
+    document.getElementById('elo').textContent = (c.elo!=null)? `Elo ${(+c.elo).toFixed(1)} · ${c.games} games`:'';
+    document.getElementById('play').href = s.play_champion_url||'#';
+    const st = s.status||{};
+    document.getElementById('status').textContent =
+      `iter ${st.iter??'—'} · stage ${st.stage??'—'}`;
+    document.getElementById('stag').textContent = st.STAGNATION? '⚠ STAGNATION — champion not improving':'';
+    const tb = document.querySelector('#journal tbody'); tb.innerHTML='';
+    (s.journal||[]).slice().reverse().forEach(r=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${r.iter}</td><td class="${r.verdict||''}">${r.verdict||''}</td>`+
+        `<td>${r.arena_winrate??''}</td><td>${r.arena_draws??''}</td>`;
+      tb.appendChild(tr);
+    });
+  }catch(e){ document.getElementById('status').textContent='(waiting for data…)'; }
+}
+tick(); setInterval(tick, 5000);
+</script></body></html>
