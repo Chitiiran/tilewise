@@ -61,6 +61,12 @@ def test_seat_bias_from_arena_results(tmp_path):
     assert sb["total_games"] == 3
 
 
+class _Cfg:
+    def __init__(self, max_iters_per_model=5, arena_max_draw_rate=0.40):
+        self.max_iters_per_model = max_iters_per_model
+        self.arena_max_draw_rate = arena_max_draw_rate
+
+
 def test_detect_failure_modes(tmp_path):
     """The headline: surface failure modes analytics can prevent."""
     from catan_az.analytics import detect_failure_modes
@@ -72,10 +78,12 @@ def test_detect_failure_modes(tmp_path):
         {"iter": 3, "verdict": "hold", "arena_draws": 33, "arena_timeouts": 120,
          "arena_wins_cand": 38, "arena_wins_champ": 49},
     ])
-    flags = detect_failure_modes(tmp_path, stagnation_threshold=2)
+    flags = detect_failure_modes(tmp_path, cfg=_Cfg(max_iters_per_model=2))
     names = {f["id"] for f in flags}
-    assert "stagnation" in names           # 2 holds/invalids since promote
-    assert "high_timeout_rate" in names    # iter-2/3 100% timeouts
+    assert "stagnation" in names           # 2 non-promotes since promote
+    assert "invalid_verdict" in names      # iter-2 invalid (history scan)
+    # timeout flag is intentionally gone (alarm fatigue under VP-tiebreak)
+    assert "high_timeout_rate" not in names
     assert all("severity" in f and "message" in f for f in flags)
 
 
@@ -85,5 +93,5 @@ def test_no_failure_modes_when_healthy(tmp_path):
         {"iter": 1, "verdict": "promote", "arena_draws": 5, "arena_timeouts": 2,
          "arena_wins_cand": 70, "arena_wins_champ": 45},
     ])
-    flags = detect_failure_modes(tmp_path, stagnation_threshold=5)
+    flags = detect_failure_modes(tmp_path, cfg=_Cfg(max_iters_per_model=5))
     assert flags == []   # healthy -> no flags

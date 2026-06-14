@@ -13,8 +13,11 @@ from fastapi.staticfiles import StaticFiles
 _STATIC = Path(__file__).parent / "static"
 
 
-def create_dashboard(*, loop_root, web_port: int = 8000) -> FastAPI:
+def create_dashboard(*, loop_root, web_port: int = 8000, cfg=None) -> FastAPI:
     loop_root = Path(loop_root)
+    if cfg is None:
+        from catan_az.config import AzConfig
+        cfg = AzConfig()      # thresholds for failure-mode detection
     app = FastAPI(title="AZ Daily Dashboard")
 
     @app.get("/api/summary")
@@ -29,9 +32,15 @@ def create_dashboard(*, loop_root, web_port: int = 8000) -> FastAPI:
             "status": status,
             "journal": journal[-10:],
             "holds_since_promotion": analytics.holds_since_promotion(loop_root),
-            "flags": analytics.detect_failure_modes(loop_root),
+            "flags": analytics.detect_failure_modes(loop_root, cfg=cfg),
+            "liveness": analytics.liveness(loop_root),
             "play_champion_url": f"http://localhost:{web_port}/?difficulty=az-champion",
         }
+
+    @app.get("/api/training/{iter_n}")
+    def training(iter_n: int):
+        from catan_az import analytics
+        return analytics.training_health(loop_root, iter_n=iter_n)
 
     @app.get("/api/metrics")
     def metrics():
