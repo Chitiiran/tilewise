@@ -168,6 +168,14 @@ def arena_live(loop_root, *, iter_n: int, cfg) -> dict:
         last_game_ts = max(ts)
         if games_per_hour > 0:
             eta_hours = round(max(0, target - n) / games_per_hour, 2)
+    else:
+        # Opus #3: no per-game ts (iter_6 predates the producer fix). Fall back
+        # to the file mtime — a valid "last game written" stamp for ANY iter, so
+        # the dashboard shows recency instead of looking frozen.
+        try:
+            last_game_ts = p.stat().st_mtime
+        except OSError:
+            last_game_ts = None
 
     # Momentum (Opus #3): rolling winrate over the last K decisive games.
     K = 10
@@ -252,6 +260,11 @@ def seat_bias(loop_root, *, iter_n: int) -> dict:
     wins from certain seats is a seating artifact, not an improvement)."""
     p = Path(loop_root) / f"iter_{iter_n}" / "arena" / "results.jsonl"
     by_seat = {s: {"cand_wins": 0, "champ_wins": 0, "games": 0} for s in range(4)}
+    # by_rotation is the HONEST seating-fairness cut (Opus UX 2026-06-15):
+    # per-board-seat winrate is misleading because cand only occupies seats
+    # {0,2} on rot 0/2 and {1,3} on rot 1/3, so by_seat conflates seat-assignment
+    # with winning. Grouping by rotation removes that confound.
+    by_rot = {r: {"cand_wins": 0, "champ_wins": 0} for r in range(4)}
     total = timeouts = 0
     if p.exists():
         for line in p.read_text(encoding="utf-8").splitlines():
@@ -263,13 +276,15 @@ def seat_bias(loop_root, *, iter_n: int) -> dict:
                 continue
             total += 1
             timeouts += 1 if r.get("timed_out") else 0
+            role = r.get("winner_role")
             seat = r.get("winner_seat", -1)
-            if seat in by_seat:
-                if r.get("winner_role") == "cand":
-                    by_seat[seat]["cand_wins"] += 1
-                elif r.get("winner_role") == "champ":
-                    by_seat[seat]["champ_wins"] += 1
-    return {"by_seat": by_seat, "total_games": total, "timeouts": timeouts}
+            rot = r.get("rot")
+            if seat in by_seat and role in ("cand", "champ"):
+                by_seat[seat][f"{role}_wins"] += 1
+            if rot in by_rot and role in ("cand", "champ"):
+                by_rot[rot][f"{role}_wins"] += 1
+    return {"by_seat": by_seat, "by_rotation": by_rot,
+            "total_games": total, "timeouts": timeouts}
 
 
 # Stage-keyed staleness budgets (BUG-2 fix): the heartbeat is only rewritten at

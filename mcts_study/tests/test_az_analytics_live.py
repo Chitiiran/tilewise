@@ -430,6 +430,50 @@ def test_arena_live_clinched_and_pace_and_rate(tmp_path):
     assert "margin_hist" in a
 
 
+def test_seat_bias_by_rotation_not_misleading_seat(tmp_path):
+    """Opus UX bug: per-board-seat cand winrate is MISLEADING — the arena seats
+    cand only in {0,2} (rot 0/2) or {1,3} (rot 1/3), so 'cand winrate by seat'
+    conflates seat-assignment with winning (renders a false '0% from seats 1&3').
+    The honest cut is cand winrate BY ROTATION."""
+    from catan_az.analytics import seat_bias
+    d = tmp_path / "iter_6" / "arena"
+    d.mkdir(parents=True)
+    rows = [
+        {"seed": 1, "rot": 0, "winner_seat": 0, "winner_role": "cand"},
+        {"seed": 2, "rot": 0, "winner_seat": 1, "winner_role": "champ"},
+        {"seed": 3, "rot": 1, "winner_seat": 1, "winner_role": "cand"},
+    ]
+    (d / "results.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    sb = seat_bias(tmp_path, iter_n=6)
+    assert "by_rotation" in sb
+    # rot 0: cand 1, champ 1 -> 50%; rot 1: cand 1, champ 0 -> 100%
+    assert sb["by_rotation"][0]["cand_wins"] == 1 and sb["by_rotation"][0]["champ_wins"] == 1
+    assert sb["by_rotation"][1]["cand_wins"] == 1 and sb["by_rotation"][1]["champ_wins"] == 0
+
+
+def test_arena_live_last_game_ts_mtime_fallback(tmp_path):
+    """Opus #3: when games lack per-game ts (iter_6 predates the producer fix),
+    fall back to the results.jsonl mtime so the dashboard still shows recency
+    ('last game Ns ago') instead of looking frozen."""
+    from catan_az.analytics import arena_live
+    d = tmp_path / "iter_6" / "arena"
+    d.mkdir(parents=True)
+    # rows with NO ts field (the iter_6 case)
+    (d / "results.jsonl").write_text("\n".join(json.dumps(
+        {"seed": i, "rot": 0, "winner_seat": 0, "winner_role": "cand"})
+        for i in range(45)))
+
+    class _Cfg:
+        arena_games = 300
+        promote_threshold = 0.65
+        arena_max_draw_rate = 0.40
+        arena_min_decisive = 40
+
+    a = arena_live(tmp_path, iter_n=6, cfg=_Cfg())
+    # last_game_ts falls back to the file mtime (not None) so the UI shows age
+    assert a["last_game_ts"] is not None
+
+
 def test_arena_live_unavailable_when_no_results(tmp_path):
     from catan_az.analytics import arena_live
 

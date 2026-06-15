@@ -32,9 +32,22 @@
  .ci-range{position:absolute;top:0;height:100%;background:#1e3a5f} .ci-pt{position:absolute;top:0;width:2px;height:100%;background:#e6e6e6}
  .ci-bar{position:absolute;top:0;width:2px;height:100%;background:#4ade80}
  .spstats .s.cliff-amber{outline:1px solid #fbbf24} .spstats .s.cliff-red{outline:1px solid #f87171;background:#3b1518}
- .ar-hero{display:flex;flex-direction:column;margin:.2rem 0 .4rem} .ar-hero .hw{font-size:2rem;font-weight:800;line-height:1.1}
- .ar-hero .hsub{font-size:.85rem;color:#8b93a3} .ar-hero.promote .hw{color:#4ade80} .ar-hero.hold .hw{color:#fbbf24} .ar-hero.invalid .hw{color:#f87171} .ar-hero.pending .hw{color:#8b93a3}
- .ar-divider{height:1px;background:#2a2e38;margin:.7rem 0 .6rem}
+ .ar-hero{display:flex;align-items:baseline;gap:.7rem;margin:.1rem 0 .2rem} .ar-hero .hw{font-size:1.7rem;font-weight:800;line-height:1.1}
+ .ar-hero .hsub{font-size:.82rem;color:#8b93a3} .ar-hero.promote .hw{color:#4ade80} .ar-hero.hold .hw{color:#fbbf24} .ar-hero.invalid .hw{color:#f87171} .ar-hero.pending .hw{color:#8b93a3}
+ .ar-divider{height:1px;background:#2a2e38;margin:.55rem 0 .45rem}
+ .ar-live{font-size:.72rem;font-weight:600} .ar-live.live-ok{color:#4ade80} .ar-live.live-stale{color:#8b93a3}
+ .ar-diagstrip{display:flex;gap:.9rem;flex-wrap:wrap;font-size:.78rem;color:#cbd5e1} .ar-diagstrip .dg-amber{color:#fbbf24} .ar-diagstrip .dg-red{color:#f87171;font-weight:700}
+ /* labeled CI bar */
+ #ar-cibar{margin:.5rem 0 .2rem} .ci-title{font-size:.7rem;color:#8b93a3;margin-bottom:.2rem}
+ .ci-track{position:relative;height:20px;background:#0f1115;border-radius:4px;overflow:visible;border:1px solid #2a2e38}
+ .ci-mid{position:absolute;top:0;width:1px;height:100%;background:#2a2e38}
+ .ci-range{position:absolute;top:3px;height:14px;background:#1e3a5f;border-radius:3px}
+ .ci-pt{position:absolute;top:-1px;width:2px;height:22px;background:#fff}
+ .ci-bar{position:absolute;top:-1px;width:2px;height:22px;background:#4ade80}
+ .ci-ptlbl{position:absolute;top:-15px;left:50%;transform:translateX(-50%);font-size:.62rem;color:#fff;white-space:nowrap}
+ .ci-barlbl{position:absolute;top:20px;left:50%;transform:translateX(-50%);font-size:.6rem;color:#4ade80;white-space:nowrap}
+ .ci-axis{display:flex;justify-content:space-between;font-size:.6rem;color:#8b93a3;margin-top:1.1rem}
+ .ci-leg{font-size:.66rem;margin-top:.2rem} .ci-leg .lg-range{color:#5b8fc7} .ci-leg .lg-pt{color:#e6e6e6} .ci-leg .lg-bar{color:#4ade80}
  .mh{margin-top:.4rem} .mh-row{display:flex;align-items:center;gap:.5rem;margin:.15rem 0} .mh-l{width:42px;font-size:.7rem;color:#8b93a3}
  .mh-bar{flex:1;display:flex;height:14px;border-radius:3px;overflow:hidden;background:#1a1d24}
  .mh-bar>span{display:flex;align-items:center;justify-content:center;font-size:.6rem;color:#0f1115;font-weight:700}
@@ -63,19 +76,22 @@
   <div class="spstats" id="sp-stats"></div>
 </div>
 
-<div class="card" id="ar-card" style="display:none"><h2>⚔️ Arena — live gate</h2>
-  <!-- HERO: the one thing the eye lands on -->
+<div class="card" id="ar-card" style="display:none">
+  <h2 style="display:flex;justify-content:space-between;align-items:baseline">
+    <span>⚔️ Arena — live gate</span><span id="ar-live" class="ar-live"></span></h2>
+  <!-- BAND 1: verdict + progress (one line) -->
   <div id="ar-hero" class="ar-hero"></div>
-  <div id="ar-cibar"></div>
-  <div id="ar-head" class="muted"></div>
+  <div id="ar-head" class="muted" style="margin:.1rem 0 .4rem"></div>
   <div class="bar" id="ar-bar"><div></div></div>
-  <!-- SUSPENSE: pace gap -->
+  <!-- BAND 2: the labeled winrate/CI bar (self-explanatory) -->
+  <div id="ar-cibar"></div>
+  <!-- BAND 3: pace suspense -->
   <div id="ar-clinch" class="ar-sub"></div>
-  <!-- INSIGHT: VP-margin (hidden until tagged data exists) -->
+  <!-- VP-margin (hidden until tagged data exists) -->
   <div id="ar-margin" class="ar-margin" style="display:none"></div>
-  <!-- diagnostics strip (muted) -->
+  <!-- BAND 4: compact diagnostics + seating fairness -->
   <div class="ar-divider"></div>
-  <div class="spstats" id="ar-stats"></div>
+  <div id="ar-stats" class="ar-diagstrip"></div>
   <div id="ar-seats"></div>
   <div id="ar-feed" class="ar-feed"></div>
 </div>
@@ -162,29 +178,34 @@ async function drawArena(){
   if(!a||!a.available||!a.games_played){card.style.display='none';return;}
   card.style.display='';
 
-  // ---- HERO: projected verdict, big, the one focal point ----
-  const wr=(100*a.winrate_decisive).toFixed(1);
+  // ---- BAND 1: HERO verdict + inline progress ----
+  const wr=(100*a.winrate_decisive).toFixed(0);
   const hero=$('ar-hero'); hero.className='ar-hero '+a.projected_verdict;
   const word={promote:(a.clinched?'✓ CLINCHED':'▲ PROMOTING'),hold:'■ HOLDING',
-              invalid:'✕ INVALID',pending:(a.too_close?'TOO CLOSE TO CALL':'GATHERING')}[a.projected_verdict];
-  hero.innerHTML=`<span class="hw">${word}</span><span class="hsub">${wr}% winrate · bar ${(100*a.promote_bar).toFixed(0)}%</span>`;
-  drawCiBar(a);   // CI band carries the lo–hi range visually (text removed)
-
-  // ---- progress + live elapsed (ticks every poll) ----
+              invalid:'✕ INVALID',pending:(a.too_close?'TOO CLOSE':'GATHERING')}[a.projected_verdict];
+  hero.innerHTML=`<span class="hw">${word}</span><span class="hsub">${a.games_played}/${a.target} games · ${a.decisive} decisive</span>`;
   $('ar-bar').firstChild.style.width=(100*a.games_played/a.target)+'%';
-  let ageTxt='';
-  if(a.last_game_ts){const age=Math.max(0,Date.now()/1000-a.last_game_ts);
-    ageTxt=` · last game ${fmtAge(age)} ago`;}
-  const rate=a.games_per_hour?` · ${a.games_per_hour}/hr`:'';
-  const eta=(a.eta_hours!=null)?` · ETA ${a.eta_hours<1?Math.round(a.eta_hours*60)+'m':a.eta_hours.toFixed(1)+'h'}`:'';
-  // heartbeat: pulse the count when games land between polls — works even for
-  // iter_6 (no per-game ts), so the panel never looks frozen (Opus iter-3 polish)
-  const fresh=(_arLastGames!=null && a.games_played>_arLastGames);
-  const delta=fresh?` <span class="ar-pulse">+${a.games_played-_arLastGames}</span>`:'';
-  _arLastGames=a.games_played;
-  $('ar-head').innerHTML=`${a.games_played}/${a.target} · ${a.decisive} decisive${rate}${eta}${ageTxt}${delta}`;
 
-  // ---- SUSPENSE: required pace vs actual ----
+  // ---- live stamp (mtime fallback so iter_6 shows recency too) ----
+  const justLanded=(_arLastGames!=null && a.games_played>_arLastGames);
+  const nNew=justLanded?(a.games_played-_arLastGames):0;
+  _arLastGames=a.games_played;
+  const live=$('ar-live');
+  if(a.last_game_ts){
+    const age=Math.max(0,Date.now()/1000-a.last_game_ts);
+    const alive=age<180; // a 16-game batch resolves ~every 10min; <3min = active
+    live.className='ar-live '+(alive?'live-ok':'live-stale');
+    live.innerHTML=(alive?'● live':'○ idle')+` · ${fmtAge(age)} ago`+(nNew?` <span class="ar-pulse">+${nNew}</span>`:'');
+  } else { live.className='ar-live'; live.textContent=''; }
+  // head line: rate/ETA only when real (iter_7+), else just the decisive split
+  const rate=a.games_per_hour?`${a.games_per_hour}/hr · `:'';
+  const eta=(a.eta_hours!=null)?`ETA ${a.eta_hours<1?Math.round(a.eta_hours*60)+'m':a.eta_hours.toFixed(1)+'h'} · `:'';
+  $('ar-head').textContent=`${rate}${eta}${a.cand_wins} cand wins · ${a.champ_wins} champ wins · ${a.draws} draws`;
+
+  // ---- BAND 2: labeled winrate / CI bar (self-explanatory) ----
+  drawCiBar(a);
+
+  // ---- BAND 3: pace suspense ----
   const clinch=$('ar-clinch');
   if(a.clinched){clinch.className='ar-sub promote';clinch.textContent='✓ Promotion mathematically locked — candidate cannot be caught.';}
   else if(!a.clinch_possible){clinch.className='ar-sub invalid';clinch.textContent=`✕ Promotion no longer reachable (needs ${a.clinch_wins_needed} of ${a.remaining_decisive_est} remaining decisive).`;}
@@ -192,29 +213,27 @@ async function drawArena(){
     const req=(100*a.required_winrate_from_here).toFixed(0), act=(100*a.actual_winrate).toFixed(0);
     const behind=a.required_winrate_from_here>a.actual_winrate;
     clinch.className='ar-sub '+(behind?'hold':'promote');
-    clinch.innerHTML=`Must win <b>${req}%</b> of the ~${a.remaining_decisive_est} remaining decisive games to clinch — currently winning <b>${act}%</b> ${behind?'<span style="color:#fbbf24">▼ falling off pace</span>':'<span style="color:#4ade80">▲ on pace</span>'}`;
+    clinch.innerHTML=`Needs <b>${req}%</b> of the ~${a.remaining_decisive_est} remaining to clinch · winning <b>${act}%</b> ${behind?'<span style="color:#fbbf24">▼ off pace</span>':'<span style="color:#4ade80">▲ on pace</span>'}`;
   }
 
-  // ---- INSIGHT: VP-margin (honest — hidden until tagged data exists) ----
+  // ---- VP-margin (hidden until tagged data exists) ----
   const mp=$('ar-margin');
   if(a.margins_available && a.mean_cand_margin!=null && a.mean_champ_margin!=null){
     mp.style.display='';
     const d=a.margin_delta;
     const dTxt=d>=0?`<span style="color:#4ade80">+${d.toFixed(1)}</span>`:`<span style="color:#f87171">${d.toFixed(1)}</span>`;
-    mp.innerHTML=`VP margins — cand wins by <b>${a.mean_cand_margin.toFixed(1)}</b> · champ by <b>${a.mean_champ_margin.toFixed(1)}</b> · edge ${dTxt} VP`+
-      marginHist(a.margin_hist);
+    mp.innerHTML=`VP margins — cand wins by <b>${a.mean_cand_margin.toFixed(1)}</b> · champ by <b>${a.mean_champ_margin.toFixed(1)}</b> · edge ${dTxt} VP`+marginHist(a.margin_hist);
   } else {mp.style.display='none';}
 
-  // ---- diagnostics strip ----
+  // ---- BAND 4: one compact diagnostics line + seating-fairness ----
   const mom=a.momentum||{}, cliff=a.draw_rate_cliff_ratio;
-  const cliffCls=cliff>=1?'cliff-red':cliff>=0.9?'cliff-amber':'';
+  const cliffCls=cliff>=1?'dg-red':cliff>=0.9?'dg-amber':'';
   $('ar-stats').innerHTML=
-    stat(`${a.cand_wins}–${a.champ_wins}`,'cand–champ')+
-    `<div class="s ${cliffCls}"><div class="v">${(100*a.draw_rate).toFixed(0)}%</div><div class="l">draws / 40% cliff</div></div>`+
-    stat(`${mom.cand||0}/${mom.window||0}`,`last-${mom.window||0} form`)+
-    stat((100*a.timeout_rate).toFixed(0)+'%','timeouts');
+    `<span class="${cliffCls}">${(100*a.draw_rate).toFixed(0)}% draws / 40% cliff</span>`+
+    `<span>last-${mom.window||0}: ${mom.cand||0} cand</span>`+
+    `<span>${(100*a.timeout_rate).toFixed(0)}% timeouts</span>`;
   drawSeatBias(a.seat_bias);
-  $('ar-feed').innerHTML=(a.recent||[]).map(r=>{
+  $('ar-feed').innerHTML=(a.recent||[]).slice(0,10).map(r=>{
     const cls=r.winner_role==='cand'?'cand':r.winner_role==='champ'?'champ':'draw';
     const ch=r.winner_role==='cand'?'C':r.winner_role==='champ'?'H':'D';
     const m=(r.vp_margin!=null&&r.winner_role)?r.vp_margin:'';
@@ -231,21 +250,34 @@ function marginHist(h){
   return `<div class="mh">${row('cand',h.cand)}${row('champ',h.champ)}<div class="mh-leg">1 · 2 · 3 · 4+ VP wins (darker = bigger)</div></div>`;
 }
 function drawCiBar(a){
-  const el=$('ar-cibar'); const W=100;
-  const lo=a.winrate_ci.lo*W, hi=a.winrate_ci.hi*W, pt=a.winrate_decisive*W, bar=a.promote_bar*W;
-  el.innerHTML=`<div class="ci-track">`+
-    `<div class="ci-range" style="left:${lo}%;width:${Math.max(0,hi-lo)}%"></div>`+
-    `<div class="ci-pt" style="left:${pt}%"></div>`+
-    `<div class="ci-bar" style="left:${bar}%" title="promote bar"></div></div>`;
+  // Self-explanatory: labeled axis (0/50/100), the candidate's winrate point,
+  // its 95% CI band, the promote bar, and a one-line legend (Opus UX fix).
+  const el=$('ar-cibar');
+  const lo=(100*a.winrate_ci.lo), hi=(100*a.winrate_ci.hi);
+  const pt=(100*a.winrate_decisive), bar=(100*a.promote_bar);
+  el.innerHTML=
+    `<div class="ci-title">Candidate decisive winrate vs promote bar</div>`+
+    `<div class="ci-track">`+
+      `<div class="ci-mid" style="left:50%"></div>`+
+      `<div class="ci-range" style="left:${lo}%;width:${Math.max(0,hi-lo)}%" title="95% CI ${lo.toFixed(0)}–${hi.toFixed(0)}%"></div>`+
+      `<div class="ci-pt" style="left:${pt}%"><span class="ci-ptlbl">${pt.toFixed(0)}%</span></div>`+
+      `<div class="ci-bar" style="left:${bar}%"><span class="ci-barlbl">bar ${bar.toFixed(0)}%</span></div>`+
+    `</div>`+
+    `<div class="ci-axis"><span>0%</span><span>100%</span></div>`+
+    `<div class="ci-leg"><span class="lg-range">▭ 95% CI ${lo.toFixed(0)}–${hi.toFixed(0)}%</span> <span class="lg-pt">┃ now ${pt.toFixed(0)}%</span> <span class="lg-bar">┃ promote ${bar.toFixed(0)}%</span></div>`;
 }
 function drawSeatBias(sb){
-  const el=$('ar-seats'); if(!sb||!sb.by_seat){el.innerHTML='';return;}
-  const cells=[0,1,2,3].map(s=>{
-    const e=sb.by_seat[s]||{}; const dec=(e.cand_wins||0)+(e.champ_wins||0);
-    const wr=dec?Math.round(100*(e.cand_wins||0)/dec):0;
-    return `<span title="seat ${s}: cand ${e.cand_wins||0}/${dec}">S${s}<br>${dec?wr+'%':'–'}</span>`;
+  // HONEST cut: cand winrate BY ROTATION, not by board seat. Per-board-seat
+  // conflates seat-assignment with winning (Opus UX bug 2026-06-15). Empty
+  // rotations show '–' (not a misleading 0%).
+  const el=$('ar-seats'); const br=sb&&sb.by_rotation;
+  if(!br){el.innerHTML='';return;}
+  const cells=[0,1,2,3].map(r=>{
+    const e=br[r]||{}; const dec=(e.cand_wins||0)+(e.champ_wins||0);
+    const wr=dec?Math.round(100*(e.cand_wins||0)/dec):null;
+    return `<span title="rotation ${r}: cand ${e.cand_wins||0}/${dec} decisive">R${r}<br>${wr==null?'–':wr+'%'}<sub style="opacity:.6;font-size:.55rem">${dec?'n'+dec:''}</sub></span>`;
   }).join('');
-  el.innerHTML=`<div class="l" style="font-size:.7rem;color:#8b93a3">cand winrate by seat (board-luck check)</div><div class="seatbar">${cells}</div>`;
+  el.innerHTML=`<div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.4rem">cand winrate by seating rotation (fairness check · n = decisive games)</div><div class="seatbar">${cells}</div>`;
 }
 function drawChart(its){
   // NEW-1 fix: plot BOTH Elo (the time-to-strength decision variable) and
