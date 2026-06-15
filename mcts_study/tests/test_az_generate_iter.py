@@ -12,7 +12,7 @@ def test_generate_iter_games_tags_gen_iter_and_quota(tmp_path, monkeypatch):
     launched = {}
 
     def fake_launch(cfg, out_dir, checkpoint, n_games, n_procs,
-                    generator_name, gen_iter, rules_id):
+                    generator_name, gen_iter, rules_id, seed_offset=0):
         launched["n"] = n_games
         launched["gi"] = gen_iter
         d = out_dir / "run1"
@@ -46,7 +46,7 @@ def test_generate_iter_resumes_only_own_deficit(tmp_path, monkeypatch):
     asked = {}
 
     def fake_launch(cfg, out_dir, checkpoint, n_games, n_procs,
-                    generator_name, gen_iter, rules_id):
+                    generator_name, gen_iter, rules_id, seed_offset=0):
         asked["n"] = n_games
         d = out_dir / "r"
         d.mkdir(parents=True)

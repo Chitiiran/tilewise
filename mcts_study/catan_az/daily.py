@@ -114,18 +114,26 @@ def _worker_seed_base(*, gen_iter: int, i: int) -> int:
 
 
 def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
-                           generator_name, gen_iter, rules_id):
+                           generator_name, gen_iter, rules_id, seed_offset=0):
     """Launch n_procs LOW-PRIORITY (nice) self_play_async procs splitting
     n_games, blocking until all exit. Each run dir is tagged with meta.json
     {rules_id, generator_name, gen_iter} — recording WHICH net made the games
     and WHICH iteration, the dimension whose absence caused the stale-data bug
-    (2026-06-14). Per-game flush bounds loss to <=1 game on a kill."""
+    (2026-06-14). Per-game flush bounds loss to <=1 game on a kill.
+
+    `seed_offset` shifts every worker's seed-base (2026-06-15 resume fix): a
+    deficit-resume re-launches into NEW dirs whose per-dir done.txt can't see
+    the prior run's done seeds, so without an offset the workers would REPLAY
+    the already-produced boards (duplicates). Offsetting by the count of games
+    already on disk pushes the deficit games onto fresh seeds. The offset stays
+    well within each worker's 1M-wide block (deficit << 1M), so no cross-worker
+    seed collision."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     per = max(1, n_games // max(1, n_procs))
     procs = []
     for i in range(n_procs):
-        sb = _worker_seed_base(gen_iter=gen_iter, i=i)
+        sb = _worker_seed_base(gen_iter=gen_iter, i=i) + seed_offset
         cmd = ["nice", "-n", str(cfg.worker_nice),
                "python", "-m", "catan_mcts.experiments.self_play_async",
                "--out-root", str(out_dir), "--checkpoint", str(checkpoint),
@@ -188,9 +196,13 @@ def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
     deficit = max(0, cfg.games_per_iter - have)
     if deficit <= 0:
         return []
+    # seed_offset=have: on a resume (have>0), shift each worker's seed-base past
+    # the boards it already produced, so the deficit games are FRESH boards, not
+    # replays of the existing ones (2026-06-15 resume-duplicate bug).
     dirs = _launch_selfplay_procs(cfg, Path(iter_dir) / "selfplay",
                                   Path(gen_ckpt), deficit, capped_procs,
-                                  gen_name, gen_iter, cfg.rules_id)
+                                  gen_name, gen_iter, cfg.rules_id,
+                                  seed_offset=have)
     # M4 (deep-inspect HIGH): count THIS iteration's OWN games (prior own-iter
     # games + what we just produced) and fail loud if we fell well short of the
     # quota — instead of the binary produced==0 cliff that let a 30/1000

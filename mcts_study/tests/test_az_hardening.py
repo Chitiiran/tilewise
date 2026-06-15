@@ -46,6 +46,43 @@ def test_selfplay_worker_max_seconds_is_config_driven(tmp_path, monkeypatch):
     assert captured["wait_timeout"] > 32400
 
 
+# ---- resume must offset seed-base so deficit games are FRESH boards ----------
+
+def test_deficit_resume_offsets_seed_base(tmp_path, monkeypatch):
+    """2026-06-15 resume bug: deficit-resume re-launched workers from the SAME
+    seed-base into NEW dirs, so they replayed the already-done boards
+    (duplicates). The deficit launch must offset each worker's seed-base past the
+    games already produced, so the remaining games use fresh boards."""
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+
+    cmds = []
+
+    class _FakeProc:
+        pid = 1
+        returncode = 0
+
+        def __init__(self, cmd):
+            cmds.append(cmd)
+
+        def wait(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(daily.subprocess, "Popen", lambda cmd, **k: _FakeProc(cmd))
+    cfg = AzConfig()
+    out = tmp_path / "sp"
+    # 731 games already produced -> resume offset
+    daily._launch_selfplay_procs(cfg, out, tmp_path / "c.pt", n_games=269,
+                                 n_procs=7, generator_name="g", gen_iter=6,
+                                 rules_id="v3-full", seed_offset=731)
+    bases = [int(c[c.index("--seed-base") + 1]) for c in cmds]
+    # worker 0's base = base(gen6,0) + 731 -> past its done seeds, fresh boards
+    assert bases[0] == daily._worker_seed_base(gen_iter=6, i=0) + 731
+    assert bases[1] == daily._worker_seed_base(gen_iter=6, i=1) + 731
+    # offset stays well within each worker's 1M block (no cross-worker collision)
+    assert all(b % 1_000_000 < 100_000 for b in bases)
+
+
 # ---- M1: seed-base must vary per iteration ----------------------------------
 
 def test_selfplay_seed_base_varies_by_iteration():
@@ -133,7 +170,7 @@ def test_generate_iter_games_raises_on_partial_production(tmp_path, monkeypatch)
     from catan_az.config import AzConfig
 
     def fake_launch_partial(cfg, out_dir, checkpoint, n_games, n_procs,
-                            generator_name, gen_iter, rules_id):
+                            generator_name, gen_iter, rules_id, seed_offset=0):
         d = out_dir / "run1"
         d.mkdir(parents=True)
         # only 100 of the requested ~1000 games came back (workers died)
