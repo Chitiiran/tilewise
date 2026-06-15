@@ -128,7 +128,9 @@
   <div id="ar-feed" class="ar-feed"></div>
 </div>
 
-<div class="card"><h2>Failure-mode alarms</h2><div id="flags"><span class="ok">✓ no alarms</span></div></div>
+<div class="card"><h2>Failure-mode alarms</h2>
+  <div class="muted" style="font-size:.75rem;margin:-.3rem 0 .5rem">flags reference the iteration in the message (may be a PAST iter); they persist as a record until that condition clears</div>
+  <div id="flags"><span class="ok">✓ no alarms</span></div></div>
 
 <div class="card"><h2>Elo &amp; winrate trend</h2><svg id="chart" viewBox="0 0 1040 160" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px"></svg></div>
 
@@ -161,12 +163,19 @@ async function tick(){
   // liveness
   const L=s.liveness||{};
   const live=$('live'); live.className='big '+(L.alive?'live-ok':'live-dead');
-  live.textContent=L.alive?`● LIVE — ${L.stage||'?'} (iter ${L.iter??'?'})`:`○ NOT RUNNING (${L.stage||'?'})`;
-  $('live-detail').textContent=`heartbeat ${fmtAge(L.age_seconds)} ago · budget ${fmtAge(L.stale_budget_seconds)}`;
-  const pr=L.progress||{}, pb=$('progbar');
-  if(pr.fresh_target>0){pb.style.display='';pb.firstChild.style.width=(100*pr.fresh_done/pr.fresh_target)+'%';
-    $('live-detail').textContent+=` · self-play ${pr.fresh_done}/${pr.fresh_target}`;}
-  else pb.style.display='none';
+  live.textContent=L.alive?`● RUNNING — ${L.stage||'?'} (iter ${L.iter??'?'})`:`○ NOT RUNNING (${L.stage||'?'})`;
+  // set the right expectation: this updates in MINUTES-to-HOURS bursts, not
+  // every second. A heartbeat many minutes old is NORMAL (a stage can run for
+  // hours between writes), so don't let an old timestamp read as 'dead'.
+  const hb=L.age_seconds;
+  const hbNote=L.alive
+    ? `last update ${fmtAge(hb)} ago — normal (stages run in long bursts, not live-by-second)`
+    : `no update for ${fmtAge(hb)} (over its ${fmtAge(L.stale_budget_seconds)} budget) — likely stopped`;
+  $('live-detail').textContent=hbNote;
+  // (self-play progress lives in its own card below — don't duplicate a STALE
+  // copy here from daily_state.json, which lags the live shard count and reads
+  // as a contradiction, e.g. 20/1000 here vs 996/1000 there.)
+  $('progbar').style.display='none';
   // flags
   const fl=$('flags');
   if(!s.flags||!s.flags.length){fl.innerHTML='<span class="ok">✓ no alarms</span>';}
@@ -208,7 +217,7 @@ async function drawSelfplay(){
     stat(sp.mean_length.toFixed(0),'mean game (moves)')+
     stat(sp.max_length,'longest game (moves)')+
     stat((100*sp.timed_out_fraction).toFixed(0)+'%','ran-away games (0% = healthy)')+
-    `<div class="s"><div class="l">winner seat balance</div><div class="seatbar">${seatHtml}</div></div>`;
+    `<div class="s"><div class="l" title="% of games won from each board seat; ~25% each = balanced (healthy)">winner seat balance <span style="opacity:.6">(~25% each = ok)</span></div><div class="seatbar">${seatHtml}</div></div>`;
 }
 function stat(v,l){return `<div class="s"><div class="v">${v}</div><div class="l">${l}</div></div>`}
 let _arLastGames=null;
@@ -232,9 +241,10 @@ async function drawArena(){
   const live=$('ar-live');
   if(a.last_game_ts){
     const age=Math.max(0,Date.now()/1000-a.last_game_ts);
-    const alive=age<180; // a 16-game batch resolves ~every 10min; <3min = active
-    live.className='ar-live '+(alive?'live-ok':'live-stale');
-    live.innerHTML=(alive?'● live':'○ idle')+` · ${fmtAge(age)} ago`+(nNew?` <span class="ar-pulse">+${nNew}</span>`:'');
+    const active=age<180; // a batch of games resolves ~every 10min; <3min = active
+    live.className='ar-live '+(active?'live-ok':'live-stale');
+    live.title='games resolve in ~10-min bursts; a few minutes between updates is normal';
+    live.innerHTML=(active?'● new games landing':'○ between batches')+` · last ${fmtAge(age)} ago`+(nNew?` <span class="ar-pulse">+${nNew}</span>`:'');
   } else { live.className='ar-live'; live.textContent=''; }
   // head line: rate/ETA only when real (iter_7+), else just the decisive split
   const rate=a.games_per_hour?`${a.games_per_hour}/hr · `:'';
@@ -252,7 +262,7 @@ async function drawArena(){
     const req=(100*a.required_winrate_from_here).toFixed(0), act=(100*a.actual_winrate).toFixed(0);
     const behind=a.required_winrate_from_here>a.actual_winrate;
     clinch.className='ar-sub '+(behind?'hold':'promote');
-    clinch.innerHTML=`Needs <b>${req}%</b> of the ~${a.remaining_decisive_est} remaining to clinch · winning <b>${act}%</b> ${behind?'<span style="color:#fbbf24">▼ off pace</span>':'<span style="color:#4ade80">▲ on pace</span>'}`;
+    clinch.innerHTML=`To reach the 65% bar: must win <b>${req}%</b> of the ~${a.remaining_decisive_est} remaining <i>decisive</i> games (draws don't count) · winning <b>${act}%</b> so far ${behind?'<span style="color:#fbbf24">▼ off pace</span>':'<span style="color:#4ade80">▲ on pace</span>'}`;
   }
 
   // ---- VP-margin (hidden until tagged data exists) ----
@@ -268,9 +278,9 @@ async function drawArena(){
   const mom=a.momentum||{}, cliff=a.draw_rate_cliff_ratio;
   const cliffCls=cliff>=1?'dg-red':cliff>=0.9?'dg-amber':'';
   $('ar-stats').innerHTML=
-    `<span class="${cliffCls}">${(100*a.draw_rate).toFixed(0)}% draws / 40% cliff</span>`+
-    `<span>last-${mom.window||0}: ${mom.cand||0} cand</span>`+
-    `<span title="hit the 10-min cap, decided by victory-point lead — normal in the arena">${(100*a.timeout_rate).toFixed(0)}% VP-decided</span>`;
+    `<span class="${cliffCls}" title="if draws exceed 40% the verdict becomes 'invalid' (untrustworthy)">${(100*a.draw_rate).toFixed(0)}% draws <span style="opacity:.6">(invalid if &gt;40%)</span></span>`+
+    `<span title="of the last ${mom.window||0} decisive games, this many went to the candidate">recent form: ${mom.cand||0}/${mom.window||0} to cand</span>`+
+    `<span title="hit the 10-min cap, decided by victory-point lead — normal in the arena">${(100*a.timeout_rate).toFixed(0)}% VP-decided <span style="opacity:.6">(normal)</span></span>`;
   drawSeatBias(a.seat_bias);
   $('ar-feed').innerHTML=(a.recent||[]).slice(0,10).map(r=>{
     const cls=r.winner_role==='cand'?'cand':r.winner_role==='champ'?'champ':'draw';
@@ -333,25 +343,30 @@ function drawChart(its){
     `<text x="${W-padR+3}" y="${barY+3}" fill="#fbbf24" font-size="9">65% promote</text>`;
   // right-axis winrate ticks
   [0,0.5,1].forEach(v=>{svg.innerHTML+=`<text x="${W-padR+3}" y="${yW(v)+3}" fill="#fbbf24" font-size="9" opacity=".7">${(100*v).toFixed(0)}%</text>`;});
-  // LEFT axis = Elo, auto-scaled to range (padded)
+  // LEFT axis = Elo. Guard against a TINY range looking like huge movement:
+  // if Elo barely moved (<5 pts), pad the axis to ±5 so a 1-point wiggle reads
+  // as the near-flat line it actually is (Opus legibility catch).
   const elos=its.map(it=>it.elo).filter(v=>v!=null);
-  const lo=Math.min(...elos), hi=Math.max(...elos), span=(hi-lo)||1;
+  let lo=Math.min(...elos), hi=Math.max(...elos);
+  const realSpan=hi-lo;
+  if(realSpan<10){const mid=(lo+hi)/2;lo=mid-5;hi=mid+5;}
+  const span=(hi-lo)||1;
   const yE=v=>H-padB-((v-lo)/span)*(H-padT-padB);
   [lo,(lo+hi)/2,hi].forEach(v=>{svg.innerHTML+=`<text x="4" y="${yE(v)+3}" fill="#2563eb" font-size="9" opacity=".8">${v.toFixed(0)}</text>`;});
   const eloPts=its.filter(it=>it.elo!=null).map((it,i)=>`${xs[i]},${yE(it.elo)}`).join(' ');
   svg.innerHTML+=`<polyline points="${eloPts}" fill="none" stroke="#2563eb" stroke-width="2"/>`;
+  if(realSpan<2) svg.innerHTML+=`<text x="${(padL+W-padR)/2}" y="${H-padB-8}" fill="#8b93a3" font-size="9" text-anchor="middle">Elo essentially flat (±${realSpan.toFixed(1)}) — no promotion yet</text>`;
   const wrPts=its.map((it,i)=>`${xs[i]},${yW(it.winrate)}`).join(' ');
   svg.innerHTML+=`<polyline points="${wrPts}" fill="none" stroke="#fbbf24" stroke-width="1.5" opacity=".7"/>`;
   its.forEach((it,i)=>{
     if(it.elo!=null) svg.innerHTML+=`<circle cx="${xs[i]}" cy="${yE(it.elo)}" r="3.5" fill="${it.verdict==='promote'?'#4ade80':it.verdict==='invalid'?'#f87171':'#2563eb'}"/>`;
     svg.innerHTML+=`<text x="${xs[i]}" y="${H-8}" fill="#8b93a3" font-size="10" text-anchor="middle">iter ${it.iter}</text>`;
   });
-  // axis titles + legend
-  svg.innerHTML+=`<text x="4" y="12" fill="#2563eb" font-size="10">◀ Elo (champion strength)</text>`+
-    `<text x="${W-padR+3}" y="12" fill="#fbbf24" font-size="10">winrate ▶</text>`+
-    `<text x="${padL}" y="12" fill="#4ade80" font-size="9">● promote</text>`+
-    `<text x="${padL+62}" y="12" fill="#f87171" font-size="9">● invalid</text>`+
-    `<text x="${padL+120}" y="12" fill="#2563eb" font-size="9">● hold</text>`;
+  // axis titles (row 1) + dot legend (row 2) — separate rows so they can't collide
+  svg.innerHTML+=`<text x="4" y="11" fill="#2563eb" font-size="10">◀ Elo (champion strength, blue)</text>`+
+    `<text x="${W-padR+3}" y="11" fill="#fbbf24" font-size="10">winrate ▶</text>`+
+    `<text x="${(padL+W-padR)/2}" y="11" fill="#8b93a3" font-size="9" text-anchor="middle">dot = verdict:`+
+    ` <tspan fill="#4ade80">●promote</tspan> <tspan fill="#f87171">●invalid</tspan> <tspan fill="#2563eb">●hold</tspan></text>`;
 }
 tick(); setInterval(tick,5000);
 </script></body></html>
