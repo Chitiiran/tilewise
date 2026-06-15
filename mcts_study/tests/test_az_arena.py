@@ -134,7 +134,7 @@ def test_timeout_credits_vp_leader(monkeypatch):
         def best_action(self, vc):
             return 0
 
-    winner, timed_out = asyncio.run(arena_mod._play_arena_game(
+    winner, timed_out, _vp_m = asyncio.run(arena_mod._play_arena_game(
         game=FakeGame(), seed=1, seating=["cand", "champ", "cand", "champ"],
         mcts_cand=FakeMcts(), mcts_champ=FakeMcts(), sims=1, max_seconds=0.2))
     assert timed_out is True
@@ -185,7 +185,7 @@ def test_timeout_vp_tie_is_draw(monkeypatch):
         def best_action(self, vc):
             return 0
 
-    winner, timed_out = asyncio.run(arena_mod._play_arena_game(
+    winner, timed_out, _vp_m = asyncio.run(arena_mod._play_arena_game(
         game=FakeGame(), seed=1, seating=["cand"] * 4,
         mcts_cand=FakeMcts(), mcts_champ=FakeMcts(), sims=1, max_seconds=0.2))
     assert timed_out is True
@@ -237,7 +237,7 @@ def test_play_arena_game_wall_clock_cap(monkeypatch):
         def best_action(self, vc):
             return 0
 
-    winner, timed_out = asyncio.run(arena_mod._play_arena_game(
+    winner, timed_out, _vp_m = asyncio.run(arena_mod._play_arena_game(
         game=FakeGame(), seed=1, seating=["cand"] * 4,
         mcts_cand=FakeMcts(), mcts_champ=FakeMcts(), sims=1,
         max_seconds=0.2))
@@ -284,7 +284,7 @@ def test_run_arena_sets_active_game_count(tmp_path, monkeypatch):
 
     async def fake_play(*, game, seed, seating, mcts_cand, mcts_champ, sims,
                         max_seconds=None):
-        return 0, False   # candidate (seat 0 in rot 0) wins, not timed out
+        return 0, False, 2   # candidate (seat 0 in rot 0) wins by 2 VP, not timed out
 
     # run_arena imports these locally (keeps the module torch-free); patch at
     # their source modules so the local imports resolve to the fakes.

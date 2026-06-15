@@ -133,7 +133,7 @@ def should_promote(result: ArenaResult, cfg) -> str:
 
 async def _play_arena_game(*, game, seed: int, seating: list[str],
                            mcts_cand, mcts_champ, sims: int,
-                           max_seconds: float | None = None) -> tuple[int, bool]:
+                           max_seconds: float | None = None) -> tuple[int, bool, int]:
     """Returns (winner_seat or -1, timed_out). Mirrors the e10g driver:
     chance fast-path, single-legal fast-path, step cap. A per-game
     wall-clock cap (max_seconds) bounds the rare pathological game that
@@ -147,7 +147,8 @@ async def _play_arena_game(*, game, seed: int, seating: list[str],
     deadline = (_t.monotonic() + max_seconds) if max_seconds else None
     while not state.is_terminal() and steps < max_steps:
         if deadline is not None and _t.monotonic() > deadline:
-            return _vp_leader_margin(state), True   # wall-clock timeout -> VP tiebreak
+            # wall-clock timeout -> VP tiebreak (winner seat + the VP margin)
+            return _vp_leader_margin(state), True, _vp_margin(state)
         if state.is_chance_node():
             outs = state.chance_outcomes()
             r = chance_rng.random()
@@ -171,13 +172,16 @@ async def _play_arena_game(*, game, seed: int, seating: list[str],
         steps += 1
     if not state.is_terminal():
         # Step-cap exit also uses the VP tiebreak.
-        return _vp_leader_margin(state), True
+        return _vp_leader_margin(state), True, _vp_margin(state)
     rs = state.returns()
-    return (rs.index(1.0) if 1.0 in rs else -1), False
+    winner = rs.index(1.0) if 1.0 in rs else -1
+    return winner, False, _vp_margin(state)
 
 
 def _vp_leader_margin(state) -> int:
-    """VP-leader tiebreak with a margin fallback (spec 2026-06-13 §9).
+    """VP-leader tiebreak winner SEAT (spec 2026-06-13 §9). NOTE: despite the
+    legacy name this returns a seat index, not a margin — `_vp_margin` returns
+    the margin. Kept for the call sites that only need the winner.
 
     For timed-out games: top public VP wins; a VP tie is broken by a second
     signal (settlements+cities built), then -1 (draw). The margin fallback cuts
@@ -197,6 +201,16 @@ def _vp_leader_margin(state) -> int:
     best = max(builds(i) for i in leaders)
     tied = [i for i in leaders if builds(i) == best]
     return tied[0] if len(tied) == 1 else -1
+
+
+def _vp_margin(state) -> int:
+    """VP gap between the leader and the runner-up (top - second).
+
+    The only skill-vs-luck signal in a 100%-timeout arena: a 1-VP squeaker is
+    near-noise, a 4-VP win is dominance (Opus critique 2026-06-15). 0 on a VP
+    tie (the game was decided by the builds tiebreak or is a draw)."""
+    vps = sorted((int(state._engine.vp(i)) for i in range(4)), reverse=True)
+    return vps[0] - vps[1]
 
 
 def _vp_leader(state) -> int:
@@ -264,13 +278,15 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
                                        rng=np.random.default_rng(seed + 11))
                     mcts_x = AsyncMcts(evaluator=ev_champ, c=1.4,
                                        rng=np.random.default_rng(seed + 13))
-                    winner, timed_out = await _play_arena_game(
+                    winner, timed_out, vp_margin = await _play_arena_game(
                         game=game, seed=seed, seating=seating,
                         mcts_cand=mcts_c, mcts_champ=mcts_x, sims=cfg.arena_sims,
                         max_seconds=getattr(cfg, "arena_game_max_seconds", None))
+                    import time as _tt
                     rec = {"seed": seed, "rot": rot, "winner_seat": winner,
                            "winner_role": (seating[winner] if winner >= 0 else None),
-                           "timed_out": timed_out}
+                           "timed_out": timed_out, "vp_margin": vp_margin,
+                           "ts": _tt.time()}   # wall-clock finish (live rate/ETA)
                     f.write(json.dumps(rec) + "\n")
                     f.flush()
                     done[seed] = rec

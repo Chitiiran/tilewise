@@ -309,6 +309,141 @@ def test_selfplay_live_progress_rate_quality_and_seat_balance(tmp_path):
     assert "eta_hours" in live
 
 
+def test_arena_live_running_verdict(tmp_path):
+    """Live arena view for the running gate: running winrate over DECISIVE games,
+    progress toward arena_games, projected verdict, draw/timeout rates, and a
+    recent-games stream. Reads results.jsonl as it grows."""
+    from catan_az.analytics import arena_live
+    d = tmp_path / "iter_6" / "arena"
+    d.mkdir(parents=True)
+    rows = [
+        {"seed": 1, "rot": 0, "winner_seat": 0, "winner_role": "cand", "timed_out": True},
+        {"seed": 2, "rot": 0, "winner_seat": 1, "winner_role": "champ", "timed_out": True},
+        {"seed": 3, "rot": 1, "winner_seat": 0, "winner_role": "cand", "timed_out": True},
+        {"seed": 4, "rot": 1, "winner_seat": -1, "winner_role": None, "timed_out": True},  # draw
+    ]
+    (d / "results.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    class _Cfg:
+        arena_games = 300
+        promote_threshold = 0.65
+        arena_max_draw_rate = 0.40
+        arena_min_decisive = 40
+
+    a = arena_live(tmp_path, iter_n=6, cfg=_Cfg())
+    assert a["available"] is True
+    assert a["games_played"] == 4
+    assert a["target"] == 300
+    assert a["cand_wins"] == 2 and a["champ_wins"] == 1 and a["draws"] == 1
+    # running winrate over DECISIVE games (draws excluded): 2/3
+    assert round(a["winrate_decisive"], 3) == round(2 / 3, 3)
+    assert a["draw_rate"] == 0.25
+    assert a["timeout_rate"] == 1.0
+    # projected verdict given the bar — not enough decisive yet (< min_decisive)
+    assert a["projected_verdict"] in {"promote", "hold", "invalid", "pending"}
+    # recent-games stream (most recent first), capped
+    assert a["recent"][0]["seed"] == 4
+    assert len(a["recent"]) <= 12
+
+
+def test_arena_live_wilson_ci_clinch_margin_momentum(tmp_path):
+    """Iteration 2 (Opus critique): Wilson CI on the winrate (honesty),
+    clinch/eliminate tracker (suspense), VP-margin aggregates (skill-vs-luck),
+    rolling momentum, and a too-close-to-call flag when the CI straddles the bar."""
+    from catan_az.analytics import arena_live
+    d = tmp_path / "iter_6" / "arena"
+    d.mkdir(parents=True)
+    # 50 games: 18 cand (avg margin 3), 17 champ (avg margin 1), 15 draws
+    rows = []
+    for i in range(18):
+        rows.append({"seed": i, "rot": i % 4, "winner_seat": 0,
+                     "winner_role": "cand", "timed_out": True, "vp_margin": 3})
+    for i in range(17):
+        rows.append({"seed": 100 + i, "rot": i % 4, "winner_seat": 1,
+                     "winner_role": "champ", "timed_out": True, "vp_margin": 1})
+    for i in range(15):
+        rows.append({"seed": 200 + i, "rot": i % 4, "winner_seat": -1,
+                     "winner_role": None, "timed_out": True, "vp_margin": 0})
+    (d / "results.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    class _Cfg:
+        arena_games = 300
+        promote_threshold = 0.65
+        arena_max_draw_rate = 0.40
+        arena_min_decisive = 40
+
+    a = arena_live(tmp_path, iter_n=6, cfg=_Cfg())
+    # Wilson 95% CI present, ordered, brackets the point estimate
+    ci = a["winrate_ci"]
+    assert ci["lo"] < a["winrate_decisive"] < ci["hi"]
+    assert 0.0 <= ci["lo"] and ci["hi"] <= 1.0
+    # too-close-to-call: 18/35 = 51% with a wide CI straddles the 65% bar
+    assert a["too_close"] in (True, False)
+    # clinch/eliminate: decisive games cand must win of the remaining to reach bar
+    assert "clinch_wins_needed" in a and "remaining_decisive_est" in a
+    # VP-margin aggregates (skill-vs-luck): cand wins bigger than champ here
+    assert round(a["mean_cand_margin"], 1) == 3.0
+    assert round(a["mean_champ_margin"], 1) == 1.0
+    # momentum over a rolling window of recent decisive games
+    assert "momentum" in a and "window" in a["momentum"]
+    # draw-rate cliff: 15/50 = 30% vs 40% threshold -> ratio to cliff
+    assert round(a["draw_rate_cliff_ratio"], 3) == round(0.30 / 0.40, 3)
+
+
+def test_arena_live_clinched_and_pace_and_rate(tmp_path):
+    """Iteration 3 (Opus #4): explicit `clinched` state, required-vs-actual pace
+    framing, rate/ETA from per-game timestamps, margin delta. Edge: already
+    clinched -> cand can't be caught."""
+    from catan_az.analytics import arena_live
+    d = tmp_path / "iter_6" / "arena"
+    d.mkdir(parents=True)
+    # cand has won 40 of 45 decisive; only 5 games remain -> already clinched 65%
+    rows = []
+    t0 = 1_000_000.0
+    for i in range(40):
+        rows.append({"seed": i, "winner_seat": 0, "winner_role": "cand",
+                     "timed_out": True, "vp_margin": 3, "ts": t0 + i * 60})
+    for i in range(5):
+        rows.append({"seed": 100 + i, "winner_seat": 1, "winner_role": "champ",
+                     "timed_out": True, "vp_margin": 1, "ts": t0 + (40 + i) * 60})
+    (d / "results.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    class _Cfg:
+        arena_games = 50          # only 5 games remain
+        promote_threshold = 0.65
+        arena_max_draw_rate = 0.40
+        arena_min_decisive = 40
+
+    a = arena_live(tmp_path, iter_n=6, cfg=_Cfg())
+    # already clinched: 40/45 = 89%, even if champ wins all 5 remaining -> 40/50=80%>65%
+    assert a["clinched"] is True
+    assert a["projected_verdict"] == "promote"
+    # required-from-here pace vs actual
+    assert "required_winrate_from_here" in a
+    assert round(a["actual_winrate"], 2) == round(40 / 45, 2)
+    # rate/ETA from timestamps (games over the ts span)
+    assert a["games_per_hour"] > 0
+    assert "eta_hours" in a
+    # margin delta = mean_cand - mean_champ = 3 - 1 = 2
+    assert round(a["margin_delta"], 1) == 2.0
+    # margin histogram present
+    assert "margin_hist" in a
+
+
+def test_arena_live_unavailable_when_no_results(tmp_path):
+    from catan_az.analytics import arena_live
+
+    class _Cfg:
+        arena_games = 300
+        promote_threshold = 0.65
+        arena_max_draw_rate = 0.40
+        arena_min_decisive = 40
+
+    a = arena_live(tmp_path, iter_n=6, cfg=_Cfg())
+    assert a["available"] is False
+    assert a["games_played"] == 0
+
+
 def test_selfplay_live_unavailable_before_any_shard(tmp_path):
     from catan_az.analytics import selfplay_live
     live = selfplay_live(tmp_path, iter_n=6, target=1000)

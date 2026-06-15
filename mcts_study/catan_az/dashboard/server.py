@@ -71,6 +71,19 @@ def create_dashboard(*, loop_root, web_port: int = 8000, cfg=None) -> FastAPI:
         from catan_az import analytics
         return analytics.seat_bias(loop_root, iter_n=iter_n)
 
+    @app.get("/api/arena-live")
+    def arena_live():
+        """Live arena gate view (running winrate, projected verdict, recent
+        stream) keyed off the live iter. The suspense stage of the loop."""
+        from catan_az import analytics
+        live = analytics.liveness(loop_root)
+        it = live.get("iter")
+        if it is None:
+            return {"available": False, "games_played": 0}
+        out = analytics.arena_live(loop_root, iter_n=it, cfg=cfg)
+        out["seat_bias"] = analytics.seat_bias(loop_root, iter_n=it)
+        return out
+
     @app.get("/")
     def index():
         return FileResponse(_STATIC / "index.html")

@@ -83,6 +83,169 @@ def holds_since_promotion(loop_root) -> int:
     return n
 
 
+def arena_live(loop_root, *, iter_n: int, cfg) -> dict:
+    """LIVE arena view for the running gate — the most suspenseful stage (a
+    multi-hour 300-game series that decides promote/hold/invalid). Reads
+    results.jsonl as it grows and reports the running winrate over DECISIVE
+    games, progress toward the target, the PROJECTED verdict against the bar,
+    draw/timeout rates, and a recent-games stream for the live feed."""
+    p = Path(loop_root) / f"iter_{iter_n}" / "arena" / "results.jsonl"
+    if not p.exists():
+        return {"available": False, "games_played": 0,
+                "target": getattr(cfg, "arena_games", 0)}
+    rows = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue                       # crash-safe: skip torn final line
+    if not rows:
+        return {"available": False, "games_played": 0,
+                "target": getattr(cfg, "arena_games", 0)}
+    cand = sum(1 for r in rows if r.get("winner_role") == "cand")
+    champ = sum(1 for r in rows if r.get("winner_role") == "champ")
+    draws = sum(1 for r in rows if r.get("winner_role") not in ("cand", "champ"))
+    timeouts = sum(1 for r in rows if r.get("timed_out"))
+    n = len(rows)
+    decisive = cand + champ
+    winrate = (cand / decisive) if decisive else 0.0
+    draw_rate = draws / n
+    target = int(getattr(cfg, "arena_games", 0))
+    bar = float(getattr(cfg, "promote_threshold", 0.65))
+    max_draw = float(getattr(cfg, "arena_max_draw_rate", 0.40))
+    min_dec = int(getattr(cfg, "arena_min_decisive", 40))
+
+    # Wilson 95% CI on the decisive winrate (Opus #2: an honest band, not a
+    # point estimate that flips). z=1.96.
+    ci = _wilson_ci(cand, decisive, z=1.96)
+    too_close = ci["lo"] <= bar <= ci["hi"]   # CI straddles the promote bar
+
+    # Clinch/eliminate (Opus #2/#4): of the decisive games left, how many must
+    # cand win to reach the bar? Remaining decisive estimated via the live draw
+    # rate (at 40% draws only ~60% of remaining games even count).
+    remaining = max(0, target - n)
+    rem_dec = int(round(remaining * (1.0 - draw_rate)))
+    final_dec = decisive + rem_dec
+    need = (int(math.ceil(bar * final_dec)) - cand) if final_dec else 0
+    clinch = max(0, need)
+    clinch_possible = need <= rem_dec
+    # Already clinched: cand reaches the bar even if it loses every remaining
+    # decisive game (need <= 0). The most exciting state the board can show.
+    clinched = (need <= 0 and decisive >= min_dec)
+    # Required winrate from here vs actual (Opus #4: the suspense is the pace gap)
+    required_from_here = (need / rem_dec) if rem_dec > 0 else (0.0 if clinched else 1.0)
+    actual_winrate = winrate
+
+    # VP-margin aggregates (Opus #1: skill vs luck in a 100%-timeout arena).
+    cand_m = [r["vp_margin"] for r in rows
+              if r.get("winner_role") == "cand" and r.get("vp_margin") is not None]
+    champ_m = [r["vp_margin"] for r in rows
+               if r.get("winner_role") == "champ" and r.get("vp_margin") is not None]
+    mean_cand_margin = (sum(cand_m) / len(cand_m)) if cand_m else None
+    mean_champ_margin = (sum(champ_m) / len(champ_m)) if champ_m else None
+    # margin delta (Opus #5: one signed number — cand wins bigger than it loses?)
+    margin_delta = ((mean_cand_margin - mean_champ_margin)
+                    if (mean_cand_margin is not None
+                        and mean_champ_margin is not None) else None)
+
+    def _hist(ms):
+        h = {"1": 0, "2": 0, "3": 0, "4+": 0}
+        for m in ms:
+            h["4+" if m >= 4 else str(m)] = h.get("4+" if m >= 4 else str(m), 0) + 1
+        return h
+    margin_hist = {"cand": _hist([m for m in cand_m if m >= 1]),
+                   "champ": _hist([m for m in champ_m if m >= 1])}
+    margins_available = bool(cand_m or champ_m)
+
+    # Live rate / ETA from per-game timestamps (Opus #3: the arena lacked any).
+    ts = [r["ts"] for r in rows if isinstance(r.get("ts"), (int, float))]
+    games_per_hour, eta_hours, last_game_ts = 0.0, None, None
+    if len(ts) >= 2:
+        span_h = max((max(ts) - min(ts)) / 3600.0, 1e-9)
+        games_per_hour = round(len(ts) / span_h, 1)
+        last_game_ts = max(ts)
+        if games_per_hour > 0:
+            eta_hours = round(max(0, target - n) / games_per_hour, 2)
+
+    # Momentum (Opus #3): rolling winrate over the last K decisive games.
+    K = 10
+    dec_recent = [r for r in rows if r.get("winner_role") in ("cand", "champ")][-K:]
+    m_cand = sum(1 for r in dec_recent if r.get("winner_role") == "cand")
+    momentum = {"window": len(dec_recent), "cand": m_cand,
+                "winrate": (m_cand / len(dec_recent)) if dec_recent else 0.0}
+
+    # Draw-rate cliff (Opus #4): how close to the invalid threshold.
+    cliff_ratio = (draw_rate / max_draw) if max_draw else 0.0
+
+    if draw_rate > max_draw and n >= min_dec:
+        projected = "invalid"
+    elif clinched:
+        projected = "promote"          # mathematically locked, even if CI is wide
+    elif decisive < min_dec or too_close:
+        projected = "pending"          # honest: don't call it while the CI straddles
+    elif winrate > bar:
+        projected = "promote"
+    else:
+        projected = "hold"
+
+    recent = [{"seed": r.get("seed"), "winner_role": r.get("winner_role"),
+               "winner_seat": r.get("winner_seat"),
+               "vp_margin": r.get("vp_margin"),
+               "timed_out": bool(r.get("timed_out"))}
+              for r in rows[-16:][::-1]]
+    return {
+        "available": True,
+        "games_played": n,
+        "target": target,
+        "cand_wins": cand, "champ_wins": champ, "draws": draws,
+        "decisive": decisive,
+        "winrate_decisive": winrate,
+        "winrate_ci": ci,
+        "too_close": too_close,
+        "draw_rate": draw_rate,
+        "draw_rate_cliff_ratio": cliff_ratio,
+        "timeout_rate": timeouts / n,
+        "promote_bar": bar,
+        "min_decisive": min_dec,
+        "remaining_decisive_est": rem_dec,
+        "clinch_wins_needed": clinch,
+        "clinch_possible": clinch_possible,
+        "clinched": clinched,
+        "required_winrate_from_here": required_from_here,
+        "actual_winrate": actual_winrate,
+        "mean_cand_margin": mean_cand_margin,
+        "mean_champ_margin": mean_champ_margin,
+        "margin_delta": margin_delta,
+        "margin_hist": margin_hist,
+        "margins_available": margins_available,
+        "games_per_hour": games_per_hour,
+        "eta_hours": eta_hours,
+        "last_game_ts": last_game_ts,
+        "momentum": momentum,
+        "projected_verdict": projected,
+        "recent": recent,
+    }
+
+
+def _wilson_ci(wins: int, n: int, *, z: float = 1.96) -> dict:
+    """Wilson score 95% interval for a binomial proportion — well-behaved at
+    small n / extreme p (unlike normal approx). Returns {lo, hi, center}."""
+    if n == 0:
+        return {"lo": 0.0, "hi": 1.0, "center": 0.0}
+    p = wins / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = (z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / denom
+    return {"lo": max(0.0, center - half), "hi": min(1.0, center + half),
+            "center": center}
+
+
+def _ceil_div(a: int, b: int) -> int:
+    return -(-a // b) if b else 0
+
+
 def seat_bias(loop_root, *, iter_n: int) -> dict:
     """Per-seat candidate winrate from an iteration's arena results — detects
     whether the gate is measuring skill or board-luck (a candidate that only
