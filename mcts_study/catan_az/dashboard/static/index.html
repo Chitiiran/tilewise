@@ -125,6 +125,7 @@
   <div class="ar-divider"></div>
   <div id="ar-stats" class="ar-diagstrip"></div>
   <div id="ar-seats"></div>
+  <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.5rem">recent games (newest first) — <span style="color:#4ade80">C</span> cand win · <span style="color:#fca5a5">H</span> champ win · <span style="color:#8b93a3">D</span> draw</div>
   <div id="ar-feed" class="ar-feed"></div>
 </div>
 
@@ -208,7 +209,7 @@ async function drawSelfplay(){
   const frac=sp.fraction||0;
   $('sp-bar').firstChild.style.width=(100*frac)+'%';
   const eta=(sp.eta_hours!=null)?(sp.eta_hours<1?Math.round(sp.eta_hours*60)+'m':sp.eta_hours.toFixed(1)+'h'):'?';
-  $('sp-head').textContent=`${sp.games_done} / ${sp.target} games · ${(100*frac).toFixed(1)}% · ${sp.games_per_hour}/hr · ETA ${eta}`;
+  $('sp-head').textContent=`${sp.games_done} / ${sp.target} games (${(100*frac).toFixed(1)}% complete) · generating ${sp.games_per_hour}/hr · ETA ${eta}`;
   // winner-seat balance bar (board fairness — a healthy run is ~even)
   const sw=sp.seat_wins||{}, tot=Object.values(sw).reduce((a,b)=>a+b,0)||1;
   const seatHtml=[0,1,2,3].map(k=>{const w=sw[k]||0;const pct=Math.round(100*w/tot);
@@ -305,7 +306,7 @@ function drawCiBar(a){
   const lo=(100*a.winrate_ci.lo), hi=(100*a.winrate_ci.hi);
   const pt=(100*a.winrate_decisive), bar=(100*a.promote_bar);
   el.innerHTML=
-    `<div class="ci-title">Candidate decisive winrate vs promote bar</div>`+
+    `<div class="ci-title">Candidate winrate = ${a.cand_wins} of ${a.decisive} decisive games (draws excluded) vs the 65% promote bar</div>`+
     `<div class="ci-track">`+
       `<div class="ci-mid" style="left:50%"></div>`+
       `<div class="ci-range" style="left:${lo}%;width:${Math.max(0,hi-lo)}%" title="95% CI ${lo.toFixed(0)}–${hi.toFixed(0)}%"></div>`+
@@ -326,7 +327,7 @@ function drawSeatBias(sb){
     const wr=dec?Math.round(100*(e.cand_wins||0)/dec):null;
     return `<span title="rotation ${r}: cand ${e.cand_wins||0}/${dec} decisive">R${r}<br>${wr==null?'–':wr+'%'}<sub style="opacity:.6;font-size:.55rem">${dec?'n'+dec:''}</sub></span>`;
   }).join('');
-  el.innerHTML=`<div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.4rem">cand winrate by seating rotation (fairness check · n = decisive games)</div><div class="seatbar">${cells}</div>`;
+  el.innerHTML=`<div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.4rem" title="cand should win similarly across all 4 seat rotations; a big gap = seat luck, not skill. '–' = no decisive games in that rotation yet.">cand winrate per seating rotation · fairness check (similar across R0–R3 = fair · “–” = no games yet · ₙ = sample size)</div><div class="seatbar">${cells}</div>`;
 }
 function drawChart(its){
   // NEW-1 fix: plot BOTH Elo (the time-to-strength decision variable) and
