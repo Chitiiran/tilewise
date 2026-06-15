@@ -133,17 +133,19 @@
   <div class="muted" style="font-size:.75rem;margin:-.3rem 0 .5rem">flags reference the iteration in the message (may be a PAST iter); they persist as a record until that condition clears</div>
   <div id="flags"><span class="ok">✓ no alarms</span></div></div>
 
-<div class="card"><h2>Elo &amp; winrate trend</h2><svg id="chart" viewBox="0 0 1040 160" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px"></svg></div>
+<div class="card"><h2>Elo &amp; winrate trend</h2>
+  <div class="muted" style="font-size:.72rem;margin:-.3rem 0 .3rem">completed (published) iterations only — the live iteration appears once its arena finishes</div>
+  <svg id="chart" viewBox="0 0 1040 160" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px"></svg></div>
 
 <div class="card"><h2>Iterations</h2>
   <table id="metrics"><thead><tr>
-    <th title="iteration number">iter</th><th title="reigning champion during this iteration">champion</th>
+    <th title="iteration number">iter</th><th title="the champion the candidate CHALLENGED this iteration">vs champion</th>
     <th title="candidate's win % over decisive games (draws excluded)">winrate</th>
     <th title="% of arena games that ended in a draw">draws</th>
     <th title="% decided by VP-lead at the 10-min cap (normal ~100%)">timeout</th>
     <th title="games with a winner (not a draw)">decisive</th>
-    <th title="champion Elo after this iteration">elo</th>
-    <th title="training epochs run before early-stop">train epochs</th>
+    <th title="the CHAMPION's Elo after this iteration (the new champion if promoted, else unchanged)">champ Elo after</th>
+    <th title="training epochs run before early-stop">epochs</th>
     <th title="top-move accuracy on held-out data (0-1, higher better)">val_top1</th>
     <th title="promote / hold / invalid">verdict</th>
   </tr></thead><tbody></tbody></table>
@@ -198,6 +200,21 @@ async function tick(){
       `<td>${(it.timeout_rate*100).toFixed(0)}%</td><td>${it.decisive}</td>`+
       `<td>${elo}</td><td>${it.epochs_trained??''}</td>`+
       `<td>${v1}</td><td class="${it.verdict}">${it.verdict}</td>`;
+    tb.appendChild(tr);
+  }
+  // Append the LIVE in-flight iteration so the table matches the header's iter
+  // number (the journal only has PUBLISHED iters, so a running iter is missing).
+  const liveIter=s.liveness&&s.liveness.iter;
+  const journaled=new Set(its.map(x=>x.iter));
+  if(liveIter && !journaled.has(liveIter)){
+    const al=await j('/api/arena-live');
+    const stage=(s.liveness.stage||'').replace('iterate','train/arena');
+    const wr=(al&&al.available)?`${(100*al.winrate_decisive).toFixed(0)}% (live)`:'—';
+    const dec=(al&&al.available)?al.decisive:'—';
+    const tr=document.createElement('tr'); tr.style.opacity='.75';
+    tr.innerHTML=`<td>${liveIter} ⟳</td><td>${(s.champion&&s.champion.name)||''}</td>`+
+      `<td>${wr}</td><td>—</td><td>—</td><td>${dec}</td><td>—</td><td>—</td><td>—</td>`+
+      `<td class="pending">running · ${stage}</td>`;
     tb.appendChild(tr);
   }
   drawChart(its);
