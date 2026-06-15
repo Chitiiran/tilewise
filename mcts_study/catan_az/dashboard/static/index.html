@@ -54,8 +54,40 @@
  .mh-row:nth-child(1) .mh-bar>span{background:#4ade80} .mh-row:nth-child(2) .mh-bar>span{background:#fca5a5}
  .mh-bar>span:nth-child(1){opacity:.45}.mh-bar>span:nth-child(2){opacity:.62}.mh-bar>span:nth-child(3){opacity:.8}.mh-bar>span:nth-child(4){opacity:1}
  .mh-leg{font-size:.62rem;color:#8b93a3;margin-top:.15rem}
+ .gloss{background:#161922;border:1px solid #2a2e38;border-radius:10px;padding:.4rem 1rem;margin:0 0 1rem}
+ .gloss summary{cursor:pointer;font-size:.9rem;color:#8b93a3;font-weight:600;list-style:none}
+ .gloss summary::before{content:'▸ ';color:#2563eb} .gloss[open] summary::before{content:'▾ '}
+ .gloss .gbody{margin:.6rem 0 .3rem;font-size:.84rem;line-height:1.5;color:#cbd5e1}
+ .gloss .gbody b{color:#e6e6e6} .gloss .gbody .gk{color:#4ade80;font-weight:600}
+ .gloss .gcols{display:grid;grid-template-columns:1fr 1fr;gap:.3rem 1.4rem;margin-top:.5rem}
+ .gloss .gcols div{font-size:.8rem;color:#cbd5e1} .gloss .gcols .gt{color:#fbbf24;font-weight:600}
 </style></head><body>
 <h1>Catan AZ — Live Analytics</h1>
+<details class="gloss"><summary>What am I looking at? — glossary &amp; how to read this</summary>
+  <div class="gbody">
+    This watches an <b>AlphaZero training loop</b> teaching a Catan bot. Each <span class="gk">iteration</span> runs 3 stages:
+    <b>(1) self-play</b> — the current net plays 1000 games against itself to make training data;
+    <b>(2) train</b> — a new "candidate" net learns from those games;
+    <b>(3) arena</b> — the candidate plays 300 games vs the reigning <b>champion</b>; if it wins clearly it's <b>promoted</b> to champion. Then repeat.
+    <div class="gcols">
+      <div><span class="gt">champion</span> the current best net (the bot everyone plays)</div>
+      <div><span class="gt">cand / champ</span> candidate (challenger) vs champion (defender)</div>
+      <div><span class="gt">winrate</span> % of <i>decisive</i> games the candidate won (draws excluded)</div>
+      <div><span class="gt">decisive</span> games with a winner (not a draw)</div>
+      <div><span class="gt">Elo</span> chess-style strength score; 1000 = the starting baseline</div>
+      <div><span class="gt">verdict</span> <span style="color:#4ade80">promote</span> (cand is better) · <span style="color:#fbbf24">hold</span> (not better enough) · <span style="color:#f87171">invalid</span> (too many draws to trust)</div>
+      <div><span class="gt">timeout (arena)</span> game hit the 10-min cap → decided by who led on victory-points. ~100% here is normal (evenly-matched nets rarely finish)</div>
+      <div><span class="gt">timed-out (self-play)</span> a game that ran absurdly long; ~0% is healthy</div>
+      <div><span class="gt">S0–S3</span> board seats 0–3 (self-play seat-balance check)</div>
+      <div><span class="gt">R0–R3</span> the 4 seating rotations in the arena (fairness check)</div>
+      <div><span class="gt">C / H / D</span> recent arena games: <span style="color:#4ade80">C</span>and win · <span style="color:#fca5a5">H</span>=champ win · <span style="color:#8b93a3">D</span>raw</div>
+      <div><span class="gt">val_top1</span> training accuracy: how often the net's top move matches the data (0–1, higher=better)</div>
+      <div><span class="gt">promote bar 65%</span> the candidate must beat 65% winrate to be promoted</div>
+      <div><span class="gt">draws / 40% cliff</span> if the draw rate exceeds 40% the verdict becomes "invalid"</div>
+    </div>
+    <div style="margin-top:.5rem;color:#8b93a3;font-size:.78rem">Note: the <b>iter number</b> (e.g. iter 6) counts every iteration ever run; the trend chart &amp; table show only iterations that <i>finished their arena</i>, so they lag the live iter.</div>
+  </div>
+</details>
 
 <div class="grid">
   <div class="card"><h2>Run status</h2>
@@ -102,8 +134,15 @@
 
 <div class="card"><h2>Iterations</h2>
   <table id="metrics"><thead><tr>
-    <th>iter</th><th>champion</th><th>winrate</th><th>draws</th><th>timeout</th>
-    <th>decisive</th><th>elo</th><th>train epochs</th><th>val_top1</th><th>verdict</th>
+    <th title="iteration number">iter</th><th title="reigning champion during this iteration">champion</th>
+    <th title="candidate's win % over decisive games (draws excluded)">winrate</th>
+    <th title="% of arena games that ended in a draw">draws</th>
+    <th title="% decided by VP-lead at the 10-min cap (normal ~100%)">timeout</th>
+    <th title="games with a winner (not a draw)">decisive</th>
+    <th title="champion Elo after this iteration">elo</th>
+    <th title="training epochs run before early-stop">train epochs</th>
+    <th title="top-move accuracy on held-out data (0-1, higher better)">val_top1</th>
+    <th title="promote / hold / invalid">verdict</th>
   </tr></thead><tbody></tbody></table>
 </div>
 
@@ -166,9 +205,9 @@ async function drawSelfplay(){
   const seatHtml=[0,1,2,3].map(k=>{const w=sw[k]||0;const pct=Math.round(100*w/tot);
     return `<span>S${k}<br>${pct}%</span>`}).join('');
   $('sp-stats').innerHTML=
-    stat(sp.mean_length.toFixed(0),'mean game length')+
-    stat(sp.max_length,'longest game')+
-    stat((100*sp.timed_out_fraction).toFixed(0)+'%','timed out')+
+    stat(sp.mean_length.toFixed(0),'mean game (moves)')+
+    stat(sp.max_length,'longest game (moves)')+
+    stat((100*sp.timed_out_fraction).toFixed(0)+'%','ran-away games (0% = healthy)')+
     `<div class="s"><div class="l">winner seat balance</div><div class="seatbar">${seatHtml}</div></div>`;
 }
 function stat(v,l){return `<div class="s"><div class="v">${v}</div><div class="l">${l}</div></div>`}
@@ -231,7 +270,7 @@ async function drawArena(){
   $('ar-stats').innerHTML=
     `<span class="${cliffCls}">${(100*a.draw_rate).toFixed(0)}% draws / 40% cliff</span>`+
     `<span>last-${mom.window||0}: ${mom.cand||0} cand</span>`+
-    `<span>${(100*a.timeout_rate).toFixed(0)}% timeouts</span>`;
+    `<span title="hit the 10-min cap, decided by victory-point lead — normal in the arena">${(100*a.timeout_rate).toFixed(0)}% VP-decided</span>`;
   drawSeatBias(a.seat_bias);
   $('ar-feed').innerHTML=(a.recent||[]).slice(0,10).map(r=>{
     const cls=r.winner_role==='cand'?'cand':r.winner_role==='champ'?'champ':'draw';
@@ -284,30 +323,35 @@ function drawChart(its){
   // winrate. Elo on a left auto-scaled axis (blue), winrate 0..1 right (amber)
   // with the 65% promote line.
   const svg=$('chart'); svg.innerHTML='';
-  if(!its.length)return;
-  const W=1040,H=160,pad=34;
-  const xs=its.map((_,i)=>pad+i*(W-2*pad)/Math.max(1,its.length-1));
-  // winrate axis 0..1
-  const yW=v=>H-pad-v*(H-2*pad);
+  if(!its.length){svg.innerHTML='<text x="40" y="80" fill="#8b93a3" font-size="13">No completed iterations yet — the chart fills in as each iteration finishes its arena.</text>';return;}
+  const W=1040,H=160,padL=52,padR=64,padT=22,padB=26;
+  const xs=its.map((_,i)=>padL+i*(W-padL-padR)/Math.max(1,its.length-1));
+  // RIGHT axis = winrate 0..100%
+  const yW=v=>H-padB-v*(H-padT-padB);
   const barY=yW(0.65);
-  svg.innerHTML+=`<line x1="${pad}" y1="${barY}" x2="${W-pad}" y2="${barY}" stroke="#fbbf24" stroke-dasharray="4" opacity=".5"/>`+
-    `<text x="${W-pad}" y="${barY-4}" fill="#fbbf24" font-size="10" text-anchor="end">65% promote</text>`;
-  // Elo axis auto-scaled to its range (padded), left
+  svg.innerHTML+=`<line x1="${padL}" y1="${barY}" x2="${W-padR}" y2="${barY}" stroke="#fbbf24" stroke-dasharray="4" opacity=".5"/>`+
+    `<text x="${W-padR+3}" y="${barY+3}" fill="#fbbf24" font-size="9">65% promote</text>`;
+  // right-axis winrate ticks
+  [0,0.5,1].forEach(v=>{svg.innerHTML+=`<text x="${W-padR+3}" y="${yW(v)+3}" fill="#fbbf24" font-size="9" opacity=".7">${(100*v).toFixed(0)}%</text>`;});
+  // LEFT axis = Elo, auto-scaled to range (padded)
   const elos=its.map(it=>it.elo).filter(v=>v!=null);
   const lo=Math.min(...elos), hi=Math.max(...elos), span=(hi-lo)||1;
-  const yE=v=>H-pad-((v-lo)/span)*(H-2*pad);
-  // Elo polyline (blue) — THE headline curve
+  const yE=v=>H-padB-((v-lo)/span)*(H-padT-padB);
+  [lo,(lo+hi)/2,hi].forEach(v=>{svg.innerHTML+=`<text x="4" y="${yE(v)+3}" fill="#2563eb" font-size="9" opacity=".8">${v.toFixed(0)}</text>`;});
   const eloPts=its.filter(it=>it.elo!=null).map((it,i)=>`${xs[i]},${yE(it.elo)}`).join(' ');
   svg.innerHTML+=`<polyline points="${eloPts}" fill="none" stroke="#2563eb" stroke-width="2"/>`;
-  // winrate polyline (amber, thinner)
   const wrPts=its.map((it,i)=>`${xs[i]},${yW(it.winrate)}`).join(' ');
   svg.innerHTML+=`<polyline points="${wrPts}" fill="none" stroke="#fbbf24" stroke-width="1.5" opacity=".7"/>`;
   its.forEach((it,i)=>{
     if(it.elo!=null) svg.innerHTML+=`<circle cx="${xs[i]}" cy="${yE(it.elo)}" r="3.5" fill="${it.verdict==='promote'?'#4ade80':it.verdict==='invalid'?'#f87171':'#2563eb'}"/>`;
-    svg.innerHTML+=`<text x="${xs[i]}" y="${H-8}" fill="#8b93a3" font-size="10" text-anchor="middle">i${it.iter}</text>`;
+    svg.innerHTML+=`<text x="${xs[i]}" y="${H-8}" fill="#8b93a3" font-size="10" text-anchor="middle">iter ${it.iter}</text>`;
   });
-  svg.innerHTML+=`<text x="${pad}" y="12" fill="#2563eb" font-size="10">Elo ${lo.toFixed(0)}–${hi.toFixed(0)} (blue)</text>`+
-    `<text x="${pad+180}" y="12" fill="#fbbf24" font-size="10">winrate (amber)</text>`;
+  // axis titles + legend
+  svg.innerHTML+=`<text x="4" y="12" fill="#2563eb" font-size="10">◀ Elo (champion strength)</text>`+
+    `<text x="${W-padR+3}" y="12" fill="#fbbf24" font-size="10">winrate ▶</text>`+
+    `<text x="${padL}" y="12" fill="#4ade80" font-size="9">● promote</text>`+
+    `<text x="${padL+62}" y="12" fill="#f87171" font-size="9">● invalid</text>`+
+    `<text x="${padL+120}" y="12" fill="#2563eb" font-size="9">● hold</text>`;
 }
 tick(); setInterval(tick,5000);
 </script></body></html>
