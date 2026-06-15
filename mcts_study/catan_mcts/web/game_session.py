@@ -71,7 +71,9 @@ class GameSession:
         self.human_seat = int(setup["human_seat"])
         if not (0 <= self.human_seat <= 3):
             raise ValueError(f"human_seat must be 0..3, got {self.human_seat}")
-        rules = setup.get("rules", {})
+        # `or {}` (not a .get default): SetupSpec.model_dump() always emits
+        # rules=None when the client omits it, and None.get would crash.
+        rules = setup.get("rules") or {}
         self._vp_target = int(rules.get("vp_target", 10))
         self._bonuses = bool(rules.get("bonuses", True))
         self.seed = int(setup.get("seed") if setup.get("seed") is not None

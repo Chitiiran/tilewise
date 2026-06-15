@@ -20,6 +20,7 @@ applied verbatim from action_history but don't advance the move counter.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +57,16 @@ class CatanReplayDataset(Dataset):
         import pandas as pd
         moves = pd.concat(moves_frames, ignore_index=True) if moves_frames else pd.DataFrame()
         games = pd.concat(games_frames, ignore_index=True) if games_frames else pd.DataFrame()
+        # Dedup guard: if multiple self-play procs collide into one run dir
+        # (make_run_dir minute-resolution, hit 2026-06-11), their racing
+        # end-of-run consolidations duplicate rows exactly. A duplicated
+        # position would get double training weight. Each (seed, move_index,
+        # current_player) is one decision, so dedup on that key is lossless.
+        # (games dups already collapse via the seed-keyed dicts below.)
+        if not moves.empty:
+            moves = moves.drop_duplicates(
+                subset=["seed", "move_index", "current_player"]
+            ).reset_index(drop=True)
         # Filter to v2 games only (need action_history).
         if not games.empty:
             games = games[games["schema_version"] >= 2]
@@ -69,11 +80,39 @@ class CatanReplayDataset(Dataset):
             int(s): list(h) for s, h in zip(games["seed"], games["action_history"])
         }
         self._index = moves[moves["seed"].isin(self._winner_by_seed.keys())].reset_index(drop=True)
+        # Build-time divergence filter (2026-06-14): for some self-play games the
+        # action_history replay reproduces FEWER gated decisions for a player
+        # than the recorder logged move rows (recorder<->replay determinism
+        # divergence). Those move rows can never be replayed and would crash
+        # training. Replay each game ONCE (per-game, not per-position) to get
+        # the replayable decision count per player, then drop out-of-range rows.
+        # ~0.05% of positions dropped on the iter-3 corpus. See
+        # 2026-06-14-recorder-replay-divergence-and-recording-roadmap.md.
+        counts_by_seed = {
+            seed: replayable_decision_counts(seed=seed, history=hist)
+            for seed, hist in self._history_by_seed.items()
+        }
+        before = len(self._index)
+        self._index = _drop_divergent_rows(self._index, counts_by_seed
+                                           ).reset_index(drop=True)
+        dropped = before - len(self._index)
+        if dropped:
+            logging.warning("dataset: dropped %d/%d divergent (un-replayable) "
+                            "positions (%.3f%%) — recorder<->replay divergence",
+                            dropped, before, 100.0 * dropped / max(1, before))
 
     def __len__(self) -> int:
         return len(self._index)
 
     def __getitem__(self, i: int):
+        # Resilience (2026-06-14): a single un-replayable position must not
+        # crash training — substitute the next valid neighbor + log. A rare,
+        # non-reproducible replay failure on one self-play game killed iter-3
+        # training after 6h of self-play; defense-in-depth (spec 2026-06-13 §2)
+        # turns that fatal error into a skipped sample.
+        return resilient_getitem(self, i)
+
+    def _replay_getitem(self, i: int):
         row = self._index.iloc[i]
         seed = int(row["seed"])
         move_index = int(row["move_index"])
@@ -141,6 +180,63 @@ class CatanReplayDataset(Dataset):
         legal_mask = torch.from_numpy(np.array(row["legal_action_mask"], dtype=np.bool_))
 
         return data, value, policy, legal_mask
+
+
+def replayable_decision_counts(*, seed: int, history) -> dict:
+    """Replay a game's action_history once and return, per player, how many
+    GATED decisions (len(legal) > 1, that player to move) the history actually
+    reproduces. This is the recorder's move_index ceiling per player: a move
+    row with move_index >= this count diverges and can't be replayed.
+
+    Mirrors CatanReplayDataset's replay gating EXACTLY so the counts match what
+    __getitem__ would reach. (2026-06-14 divergence filter.)"""
+    engine = _engine.Engine(int(seed))
+    counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    for action_id in history:
+        if engine.is_terminal():
+            break
+        a = int(action_id)
+        if engine.is_chance_pending():
+            engine.apply_chance_outcome(a & 0x7FFF_FFFF)
+            continue
+        legal = engine.legal_actions()
+        if len(legal) > 1:
+            counts[int(engine.current_player())] += 1
+        engine.step(a)
+    return counts
+
+
+def _drop_divergent_rows(moves, counts_by_seed):
+    """Drop move rows whose move_index >= the replayable decision count for
+    that (seed, current_player). Vectorized over the moves frame."""
+    import numpy as np
+    ceil = np.array([
+        counts_by_seed.get(int(s), {}).get(int(p), 0)
+        for s, p in zip(moves["seed"], moves["current_player"])
+    ])
+    keep = moves["move_index"].to_numpy() < ceil
+    return moves[keep]
+
+
+def resilient_getitem(ds, i: int, max_tries: int = 64):
+    """Return ds._replay_getitem(i), or the next valid neighbor if it can't be
+    replayed. A single un-replayable position (rare, non-reproducible data/
+    engine glitch — 2026-06-14 iter-3) must NOT crash training; we skip-and-
+    substitute + log, keeping the batch full. Raises only if `max_tries`
+    consecutive positions all fail (genuine corruption, not a one-off)."""
+    n = len(ds)
+    for k in range(max_tries):
+        j = (i + k) % n
+        try:
+            return ds._replay_getitem(j)
+        except Exception as ex:  # noqa: BLE001 — any replay failure is skippable
+            if k == 0:
+                logging.warning("dataset: skipping un-replayable position %d "
+                                "(%s); substituting a neighbor", i, ex)
+            continue
+    raise RuntimeError(
+        f"dataset: no replayable position within {max_tries} of index {i} — "
+        f"this indicates real corruption, not a one-off skip.")
 
 
 class CachedDataset(Dataset):

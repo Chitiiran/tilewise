@@ -21,10 +21,15 @@ def main():
                     help="dir scanned recursively for *.pt GNN checkpoints")
     ap.add_argument("--replays-dir", type=Path, default=Path("."),
                     help="dir scanned for existing playback_seed_*/index.html replays")
+    ap.add_argument("--az-ladder-root", type=Path, default=None,
+                    help="AZ loop root containing ladder.json; the champion "
+                         "appears as a dynamic difficulty tier")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
-    app = create_app(checkpoints_dir=args.checkpoints_dir, replays_dir=args.replays_dir)
+    app = create_app(checkpoints_dir=args.checkpoints_dir,
+                     replays_dir=args.replays_dir,
+                     az_ladder_root=args.az_ladder_root)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

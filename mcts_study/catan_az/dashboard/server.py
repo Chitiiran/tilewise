@@ -1,0 +1,107 @@
+"""Minimal AZ progress dashboard: one JSON summary endpoint + static page.
+Reads journal.csv / status.json / ladder.json (no DB). Spec 2026-06-13 §7."""
+from __future__ import annotations
+
+import csv
+import json
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+_STATIC = Path(__file__).parent / "static"
+
+
+def create_dashboard(*, loop_root, web_port: int = 8000, cfg=None) -> FastAPI:
+    loop_root = Path(loop_root)
+    if cfg is None:
+        from catan_az.config import AzConfig
+        cfg = AzConfig()      # thresholds for failure-mode detection
+    app = FastAPI(title="AZ Daily Dashboard")
+
+    @app.get("/api/summary")
+    def summary():
+        from catan_az import analytics
+        ladder = _read_json(loop_root / "ladder.json", {})
+        status = _read_json(loop_root / "status.json", {})
+        journal = _read_csv(loop_root / "journal.csv")
+        champ = (ladder.get("entries", {}) or {}).get(ladder.get("champion"), {})
+        return {
+            "champion": champ,
+            "status": status,
+            "journal": journal[-10:],
+            "holds_since_promotion": analytics.holds_since_promotion(loop_root),
+            "flags": analytics.detect_failure_modes(loop_root, cfg=cfg),
+            "liveness": analytics.liveness(loop_root),
+            "play_champion_url": f"http://localhost:{web_port}/?difficulty=az-champion",
+        }
+
+    @app.get("/api/training/{iter_n}")
+    def training(iter_n: int):
+        from catan_az import analytics
+        return analytics.training_health(loop_root, iter_n=iter_n)
+
+    @app.get("/api/selfplay/{iter_n}")
+    def selfplay(iter_n: int):
+        from catan_az import analytics
+        return analytics.selfplay_health(loop_root, iter_n=iter_n)
+
+    @app.get("/api/selfplay-live")
+    def selfplay_live():
+        """Live data-generation view for the running self-play stage: progress,
+        rate/ETA, data quality, winner-seat balance. Keyed off the live iter."""
+        from catan_az import analytics
+        live = analytics.liveness(loop_root)
+        it = live.get("iter")
+        if it is None:
+            return {"available": False, "games_done": 0}
+        return analytics.selfplay_live(loop_root, iter_n=it,
+                                       target=cfg.games_per_iter)
+
+    @app.get("/api/metrics")
+    def metrics():
+        """Per-iteration derived metrics (winrate/draw/timeout/Elo trends)."""
+        from catan_az import analytics
+        return {"iterations": analytics.iteration_metrics(loop_root)}
+
+    @app.get("/api/seat-bias/{iter_n}")
+    def seat_bias(iter_n: int):
+        """Per-seat candidate winrate for an iteration's arena (board-luck check)."""
+        from catan_az import analytics
+        return analytics.seat_bias(loop_root, iter_n=iter_n)
+
+    @app.get("/api/arena-live")
+    def arena_live():
+        """Live arena gate view (running winrate, projected verdict, recent
+        stream) keyed off the live iter. The suspense stage of the loop."""
+        from catan_az import analytics
+        live = analytics.liveness(loop_root)
+        it = live.get("iter")
+        if it is None:
+            return {"available": False, "games_played": 0}
+        out = analytics.arena_live(loop_root, iter_n=it, cfg=cfg)
+        out["seat_bias"] = analytics.seat_bias(loop_root, iter_n=it)
+        return out
+
+    @app.get("/")
+    def index():
+        return FileResponse(_STATIC / "index.html")
+
+    if _STATIC.exists():
+        app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+    return app
+
+
+def _read_json(p: Path, default):
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return default
+
+
+def _read_csv(p: Path):
+    if not p.exists():
+        return []
+    with open(p, newline="") as f:
+        return list(csv.DictReader(f))
