@@ -56,6 +56,14 @@ class AzConfig:
     # because games persist per-seed, a worker that still hits the cap just
     # resumes toward the quota on the next launch.
     selfplay_worker_max_seconds: int = 32400
+    # Per-GAME wall-clock cap for self-play. A pathological game can churn for an
+    # hour+ under the 200k-step cap, stalling its worker (24 concurrent games
+    # finalize together) and the whole stage — production iter_6 needed a manual
+    # straggler-kill (2026-06-15). MEASURED: normal games avg ~190s wall-clock at
+    # concurrency=24; stragglers ran 20-60+ min. 600s (~3.2x mean, == the arena's
+    # own cap) clears virtually all healthy games yet kills stragglers in 10min.
+    # The cut game is recorded timed_out (data preserved, not silently dropped).
+    selfplay_game_deadline_seconds: float = 600.0
     # Anchor (absolute calibration vs LookV3)
     anchor_every: int = 5
     anchor_games: int = 60

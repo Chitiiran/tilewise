@@ -179,7 +179,18 @@ async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
                               self_play: bool = False,
                               dirichlet_alpha: float = 0.8,
                               dirichlet_eps: float = 0.25,
-                              temp_moves: int = 30):
+                              temp_moves: int = 30,
+                              deadline_seconds: float | None = None,
+                              clock=None):
+    # Per-game WALL-CLOCK cap (2026-06-15): a pathological game can churn for
+    # hours while staying under max_steps, stalling its worker (24 concurrent
+    # games finalize together) and thus the whole self-play stage (production
+    # iter_6 needed a manual straggler-kill). When the deadline is exceeded the
+    # loop stops and we return a NON-terminal GameResult (recorded timed_out),
+    # preserving the partial game's data. clock is injectable for tests.
+    import time as _time
+    clock = clock if clock is not None else _time.monotonic
+    start = clock() if deadline_seconds is not None else None
     # AlphaZero exploration is ON only for self_play (data generation): Dirichlet
     # root noise + temperature-sampled move choice (tau=1 for the first
     # temp_moves PER-PLAYER decisions, then tau->0 argmax). Arena/eval keep the
@@ -195,6 +206,8 @@ async def play_one_async_game(*, game, seed: int, evaluator, n_sims: int,
     move_index_by_player = [0, 0, 0, 0]
     steps = 0
     while not state.is_terminal() and steps < max_steps:
+        if start is not None and (clock() - start) >= deadline_seconds:
+            break          # per-game wall-clock deadline -> stop, non-terminal
         if state.is_chance_node():
             outcomes = state.chance_outcomes()
             r = float(rng.random())

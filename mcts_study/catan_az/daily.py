@@ -145,7 +145,9 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                "--hidden-dim", str(cfg.hidden_dim),
                "--num-layers", str(cfg.num_layers),
                "--vp-target", str(cfg.vp_target),
-               "--max-seconds", str(cfg.selfplay_worker_max_seconds)]
+               "--max-seconds", str(cfg.selfplay_worker_max_seconds),
+               "--game-deadline-seconds",
+               str(cfg.selfplay_game_deadline_seconds)]
         if not cfg.bonuses:
             cmd.append("--no-bonuses")
         # start_new_session so the workers form their own process group: lets a
