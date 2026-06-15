@@ -50,6 +50,12 @@ class AzConfig:
     # it only ever fires on a genuine straggler. Counts as a timeout (the
     # <5% timeout-rate gate still guards verdict trustworthiness).
     arena_game_max_seconds: float = 600.0
+    # Per-WORKER self-play wall-clock cap. At ~142 games/hr across 6 workers,
+    # 1000 games needs ~7h; the original 6h (21600s) cap raced the quota and the
+    # M4 floor tripped at 731/1000 (2026-06-15). 9h leaves headroom — and
+    # because games persist per-seed, a worker that still hits the cap just
+    # resumes toward the quota on the next launch.
+    selfplay_worker_max_seconds: int = 32400
     # Anchor (absolute calibration vs LookV3)
     anchor_every: int = 5
     anchor_games: int = 60

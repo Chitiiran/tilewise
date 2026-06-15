@@ -12,6 +12,40 @@ from pathlib import Path
 import pytest
 
 
+# ---- self-play worker time-cap is config-driven (2026-06-15 cap-vs-quota) ----
+
+def test_selfplay_worker_max_seconds_is_config_driven(tmp_path, monkeypatch):
+    """The per-worker wall-clock cap must come from cfg.selfplay_worker_max_seconds
+    (was a hardcoded 21600 that raced the 1000-game quota and tripped M4 at
+    731/1000). Both the --max-seconds arg and the p.wait() budget use it."""
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+
+    captured = {"cmds": []}
+
+    class _FakeProc:
+        pid = 1
+        returncode = 0
+
+        def __init__(self, cmd):
+            captured["cmds"].append(cmd)
+
+        def wait(self, timeout=None):
+            captured["wait_timeout"] = timeout
+
+    monkeypatch.setattr(daily.subprocess, "Popen", lambda cmd, **k: _FakeProc(cmd))
+    cfg = AzConfig(selfplay_worker_max_seconds=32400)
+    out = tmp_path / "sp"
+    daily._launch_selfplay_procs(cfg, out, tmp_path / "c.pt", n_games=10,
+                                 n_procs=1, generator_name="g", gen_iter=6,
+                                 rules_id="v3-full")
+    cmd = captured["cmds"][0]
+    assert "--max-seconds" in cmd
+    assert cmd[cmd.index("--max-seconds") + 1] == "32400"
+    # p.wait budget must exceed the worker cap (so we don't kill a healthy worker)
+    assert captured["wait_timeout"] > 32400
+
+
 # ---- M1: seed-base must vary per iteration ----------------------------------
 
 def test_selfplay_seed_base_varies_by_iteration():

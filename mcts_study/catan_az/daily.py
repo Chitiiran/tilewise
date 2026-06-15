@@ -137,7 +137,7 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                "--hidden-dim", str(cfg.hidden_dim),
                "--num-layers", str(cfg.num_layers),
                "--vp-target", str(cfg.vp_target),
-               "--max-seconds", "21600"]
+               "--max-seconds", str(cfg.selfplay_worker_max_seconds)]
         if not cfg.bonuses:
             cmd.append("--no-bonuses")
         # start_new_session so the workers form their own process group: lets a
@@ -146,8 +146,10 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
         # workers / parent-death leakage).
         procs.append(subprocess.Popen(cmd, start_new_session=True))
     # M4 (deep-inspect HIGH): a per-worker wait timeout so one hung worker can't
-    # stall the iteration for hours; kill + log if it overruns its budget.
-    wait_budget = 21600 + 600    # worker max_seconds + margin
+    # stall the iteration for hours; kill + log if it overruns its budget. Must
+    # exceed the worker's own wall-clock cap (else we'd kill a healthy worker
+    # that's legitimately running to its cap).
+    wait_budget = cfg.selfplay_worker_max_seconds + 600    # cap + margin
     nonzero = []
     for p in procs:
         try:
