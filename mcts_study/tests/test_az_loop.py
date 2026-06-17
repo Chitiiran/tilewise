@@ -151,6 +151,46 @@ def test_stop_sentinel_halts_between_stages(loop_env):
     assert calls == ["selfplay", "train"]   # arena never ran
 
 
+def test_existing_window_is_honored_not_recapped(loop_env, tmp_path):
+    """When run_iteration is given existing_selfplay_dirs (the accumulating
+    window gen_window built in run_cycle), it must TRAIN ON EXACTLY THOSE dirs —
+    not re-derive its own list and re-truncate to cfg.window_games.
+
+    2026-06-17 bug: loop.py rebuilt all_dirs + select_window(cfg.window_games),
+    silently capping the 2786-game accumulating window back to 1200. The design
+    (docs 2026-06-14/15) is an accumulating window that grows until promotion."""
+    import pandas as pd
+    from catan_az.loop import run_iteration
+    root, _, _, _, win_arena, _ = loop_env
+
+    # Build N accumulating-window dirs, each with games, N chosen so total games
+    # exceeds cfg.window_games (1200) -> a re-cap WOULD drop some.
+    win_dirs = []
+    for i in range(20):
+        d = tmp_path / f"acc_{i}"
+        d.mkdir()
+        pd.DataFrame({"seed": range(i * 100, i * 100 + 100),
+                      "winner": [0, 1, 2, 3] * 25}).to_parquet(d / "games.x.parquet")
+        win_dirs.append(d)
+    # 20 dirs x 100 games = 2000 games > window_games(1200): a re-cap truncates.
+
+    captured = {}
+
+    def capturing_train(cfg, run_dirs, iter_dir, init_ckpt):
+        captured["window"] = [Path(p) for p in run_dirs]
+        return _mk_ckpt(iter_dir / "candidate.pt")
+
+    run_iteration(AzConfig(), root, 1, selfplay_fn=None,
+                  train_fn=capturing_train, arena_fn=win_arena,
+                  existing_selfplay_dirs=win_dirs)
+
+    trained = {p.resolve() for p in captured["window"]}
+    expected = {p.resolve() for p in win_dirs}
+    assert trained == expected, (
+        f"training window must equal the passed accumulating window "
+        f"({len(expected)} dirs), got {len(trained)} — it was re-capped")
+
+
 def test_invalid_arena_neither_promotes_nor_marks_done(loop_env):
     from catan_az.ladder import Ladder
     from catan_az.loop import run_iteration
