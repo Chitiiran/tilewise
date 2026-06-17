@@ -12,6 +12,29 @@ from pathlib import Path
 import pytest
 
 
+# ---- per-game deadline must clear real all-4-seat self-play (2026-06-16) -----
+
+def test_selfplay_game_deadline_clears_measured_game_cost():
+    """The per-game wall-clock deadline must exceed the MEASURED cost of a real
+    all-4-seat self-play game at concurrency=24, sims=200.
+
+    2026-06-16: iter_7 came back 994/994 timed_out (0 winners, all VP=0) because
+    the deadline was 600s but a no-deadline probe measured these games at
+    median 1078s, max 1316s wall-clock (24/24 finished healthy 10VP). iter_6's
+    1322-move tail implies an even longer worst case. 600s cut 23/24 healthy
+    games. Verified vs iter_6 timestamps (~47s/game throughput x24 ≈ 1100s).
+    The deadline must sit above the measured max with headroom so it only ever
+    fires on a genuinely stuck game, never a healthy long one."""
+    from catan_az.config import AzConfig
+    cfg = AzConfig()
+    MEASURED_MAX_S = 1316          # observed worst case, 24-game probe 2026-06-16
+    assert cfg.selfplay_game_deadline_seconds == 2400.0, (
+        "per-game deadline must be 2400s (≈1.8x measured max 1316s)")
+    assert cfg.selfplay_game_deadline_seconds > MEASURED_MAX_S, (
+        f"deadline {cfg.selfplay_game_deadline_seconds}s must exceed measured "
+        f"max {MEASURED_MAX_S}s or it cuts healthy games (the iter_7 failure)")
+
+
 # ---- self-play worker time-cap is config-driven (2026-06-15 cap-vs-quota) ----
 
 def test_selfplay_worker_max_seconds_is_config_driven(tmp_path, monkeypatch):

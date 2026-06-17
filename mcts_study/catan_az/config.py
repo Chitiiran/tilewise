@@ -59,11 +59,16 @@ class AzConfig:
     # Per-GAME wall-clock cap for self-play. A pathological game can churn for an
     # hour+ under the 200k-step cap, stalling its worker (24 concurrent games
     # finalize together) and the whole stage — production iter_6 needed a manual
-    # straggler-kill (2026-06-15). MEASURED: normal games avg ~190s wall-clock at
-    # concurrency=24; stragglers ran 20-60+ min. 600s (~3.2x mean, == the arena's
-    # own cap) clears virtually all healthy games yet kills stragglers in 10min.
-    # The cut game is recorded timed_out (data preserved, not silently dropped).
-    selfplay_game_deadline_seconds: float = 600.0
+    # straggler-kill (2026-06-15). The 600s value was WRONG: it was sized against
+    # a stale 256s/game figure that measured a 1-MCTS-seat, workers=1 game. Real
+    # all-4-seat self-play (MCTS every move, all players) at concurrency=24
+    # MEASURED 2026-06-16: median 1078s, max 1316s wall-clock (24/24 healthy 10VP,
+    # no-deadline probe), verified vs iter_6 timestamps (~47s/game x24 ≈ 1100s).
+    # So 600s cut 23/24 HEALTHY games -> iter_7 came back 994/994 timed_out.
+    # 2400s ≈ 1.8x the measured max: clears the healthy tail (incl. iter_6's
+    # 1322-move games) yet still kills a genuinely stuck game in ~40min. The cut
+    # game is recorded timed_out (data preserved, not silently dropped).
+    selfplay_game_deadline_seconds: float = 2400.0
     # Anchor (absolute calibration vs LookV3)
     anchor_every: int = 5
     anchor_games: int = 60
