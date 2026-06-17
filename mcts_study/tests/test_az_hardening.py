@@ -12,6 +12,49 @@ from pathlib import Path
 import pytest
 
 
+# ---- self-play floor ratio is config-driven (2026-06-17 long-tail timeouts) --
+
+def test_selfplay_floor_ratio_is_config_driven():
+    """The M4 floor must come from cfg.selfplay_floor_ratio, not a hardcoded 0.8.
+
+    2026-06-17: iter_7 at deadline=2400 produced 712/994 healthy games (72%) but
+    the hardcoded 0.8 floor (800) rejected them. The 282 timed-out games were NOT
+    stragglers — they were healthy LONG games (376-566 moves, same range as the
+    healthy 170-575) cut by the wall-clock deadline under concurrency contention.
+    Lowered the floor to 0.7 so a ~72% healthy yield trains instead of stalling."""
+    from catan_az.config import AzConfig
+    cfg = AzConfig()
+    assert cfg.selfplay_floor_ratio == 0.7
+
+
+def test_generate_iter_games_floor_uses_config(tmp_path, monkeypatch):
+    """generate_iter_games must compute its reject-floor from selfplay_floor_ratio.
+    With ratio=0.7 and quota=1000, 712 own-iter games must PASS (>=700), where the
+    old 0.8 floor (800) raised RuntimeError."""
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+
+    monkeypatch.setattr(daily, "_launch_selfplay_procs",
+                        lambda *a, **k: [tmp_path / "d0"])
+    # 712 own-iter games available after the (mocked) launch
+    monkeypatch.setattr(daily, "own_iter_games", lambda dirs, gen_iter: 712,
+                        raising=False)
+    # buffer.own_iter_games is imported inside the function — patch there too
+    import catan_az.buffer as buffer
+    monkeypatch.setattr(buffer, "own_iter_games", lambda dirs, gen_iter: 712)
+
+    cfg = AzConfig(games_per_iter=1000, selfplay_floor_ratio=0.7)
+    # 712 >= int(0.7*1000)=700 -> must NOT raise
+    daily.generate_iter_games(cfg, iter_dir=tmp_path, generator=("g", "c.pt"),
+                              gen_iter=7, capped_procs=1, prior_dirs=[])
+
+    cfg_strict = AzConfig(games_per_iter=1000, selfplay_floor_ratio=0.8)
+    with pytest.raises(RuntimeError):  # 712 < 800
+        daily.generate_iter_games(cfg_strict, iter_dir=tmp_path,
+                                  generator=("g", "c.pt"), gen_iter=7,
+                                  capped_procs=1, prior_dirs=[])
+
+
 # ---- per-game deadline must clear real all-4-seat self-play (2026-06-16) -----
 
 def test_selfplay_game_deadline_clears_measured_game_cost():

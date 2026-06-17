@@ -36,6 +36,13 @@ class AzConfig:
                                        # (vs ±11pp at 120). 4 rotations x 75.
     promote_threshold: float = 0.65    # strictly-greater; demand clear improvement
     max_iters_per_model: int = 10      # stop after 10 iters w/o promotion -> user
+    # M4 reject-floor: train only if own-iter healthy games >= ratio*quota. Was a
+    # hardcoded 0.8; lowered to 0.7 (2026-06-17) because real self-play at
+    # concurrency=24 yields ~72% healthy games — the ~28% that time out are
+    # healthy LONG games (376-566 moves) cut by the per-game wall-clock deadline,
+    # not stragglers. 0.7 lets a normal yield train instead of stalling, while
+    # still catching a genuine partial-worker-death / OOM (which drops far below).
+    selfplay_floor_ratio: float = 0.7
     arena_timeout_rate_max: float = 0.05   # legacy; surfaced, no longer a gate
     # Validity guards under VP-leader tiebreak (2026-06-13): a timed-out game
     # is decided by VP leader, so the gate keys on genuine no-signal games

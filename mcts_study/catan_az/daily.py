@@ -210,7 +210,7 @@ def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
     # quota — instead of the binary produced==0 cliff that let a 30/1000
     # iteration pass silently after a partial worker death / OOM.
     have_after = own_iter_games(list(dirs) + list(prior_dirs), gen_iter=gen_iter)
-    floor = int(0.8 * cfg.games_per_iter)
+    floor = int(cfg.selfplay_floor_ratio * cfg.games_per_iter)
     if have_after < floor:
         raise RuntimeError(
             f"self-play for iter {gen_iter} produced only {have_after} own-iter "
