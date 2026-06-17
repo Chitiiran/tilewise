@@ -120,14 +120,20 @@ def run_iteration(cfg: AzConfig, loop_root: Path, iter_n: int, *,
         _mark_done(iter_dir, "SELFPLAY", {"run_dirs": [str(p) for p in run_dirs]})
 
     # BUFFER: window over this + previous iterations' self-play dirs.
-    # When run_cycle already handed us the accumulating window (gen_window over
+    # When run_cycle hands us the accumulating window (gen_window over
     # gen_iter>=last_promotion_iter), HONOR IT — do NOT re-derive + re-truncate
     # to cfg.window_games. That second select_window silently capped the
     # design's accumulating window (2786 games) back to 1200 (2026-06-17 bug).
-    # Only re-window when called standalone (no existing dirs given), e.g. tests
-    # or a manual single-iteration run, where cfg.window_games is the cap.
+    #
+    # CRUCIAL: the window comes from existing_selfplay_dirs (the accumulating
+    # set), NOT from run_dirs. On a RESUME run_dirs is loaded from SELFPLAY.done,
+    # which lists only THIS iteration's own self-play dirs (for not regenerating
+    # games) — using it for the window would shadow the accumulating set and
+    # train on just this iter's ~945 games (2026-06-17 resume-window bug). The
+    # SELFPLAY marker governs self-play-resume; the WINDOW must follow the
+    # accumulating dirs run_cycle computed.
     if existing_selfplay_dirs is not None:
-        window = run_dirs
+        window = [Path(p) for p in existing_selfplay_dirs]
     else:
         all_dirs_newest_first = run_dirs + _previous_selfplay_dirs(loop_root, iter_n)
         window = select_window(all_dirs_newest_first, cfg.window_games)

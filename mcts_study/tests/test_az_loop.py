@@ -191,6 +191,52 @@ def test_existing_window_is_honored_not_recapped(loop_env, tmp_path):
         f"({len(expected)} dirs), got {len(trained)} — it was re-capped")
 
 
+def test_resume_window_follows_accumulating_dirs_not_selfplay_marker(loop_env, tmp_path):
+    """On RESUME, SELFPLAY.done lists only THIS iteration's self-play dirs (so
+    self-play isn't regenerated). The training WINDOW must still follow the
+    accumulating existing_selfplay_dirs run_cycle passes — NOT the marker's
+    smaller list. 2026-06-17 resume-window bug: run_dirs (from the marker)
+    shadowed the accumulating window, training on ~945 games not the full set."""
+    import json
+    import pandas as pd
+    from catan_az.loop import run_iteration
+    root, _, _, _, win_arena, _ = loop_env
+
+    iter_dir = root / "iter_1"
+    iter_dir.mkdir(parents=True, exist_ok=True)
+
+    # Pre-seed SELFPLAY.done with only 2 "own-iter" dirs (simulating a resume).
+    own = []
+    for i in range(2):
+        d = tmp_path / f"own_{i}"; d.mkdir()
+        pd.DataFrame({"seed": range(i*10, i*10+10), "winner": [0,1,2,3]*2+[0,1]
+                      }).to_parquet(d / "games.x.parquet")
+        own.append(d)
+    (iter_dir / "SELFPLAY.done").write_text(
+        json.dumps({"run_dirs": [str(p) for p in own], "source": "existing"}))
+
+    # The accumulating window run_cycle passes is LARGER (10 dirs).
+    acc = []
+    for i in range(10):
+        d = tmp_path / f"acc_{i}"; d.mkdir()
+        pd.DataFrame({"seed": range(1000+i*10, 1000+i*10+10), "winner": [0,1,2,3]*2+[0,1]
+                      }).to_parquet(d / "games.x.parquet")
+        acc.append(d)
+
+    captured = {}
+    def capturing_train(cfg, run_dirs, iter_dir_, init_ckpt):
+        captured["window"] = [Path(p) for p in run_dirs]
+        return _mk_ckpt(iter_dir_ / "candidate.pt")
+
+    run_iteration(AzConfig(), root, 1, selfplay_fn=None,
+                  train_fn=capturing_train, arena_fn=win_arena,
+                  existing_selfplay_dirs=acc)
+
+    trained = {p.resolve() for p in captured["window"]}
+    assert trained == {p.resolve() for p in acc}, (
+        "resume must window over the accumulating dirs, not the SELFPLAY.done list")
+
+
 def test_invalid_arena_neither_promotes_nor_marks_done(loop_env):
     from catan_az.ladder import Ladder
     from catan_az.loop import run_iteration
