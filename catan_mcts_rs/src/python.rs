@@ -6,8 +6,14 @@
 //! sequence on a fresh engine, return a queried value). These hooks stay (test
 //! surface) but are not on the hot path.
 
+use crate::evaluator::TorchScriptEvaluator;
+use crate::mcts::{best_action, Mcts};
+use crate::rng::NpRng;
+use crate::selfplay::{play_one_game, SelfPlayConfig};
 use crate::state;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use tch::Device;
 
 /// Parse a Python list of (is_chance: bool, id: int) into replay entries.
 fn parse_entries(entries: Vec<(bool, u32)>) -> Vec<(bool, u32)> {
@@ -80,6 +86,94 @@ fn debug_vps_and_history(
     (vps, e.action_history().to_vec())
 }
 
+/// Phase-5 parity hook: replay `entries`, then run MCTS with the given net,
+/// rng_seed, sims, and Dirichlet params. Returns (visit_counts[280],
+/// best_action, root_value). Mirrors AsyncMcts(...).search.
+#[pyfunction]
+#[pyo3(signature = (net_ts, seed, entries, n_sims, rng_seed, dirichlet_eps=0.0,
+                    dirichlet_alpha=0.8, c=1.4, vp_target=10, bonuses=true))]
+#[allow(clippy::too_many_arguments)]
+fn debug_search(
+    net_ts: String,
+    seed: u64,
+    entries: Vec<(bool, u32)>,
+    n_sims: u32,
+    rng_seed: u64,
+    dirichlet_eps: f64,
+    dirichlet_alpha: f64,
+    c: f64,
+    vp_target: u8,
+    bonuses: bool,
+) -> (Vec<i32>, usize, f64) {
+    let engine = state::replay(seed, vp_target, bonuses, &parse_entries(entries));
+    let ev = TorchScriptEvaluator::load(&net_ts, Device::Cpu).expect("load net_ts");
+    let mut rng = NpRng::from_seed(rng_seed);
+    let mut mcts = Mcts::new(&ev, c, dirichlet_alpha, dirichlet_eps);
+    let vc = mcts.search(engine, n_sims, &mut rng);
+    let ba = best_action(&vc);
+    (vc.to_vec(), ba, mcts.last_root_value)
+}
+
+/// Phase-6 hook: run ONE self-play (or greedy) game and return its record as a
+/// dict matching the SelfPlayRecorder fields (winner, final_vp, length,
+/// action_history, moves[]). The Python recorder writes the parquet; this keeps
+/// the schema identical by construction.
+#[pyfunction]
+#[pyo3(signature = (net_ts, seed, n_sims, self_play, vp_target=10, bonuses=true,
+                    temp_moves=30, dirichlet_alpha=0.8, dirichlet_eps=0.25,
+                    max_steps=200_000))]
+#[allow(clippy::too_many_arguments)]
+fn debug_selfplay_game<'py>(
+    py: Python<'py>,
+    net_ts: String,
+    seed: u64,
+    n_sims: u32,
+    self_play: bool,
+    vp_target: u8,
+    bonuses: bool,
+    temp_moves: usize,
+    dirichlet_alpha: f64,
+    dirichlet_eps: f64,
+    max_steps: u32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let ev = TorchScriptEvaluator::load(&net_ts, Device::Cpu).expect("load net_ts");
+    let cfg = SelfPlayConfig {
+        n_sims,
+        self_play,
+        vp_target,
+        bonuses,
+        max_steps,
+        temp_moves,
+        dirichlet_alpha,
+        dirichlet_eps,
+    };
+    let rec = play_one_game(&ev, seed, &cfg);
+
+    let d = PyDict::new_bound(py);
+    d.set_item("seed", rec.seed)?;
+    d.set_item("terminal", rec.terminal)?;
+    d.set_item("winner", rec.winner)?;
+    d.set_item("final_vp", rec.final_vp.to_vec())?;
+    d.set_item("length_in_moves", rec.length_in_moves)?;
+    d.set_item("action_history", rec.action_history.clone())?;
+    let moves = pyo3::types::PyList::empty_bound(py);
+    for m in &rec.moves {
+        let md = PyDict::new_bound(py);
+        md.set_item("current_player", m.current_player)?;
+        md.set_item("move_index", m.move_index)?;
+        md.set_item("action_taken", m.action_taken)?;
+        md.set_item("root_value", m.root_value)?;
+        md.set_item("visit_counts", m.visit_counts.clone())?;
+        md.set_item(
+            "legal_mask",
+            m.legal_mask.iter().map(|&b| b as u8).collect::<Vec<u8>>(),
+        )?;
+        moves.append(md)?;
+    }
+    d.set_item("moves", moves)?;
+    Ok(d)
+}
+
 #[pymodule]
 fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_legal_actions, m)?)?;
@@ -87,5 +181,7 @@ fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_returns, m)?)?;
     m.add_function(wrap_pyfunction!(debug_chance_outcomes, m)?)?;
     m.add_function(wrap_pyfunction!(debug_vps_and_history, m)?)?;
+    m.add_function(wrap_pyfunction!(debug_search, m)?)?;
+    m.add_function(wrap_pyfunction!(debug_selfplay_game, m)?)?;
     Ok(())
 }

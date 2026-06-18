@@ -54,8 +54,10 @@ fn clone_is_independent() {
     let before_cp = state::current_player(&e);
     let before_hist = e.action_history().to_vec();
     let mut c = e.clone();
-    // mutate the clone
-    while !c.is_terminal() {
+    // mutate the clone (step cap: greedy la[0] play may not terminate — this
+    // test only needs the clone mutated, not finished).
+    let mut steps = 0;
+    while !c.is_terminal() && steps < 2000 {
         if c.is_chance_pending() {
             let v = c.chance_outcomes()[0].0;
             c.apply_chance_outcome(v);
@@ -66,6 +68,7 @@ fn clone_is_independent() {
             }
             c.step(la[0]);
         }
+        steps += 1;
     }
     assert_eq!(state::current_player(&e), before_cp, "original cp changed");
     assert_eq!(e.action_history().to_vec(), before_hist, "original history changed");
