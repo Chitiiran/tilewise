@@ -81,6 +81,12 @@ def _default_train(cfg: AzConfig, run_dirs: list[Path], iter_dir: Path,
     best = out_dir / "checkpoint_best.pt"
     if not best.exists():
         raise FileNotFoundError(f"training produced no {best}")
+    # TorchScript export for the Rust self-play/arena engines (Rust-MCTS rewrite).
+    # The traced .ts sits beside the checkpoint; the Rust path loads it. A no-op
+    # for the legacy Python engine path, so this is safe to always emit.
+    from catan_gnn.export_torchscript import export
+    export(checkpoint=best, out_ts=best.with_suffix(".ts"),
+           hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers)
     return best
 
 

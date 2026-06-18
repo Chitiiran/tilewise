@@ -6,6 +6,7 @@
 //! sequence on a fresh engine, return a queried value). These hooks stay (test
 //! surface) but are not on the hot path.
 
+use crate::arena::{play_arena_game, seating_is_cand};
 use crate::evaluator::TorchScriptEvaluator;
 use crate::mcts::{best_action, Mcts};
 use crate::rng::NpRng;
@@ -174,6 +175,32 @@ fn debug_selfplay_game<'py>(
     Ok(d)
 }
 
+/// Phase-7 hook: play ONE arena game (cand vs champ nets, greedy) at the given
+/// rotation+seed. Returns (winner_seat, timed_out, vp_margin) — same triple as
+/// arena._play_arena_game.
+#[pyfunction]
+#[pyo3(signature = (cand_ts, champ_ts, seed, rot, sims, vp_target=10,
+                    bonuses=true, max_steps=200_000))]
+#[allow(clippy::too_many_arguments)]
+fn debug_arena_game(
+    cand_ts: String,
+    champ_ts: String,
+    seed: u64,
+    rot: usize,
+    sims: u32,
+    vp_target: u8,
+    bonuses: bool,
+    max_steps: u32,
+) -> (i32, bool, i32) {
+    let ev_cand = TorchScriptEvaluator::load(&cand_ts, Device::Cpu).expect("load cand_ts");
+    let ev_champ = TorchScriptEvaluator::load(&champ_ts, Device::Cpu).expect("load champ_ts");
+    let seating = seating_is_cand(rot);
+    let r = play_arena_game(
+        &ev_cand, &ev_champ, seed, seating, sims, vp_target, bonuses, max_steps,
+    );
+    (r.winner_seat, r.timed_out, r.vp_margin)
+}
+
 #[pymodule]
 fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_legal_actions, m)?)?;
@@ -183,5 +210,6 @@ fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_vps_and_history, m)?)?;
     m.add_function(wrap_pyfunction!(debug_search, m)?)?;
     m.add_function(wrap_pyfunction!(debug_selfplay_game, m)?)?;
+    m.add_function(wrap_pyfunction!(debug_arena_game, m)?)?;
     Ok(())
 }

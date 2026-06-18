@@ -4,6 +4,7 @@
 //! mcts_study/docs/superpowers/plans/2026-06-17-rust-mcts-torchscript-gnn.md).
 //! Every unit is double-verified bit-exact against the Python oracle.
 
+pub mod arena;
 pub mod evaluator;
 pub mod mcts;
 pub mod mt19937;
