@@ -8,9 +8,10 @@
 //! returns the structured record).
 
 use crate::evaluator::TorchScriptEvaluator;
-use crate::mcts::{best_action, temperature_sample, Mcts, ACTION_SPACE_SIZE};
+use crate::mcts::{best_action, temperature_sample, Mcts, SearchSession, SessionStep, ACTION_SPACE_SIZE};
 use crate::rng::NpRng;
 use crate::state;
+use catan_engine::observation::Observation;
 use catan_engine::Engine;
 
 const N_PLAYERS: usize = 4;
@@ -153,4 +154,182 @@ pub fn play_one_game(ev: &TorchScriptEvaluator, seed: u64, cfg: &SelfPlayConfig)
         action_history: engine.action_history().to_vec(),
         moves,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 10: batched multi-game self-play. Runs seeds.len() games concurrently;
+// every game's MCTS leaf eval pending at a given moment is pooled into ONE
+// evaluate_batch call (up to b_max), feeding the GPU instead of one leaf at a
+// time. Each game consumes its own NpRng in the exact order play_one_game does,
+// so a game record is reproducible and equals what play_one_game would produce
+// WITH THE SAME (batched) evaluator. Only the batched forward's ~1e-7
+// reassociation differs from the B=1 path (the accepted canonical semantics;
+// see project_task10_batching_decision_2026_06_18).
+// ---------------------------------------------------------------------------
+
+struct Slot {
+    seed: u64,
+    engine: Engine,
+    rng: NpRng,
+    eps: f64,
+    moves: Vec<RecordedMove>,
+    move_index_by_player: [usize; N_PLAYERS],
+    steps: u32,
+    session: Option<SearchSession>,
+    cur_cp: usize,
+    cur_legal_mask: Vec<bool>,
+    done: bool,
+}
+
+impl Slot {
+    fn new(seed: u64, cfg: &SelfPlayConfig) -> Self {
+        let eps = if cfg.self_play { cfg.dirichlet_eps } else { 0.0 };
+        Slot {
+            seed,
+            engine: new_engine(seed, cfg.vp_target, cfg.bonuses),
+            rng: NpRng::from_seed(seed),
+            eps,
+            moves: Vec::new(),
+            move_index_by_player: [0; N_PLAYERS],
+            steps: 0,
+            session: None,
+            cur_cp: 0,
+            cur_legal_mask: Vec::new(),
+            done: false,
+        }
+    }
+
+    /// Advance past chance/single-legal moves to the next multi-legal DECISION,
+    /// start a SearchSession, and return its first parked leaf. None if the game
+    /// reached terminal/step-cap first (sets done). Mirrors play_one_game's loop.
+    fn advance_to_search(&mut self, cfg: &SelfPlayConfig) -> Option<Observation> {
+        loop {
+            if self.engine.is_terminal() || self.steps >= cfg.max_steps {
+                self.done = true;
+                return None;
+            }
+            if self.engine.is_chance_pending() {
+                let chosen = state::sample_chance(&self.engine, &mut self.rng);
+                self.engine.apply_chance_outcome(chosen);
+                self.steps += 1;
+                continue;
+            }
+            let legal = self.engine.legal_actions();
+            if legal.len() == 1 {
+                self.engine.step(legal[0]);
+                self.steps += 1;
+                continue;
+            }
+            self.cur_cp = self.engine.state.current_player as usize;
+            let mut mask = vec![false; ACTION_SPACE_SIZE];
+            for &a in &legal {
+                mask[a as usize] = true;
+            }
+            self.cur_legal_mask = mask;
+            let mut sess = SearchSession::new(
+                self.engine.clone(), cfg.n_sims, C_PUCT, cfg.dirichlet_alpha, self.eps);
+            match sess.pump(&mut self.rng) {
+                SessionStep::NeedEval(obs) => {
+                    self.session = Some(sess);
+                    return Some(obs);
+                }
+                SessionStep::Done => {
+                    self.session = Some(sess);
+                    self.finish_move(cfg);
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Session complete: pick action, record move, apply. Mirrors play_one_game.
+    fn finish_move(&mut self, cfg: &SelfPlayConfig) {
+        let sess = self.session.take().expect("finish_move without session");
+        let visit_counts = sess.take_visit_counts();
+        let root_value = sess.last_root_value;
+        let cp = self.cur_cp;
+        let action = if cfg.self_play {
+            let tau = if self.move_index_by_player[cp] < cfg.temp_moves { 1.0 } else { 0.0 };
+            temperature_sample(&visit_counts, tau, &mut self.rng) as u32
+        } else {
+            best_action(&visit_counts) as u32
+        };
+        self.moves.push(RecordedMove {
+            current_player: cp as i32,
+            move_index: self.move_index_by_player[cp],
+            legal_mask: std::mem::take(&mut self.cur_legal_mask),
+            visit_counts: visit_counts.to_vec(),
+            action_taken: action,
+            root_value,
+        });
+        self.engine.step(action);
+        self.move_index_by_player[cp] += 1;
+        self.steps += 1;
+    }
+
+    fn into_record(self) -> GameRecord {
+        let terminal = self.engine.is_terminal();
+        let winner = if terminal {
+            let rets = state::returns_abs(&self.engine);
+            let max = rets.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            if max > 0.0 { rets.iter().position(|&r| r == max).unwrap() as i32 } else { -1 }
+        } else {
+            -1
+        };
+        let stats = self.engine.stats();
+        let mut final_vp = [0i32; N_PLAYERS];
+        for p in 0..N_PLAYERS {
+            final_vp[p] = stats.players[p].vp_final as i32;
+        }
+        GameRecord {
+            seed: self.seed,
+            terminal,
+            winner,
+            final_vp,
+            length_in_moves: self.steps,
+            action_history: self.engine.action_history().to_vec(),
+            moves: self.moves,
+        }
+    }
+}
+
+/// Run all `seeds` games with cross-game leaf batching against ONE batched
+/// evaluator. Returns records in the SAME order as `seeds`.
+pub fn play_games_batched(
+    ev: &TorchScriptEvaluator,
+    seeds: &[u64],
+    cfg: &SelfPlayConfig,
+) -> Vec<GameRecord> {
+    let b_max = ev.b_max().expect("play_games_batched needs a batched evaluator");
+    let mut slots: Vec<Slot> = seeds.iter().map(|&s| Slot::new(s, cfg)).collect();
+    let mut parked: Vec<Option<Observation>> =
+        slots.iter_mut().map(|sl| sl.advance_to_search(cfg)).collect();
+
+    loop {
+        let active: Vec<usize> = (0..slots.len()).filter(|&i| parked[i].is_some()).collect();
+        if active.is_empty() {
+            break;
+        }
+        for chunk in active.chunks(b_max) {
+            let obs_refs: Vec<&Observation> =
+                chunk.iter().map(|&i| parked[i].as_ref().unwrap()).collect();
+            let outs = ev.evaluate_batch(&obs_refs);
+            for (pos, &i) in chunk.iter().enumerate() {
+                let next = {
+                    let sl = &mut slots[i];
+                    let sess = sl.session.as_mut().unwrap();
+                    sess.provide(&outs[pos], &mut sl.rng)
+                };
+                match next {
+                    SessionStep::NeedEval(obs) => parked[i] = Some(obs),
+                    SessionStep::Done => {
+                        slots[i].finish_move(cfg);
+                        parked[i] = slots[i].advance_to_search(cfg);
+                    }
+                }
+            }
+        }
+    }
+
+    slots.into_iter().map(Slot::into_record).collect()
 }

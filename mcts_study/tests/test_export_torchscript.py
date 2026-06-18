@@ -60,6 +60,45 @@ def test_exported_ts_bit_exact(tmp_path):
     assert max_dv == 0.0 and max_dl == 0.0, f"dv={max_dv} dl={max_dl}"
 
 
+def test_export_batched_traces_and_matches_eager(tmp_path):
+    """Batched .ts (fixed B_MAX, padded) reproduces eager Batch.from_data_list
+    for the first-k real graphs. Deterministic mode -> reproducible.
+    (Padding introduces ~1e-7 float reassoc vs eager; this asserts the batched
+    path is a faithful batched forward, within that bound, AND reproducible.)"""
+    import numpy as np
+    import torch
+    from torch_geometric.data import Batch
+    from catan_gnn.export_torchscript import export_batched
+
+    B_MAX = 8
+    model = GnnModel(hidden_dim=32, num_layers=2).eval()
+    ckpt = tmp_path / "m.pt"
+    torch.save({"model_state": model.state_dict()}, ckpt)
+    ts = tmp_path / "m.batch.ts"
+    export_batched(checkpoint=ckpt, out_ts=ts, hidden_dim=32, num_layers=2, b_max=B_MAX)
+    loaded = torch.jit.load(str(ts)).eval()
+
+    def batched_inputs(obss):
+        f = lambda o, k: torch.from_numpy(np.ascontiguousarray(o[k], np.float32))
+        return (torch.cat([f(o, "hex_features") for o in obss]),
+                torch.cat([f(o, "vertex_features") for o in obss]),
+                torch.cat([f(o, "edge_features") for o in obss]),
+                torch.stack([f(o, "scalars") for o in obss]))
+
+    k = 3
+    obss = _states(k)
+    padded = obss + [obss[0]] * (B_MAX - k)
+    with torch.no_grad():
+        ev, el = model(Batch.from_data_list([state_to_pyg(o) for o in obss]))
+        tv, tl = loaded(*batched_inputs(padded))
+        tv2, tl2 = loaded(*batched_inputs(padded))
+    # Faithful batched forward (CPU determinism -> tight bound).
+    assert (tv[:k] - ev).abs().max().item() < 1e-5
+    assert (tl[:k] - el).abs().max().item() < 1e-5
+    # Reproducible: same inputs -> identical outputs.
+    assert (tv == tv2).all() and (tl == tl2).all()
+
+
 def test_export_loads_plain_state_dict(tmp_path):
     """Checkpoints saved as a bare state_dict (not wrapped) also export."""
     model = GnnModel(hidden_dim=32, num_layers=2).eval()

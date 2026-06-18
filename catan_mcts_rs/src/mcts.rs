@@ -106,18 +106,41 @@ impl<'e> Mcts<'e> {
             node.engine.state.current_player,
         );
         let out = self.ev.evaluate_one(&obs);
-        let leaf_mover = node.engine.state.current_player as usize;
+        Self::finish_expand(node, &out)
+    }
 
-        // Rotate ego-relative value to absolute seat order.
+    /// Resolve chance + check terminal WITHOUT calling the net. Returns:
+    ///   - Ok(value_abs) when the node is terminal (no net needed), or
+    ///   - Err(obs) when it's a non-terminal leaf that needs a net forward.
+    /// (The session path uses this to PARK the obs and batch across games.)
+    fn prepare_expand(
+        node: &mut Node,
+        rng: &mut NpRng,
+    ) -> Result<[f32; N_PLAYERS], catan_engine::observation::Observation> {
+        while node.engine.is_chance_pending() {
+            let chosen = state::sample_chance(&node.engine, rng);
+            node.engine.apply_chance_outcome(chosen);
+            node.to_play = state::current_player(&node.engine);
+        }
+        if node.engine.is_terminal() {
+            return Ok(state::returns_abs(&node.engine));
+        }
+        Err(catan_engine::observation::build_observation(
+            &node.engine.state,
+            node.engine.state.current_player,
+        ))
+    }
+
+    /// Apply a net output to a prepared (non-terminal) leaf: rotate value
+    /// ego->absolute, build children in legal order. Returns absolute value.
+    /// Identical math to the inline path in expand_and_evaluate.
+    fn finish_expand(node: &mut Node, out: &crate::evaluator::NetOutput) -> [f32; N_PLAYERS] {
+        let leaf_mover = node.engine.state.current_player as usize;
         let mut value_abs = [0.0f32; N_PLAYERS];
         for offset in 0..N_PLAYERS {
             value_abs[(leaf_mover + offset) % N_PLAYERS] = out.value[offset];
         }
-
-        // Priors: f32 softmax over legal logits (matches BatchedGnnEvaluator).
-        let mut legal = node.engine.legal_actions();
-        // legal_actions order = the engine's natural order; Python passes the
-        // same Vec to softmax + zip, so children insert in this order.
+        let legal = node.engine.legal_actions();
         let logits = &out.logits;
         let mut max_logit = f32::NEG_INFINITY;
         for &a in &legal {
@@ -131,10 +154,8 @@ impl<'e> Mcts<'e> {
         for (i, &a) in legal.iter().enumerate() {
             let mut child_engine = node.engine.clone();
             child_engine.step(a);
-            // prior stored as f64 (Python: float(p) widens the f32 prob).
             node.children.push((a, Node::new(child_engine, exps[i] as f64)));
         }
-        legal.clear();
         node.is_expanded = true;
         value_abs
     }
@@ -215,6 +236,236 @@ impl<'e> Mcts<'e> {
             out[*a as usize] = child.visit_count as i32;
         }
         out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pausable search session (Task 10): drives the SAME algorithm as Mcts::search
+// but YIELDS at each leaf net-eval so a driver can batch leaves across many
+// concurrent games into one TorchScriptEvaluator::evaluate_batch call.
+//
+// Determinism: a session consumes its own NpRng in the EXACT order search()
+// does (root chance/dirichlet, then per-sim chance), and the prepare/finish
+// split is byte-identical math to expand_and_evaluate. So the visit_counts a
+// session produces equal what search() would produce *with the same evaluator*
+// — the only difference vs the B=1 path is the batched forward's ~1e-7
+// reassociation, which is the accepted, reproducible canonical engine.
+// ---------------------------------------------------------------------------
+
+/// What a session needs next from the driver.
+pub enum SessionStep {
+    /// Park this leaf observation; resume via `provide(net_out)`.
+    NeedEval(catan_engine::observation::Observation),
+    /// Search finished; visit counts ready via `take_visit_counts()`.
+    Done,
+}
+
+enum Phase {
+    /// Root not yet expanded: first pump parks the root leaf.
+    RootPending,
+    /// Root expand parked; finishing applies noise + counts the root visit.
+    RootFinish,
+    /// Running sims: `remaining` sims left; a leaf is parked at `path`.
+    SimParked { remaining: u32, path: Vec<usize> },
+    Done,
+}
+
+pub struct SearchSession {
+    c: f64,
+    dirichlet_alpha: f64,
+    dirichlet_eps: f64,
+    n_sims: u32,
+    root: Node,
+    phase: Phase,
+    pub last_root_value: f64,
+    visit_counts: Option<[i32; ACTION_SPACE_SIZE]>,
+}
+
+impl SearchSession {
+    pub fn new(
+        root_engine: Engine,
+        n_sims: u32,
+        c: f64,
+        dirichlet_alpha: f64,
+        dirichlet_eps: f64,
+    ) -> Self {
+        SearchSession {
+            c,
+            dirichlet_alpha,
+            dirichlet_eps,
+            n_sims,
+            root: Node::new(root_engine, 0.0),
+            phase: Phase::RootPending,
+            last_root_value: 0.0,
+            visit_counts: None,
+        }
+    }
+
+    fn ucb_score(&self, parent_visits: u64, child: &Node) -> f64 {
+        let q = if child.visit_count > 0 {
+            child.value_sum / child.visit_count as f64
+        } else {
+            0.0
+        };
+        let u = self.c * child.prior * (parent_visits as f64).sqrt()
+            / (1.0 + child.visit_count as f64);
+        q + u
+    }
+
+    fn select_child_idx(&self, node: &Node) -> usize {
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_idx = 0usize;
+        for (i, (_, child)) in node.children.iter().enumerate() {
+            let s = self.ucb_score(node.visit_count, child);
+            if s > best_score {
+                best_score = s;
+                best_idx = i;
+            }
+        }
+        best_idx
+    }
+
+    fn descend(&self) -> Vec<usize> {
+        let mut path = Vec::new();
+        let mut node: &Node = &self.root;
+        while node.is_expanded && !node.children.is_empty() && !node.engine.is_terminal() {
+            let idx = self.select_child_idx(node);
+            path.push(idx);
+            node = &node.children[idx].1;
+        }
+        path
+    }
+
+    fn node_at_mut(&mut self, path: &[usize]) -> &mut Node {
+        let mut node = &mut self.root;
+        for &idx in path {
+            node = &mut node.children[idx].1;
+        }
+        node
+    }
+
+    /// First step: prepare the ROOT leaf. Root is virtually always
+    /// non-terminal (you don't search a finished game) -> park it, return
+    /// NeedEval. Degenerate terminal root -> finish root + run sims (which over
+    /// a terminal root immediately complete). After this, drive via provide().
+    pub fn pump(&mut self, rng: &mut NpRng) -> SessionStep {
+        match &self.phase {
+            Phase::RootPending => {}
+            _ => panic!("pump() may only be called once, first"),
+        }
+        match Mcts::prepare_expand(&mut self.root, rng) {
+            Err(obs) => {
+                self.phase = Phase::RootFinish;
+                SessionStep::NeedEval(obs)
+            }
+            Ok(value) => {
+                // Degenerate terminal root: no net needed.
+                self.apply_root_noise(rng);
+                self.root.visit_count += 1;
+                if self.root.to_play >= 0 {
+                    self.root.value_sum += value[self.root.to_play as usize] as f64;
+                }
+                self.phase =
+                    Phase::SimParked { remaining: self.n_sims.saturating_sub(1), path: Vec::new() };
+                self.start_next_sim(rng).unwrap_or(SessionStep::Done)
+            }
+        }
+    }
+
+    /// Begin the next sim: descend, prepare the leaf. If terminal, back up and
+    /// recurse; if it needs a net, park and return NeedEval. Returns None when
+    /// all sims are exhausted (caller transitions to Done).
+    fn start_next_sim(&mut self, rng: &mut NpRng) -> Option<SessionStep> {
+        loop {
+            let remaining = match &self.phase {
+                Phase::SimParked { remaining, .. } => *remaining,
+                _ => 0,
+            };
+            if remaining == 0 {
+                self.phase = Phase::Done;
+                self.finalize();
+                return Some(SessionStep::Done);
+            }
+            let path = self.descend();
+            let prep = {
+                let node = self.node_at_mut(&path);
+                Mcts::prepare_expand(node, rng)
+            };
+            match prep {
+                Ok(value) => {
+                    // Terminal leaf: back up now, consume one sim, continue.
+                    Mcts::backup(&mut self.root, &path, &value);
+                    self.phase = Phase::SimParked { remaining: remaining - 1, path: Vec::new() };
+                    continue;
+                }
+                Err(obs) => {
+                    self.phase = Phase::SimParked { remaining, path };
+                    return Some(SessionStep::NeedEval(obs));
+                }
+            }
+        }
+    }
+
+    /// Feed back the net output for the most recently parked leaf, then advance.
+    /// Returns the next SessionStep (NeedEval or Done).
+    pub fn provide(&mut self, out: &crate::evaluator::NetOutput, rng: &mut NpRng) -> SessionStep {
+        match std::mem::replace(&mut self.phase, Phase::Done) {
+            Phase::RootFinish => {
+                let value = Mcts::finish_expand(&mut self.root, out);
+                self.apply_root_noise(rng);
+                self.root.visit_count += 1;
+                if self.root.to_play >= 0 {
+                    self.root.value_sum += value[self.root.to_play as usize] as f64;
+                }
+                self.phase = Phase::SimParked { remaining: self.n_sims.saturating_sub(1), path: Vec::new() };
+                match self.start_next_sim(rng) {
+                    Some(s) => s,
+                    None => SessionStep::Done,
+                }
+            }
+            Phase::SimParked { remaining, path } => {
+                let value = {
+                    let node = self.node_at_mut(&path);
+                    Mcts::finish_expand(node, out)
+                };
+                Mcts::backup(&mut self.root, &path, &value);
+                self.phase = Phase::SimParked { remaining: remaining - 1, path: Vec::new() };
+                match self.start_next_sim(rng) {
+                    Some(s) => s,
+                    None => SessionStep::Done,
+                }
+            }
+            _ => unreachable!("provide() called when no leaf was parked"),
+        }
+    }
+
+    fn apply_root_noise(&mut self, rng: &mut NpRng) {
+        if self.dirichlet_eps <= 0.0 || self.root.children.is_empty() {
+            return;
+        }
+        let k = self.root.children.len();
+        let noise = rng.dirichlet(&vec![self.dirichlet_alpha; k]);
+        let eps = self.dirichlet_eps;
+        for (i, (_, child)) in self.root.children.iter_mut().enumerate() {
+            child.prior = (1.0 - eps) * child.prior + eps * noise[i];
+        }
+    }
+
+    fn finalize(&mut self) {
+        self.last_root_value = if self.root.visit_count > 0 {
+            self.root.value_sum / self.root.visit_count as f64
+        } else {
+            0.0
+        };
+        let mut out = [0i32; ACTION_SPACE_SIZE];
+        for (a, child) in &self.root.children {
+            out[*a as usize] = child.visit_count as i32;
+        }
+        self.visit_counts = Some(out);
+    }
+
+    pub fn take_visit_counts(&self) -> [i32; ACTION_SPACE_SIZE] {
+        self.visit_counts.expect("session not Done")
     }
 }
 
