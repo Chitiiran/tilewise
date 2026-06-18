@@ -75,6 +75,27 @@ real sustained work. (3) deterministic-CUDA B=1 (0.20) is the worst path — nev
 run B=1 on deterministic CUDA; batching is mandatory there.
 (4) All reproducible (deterministic mode) — the replay contract holds.
 
+### Does bigger batch help? Forward-throughput sweep (deterministic CUDA, isolates B)
+```
+ B      fwd/s   states/s   ms/fwd
+  1      50.3      50.3    19.864
+  8      50.3     402.7    19.865   <- same latency as B=1, 8x the states
+ 16      49.1     785.4    20.372
+ 32      44.7    1431.2    22.359
+ 64      45.1    2884.6    22.187
+ 96      43.7    4199.9    22.858
+128      41.5    5316.5    24.076   <- peak, STILL climbing (no plateau)
+```
+**Yes — bigger batches help, near-linearly, and it has NOT saturated at B=128.**
+The deterministic-scatter kernel has a large FIXED per-call cost that dominates
+the tiny h128 compute: forward latency barely moves (19.9ms@B=1 -> 24.1ms@B=128,
+1.2x time for 128x the states). So states/s ~= 50*B until something saturates;
+at B=128 it's 5317 states/s ≈ **106x the B=1 rate**, still rising, no OOM on the
+4GB card. **Implication:** production B_MAX=32 leaves throughput on the table —
+raising B_MAX to 64/128 would ~2-4x GNN throughput again. The real ceiling is
+the number of CONCURRENT GAMES with a leaf pending (you need ~B games in flight
+to fill a B batch), not the GPU. Sweep: scripts/bench_batch_sweep.py.
+
 ### The CUDA-enablement fixes (tch + pip-wheel libtorch) — pitfalls #11-13
 - **#11 tch silently runs on CPU.** `tch::Cuda::is_available()` returns false
   with the pip wheel because `libtorch_cuda.so` isn't loaded (tch links CPU
