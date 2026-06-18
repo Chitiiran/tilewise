@@ -6,3 +6,4 @@
 
 pub mod rng;
 pub mod seedseq;
+pub mod ziggurat_tables;
