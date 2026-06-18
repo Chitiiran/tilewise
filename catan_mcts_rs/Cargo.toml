@@ -10,5 +10,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 catan_engine = { path = "../catan_engine" }
 tch = "0.24.0"
+pyo3 = { version = "0.22", features = ["extension-module"] }
 
 [dev-dependencies]

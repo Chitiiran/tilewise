@@ -449,7 +449,14 @@ impl TorchScriptEvaluator {
 
 - [ ] **Step 5: Commit** `feat(mcts-rs): TorchScriptEvaluator loads traced .ts, per-state parity bit-exact`
 
-### Task 4b: Batched trace + batched evaluate parity
+> **Sequencing update (during execution):** Task 4b (batched trace) is DEFERRED
+> into Task 10 (Phase 8). Rationale: batching is a pure-throughput change that
+> does not affect any decision/record, so correctness gates (Phases 5-7) are
+> proven first with per-state eval, then batching is added and verified to
+> produce identical records against the already-trusted baseline. This de-risks
+> the order: prove correct, then optimize.
+
+### Task 4b: Batched trace + batched evaluate parity (DEFERRED to Task 10)
 
 **Files:**
 - Modify: `mcts_study/catan_gnn/export_torchscript.py` (add `BatchTensorWrapper` + `export_batched`)
