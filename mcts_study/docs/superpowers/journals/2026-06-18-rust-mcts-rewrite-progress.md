@@ -39,7 +39,23 @@ AND differential/property) on every unit.
 | 7 | Arena gate (+ MT19937) | 8 games + winrate match, dual-RNG path | ✅ |
 | 8 | Wire into `catan_az` | `cfg.engine` flag, `self_play_rust` drop-in, arena branch; fast tests green | ✅ |
 | 9 | Production-net cross-check | **2/2 BIT-EXACT** on real 128×4 net at sims=200 (self-play); **Rust 2.8× faster single-threaded** | ✅ |
-| 10 | Cross-game leaf batching | (perf-only; the throughput win) | ⏳ deferred |
+| 10 | Cross-game leaf batching | built + reproducible; **2.42× on CPU** measured; CUDA pending (tch GPU-detect fix) | 🔄 |
+
+### Task-10 throughput comparison (2026-06-18, production net, sims=200, 8 games)
+```
+device = Cpu   (tch did NOT see CUDA — see caveat)
+B=1     : 616.8s / 8 games -> 0.78 games/min  (1609 moves)
+batched : 255.2s / 8 games -> 1.88 games/min  (1609 moves, identical work)
+SPEEDUP : 2.42x  (CPU, B<=8 across 8 concurrent games)
+```
+**Caveat:** this ran on CPU — `tch::Cuda::is_available()` returned false in the
+Rust process even though Python sees the GPU (idle, 0%, 36 MiB). The big win is
+CUDA: the forward-throughput micro-bench (scripts/bench_batch_throughput.py)
+showed deterministic-CUDA scaling B=1→51 to B=32→1554 states/s (~30×). So 2.42×
+is the CPU floor; the CUDA number (pending the tch GPU-detect fix —
+LD_PRELOAD libtorch_cuda.so / torch-sys CUDA build) should be substantially
+larger. The 2.42× CPU result already exceeds the prior single-threaded 2.8×-vs-
+Python *combined* with batching when run on the GPU.
 
 ### Phase-9 cross-check result (2026-06-18)
 Real net `az_iter_1.pt` (`GnnModel 128×4`), `sims=200`, self-play (Dirichlet +

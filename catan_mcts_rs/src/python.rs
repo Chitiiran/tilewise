@@ -10,7 +10,7 @@ use crate::arena::{play_arena_game, seating_is_cand};
 use crate::evaluator::TorchScriptEvaluator;
 use crate::mcts::{best_action, Mcts};
 use crate::rng::NpRng;
-use crate::selfplay::{play_one_game, SelfPlayConfig};
+use crate::selfplay::{play_games_batched, play_one_game, SelfPlayConfig};
 use crate::state;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -211,10 +211,21 @@ fn debug_arena_game(
 /// PRODUCTION self-play entry (coarse — one crossing for the whole stage).
 /// Runs `seeds` games with one shared net evaluator, returns a list of records
 /// (same dict shape as debug_selfplay_game) for the Python SelfPlayRecorder.
+/// Pick the inference device: CUDA when available (the batched throughput win
+/// lives there), else CPU.
+fn infer_device() -> Device {
+    if tch::Cuda::is_available() {
+        Device::Cuda(0)
+    } else {
+        Device::Cpu
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (net_ts, seeds, n_sims, self_play=true, vp_target=10,
                     bonuses=true, temp_moves=30, dirichlet_alpha=0.8,
-                    dirichlet_eps=0.25, max_steps=200_000))]
+                    dirichlet_eps=0.25, max_steps=200_000,
+                    batched_ts=None, b_max=32))]
 #[allow(clippy::too_many_arguments)]
 fn run_selfplay<'py>(
     py: Python<'py>,
@@ -228,16 +239,38 @@ fn run_selfplay<'py>(
     dirichlet_alpha: f64,
     dirichlet_eps: f64,
     max_steps: u32,
+    batched_ts: Option<String>,
+    b_max: usize,
 ) -> PyResult<Bound<'py, pyo3::types::PyList>> {
-    let ev = TorchScriptEvaluator::load(&net_ts, Device::Cpu).expect("load net_ts");
+    let device = infer_device();
+    let cfg = SelfPlayConfig {
+        n_sims, self_play, vp_target, bonuses, max_steps,
+        temp_moves, dirichlet_alpha, dirichlet_eps,
+    };
     let out = pyo3::types::PyList::empty_bound(py);
-    for seed in seeds {
-        let cfg = SelfPlayConfig {
-            n_sims, self_play, vp_target, bonuses, max_steps,
-            temp_moves, dirichlet_alpha, dirichlet_eps,
-        };
-        let rec = play_one_game(&ev, seed, &cfg);
-        out.append(game_record_to_dict(py, &rec)?)?;
+
+    // Batched path (Task 10): cross-game leaf batching — the GPU-feeding fast
+    // path. Used when a batched .ts is supplied. Releases the GIL during the
+    // (long, GPU-bound) Rust run so other Python threads/workers proceed.
+    if let Some(bts) = batched_ts {
+        let records = py.allow_threads(|| {
+            let ev = TorchScriptEvaluator::load_batched(&bts, device, b_max)
+                .expect("load batched_ts");
+            play_games_batched(&ev, &seeds, &cfg)
+        });
+        for rec in &records {
+            out.append(game_record_to_dict(py, rec)?)?;
+        }
+        return Ok(out);
+    }
+
+    // Fallback: per-game B=1 (bit-exact-to-Python path; no batching).
+    let records = py.allow_threads(|| {
+        let ev = TorchScriptEvaluator::load(&net_ts, device).expect("load net_ts");
+        seeds.iter().map(|&s| play_one_game(&ev, s, &cfg)).collect::<Vec<_>>()
+    });
+    for rec in &records {
+        out.append(game_record_to_dict(py, rec)?)?;
     }
     Ok(out)
 }

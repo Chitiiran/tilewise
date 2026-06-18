@@ -17,9 +17,14 @@ from pathlib import Path
 import numpy as np
 
 import catan_mcts_rs
-from catan_gnn.export_torchscript import export
+from catan_gnn.export_torchscript import export, export_batched
 from ..recorder import SelfPlayRecorder
 from .common import make_run_dir
+
+# Cross-game batch width (Task 10). The batched .ts is traced at this fixed
+# B_MAX; the scheduler pools up to B_MAX concurrent games' leaves per GPU
+# forward. 32 matched the measured throughput knee on the GTX 1650.
+B_MAX = 32
 
 
 def _ensure_ts(checkpoint: Path, hidden_dim: int, num_layers: int) -> Path:
@@ -30,6 +35,14 @@ def _ensure_ts(checkpoint: Path, hidden_dim: int, num_layers: int) -> Path:
     return ts
 
 
+def _ensure_batched_ts(checkpoint: Path, hidden_dim: int, num_layers: int) -> Path:
+    bts = checkpoint.with_suffix(".batch.ts")
+    if not bts.exists():
+        export_batched(checkpoint=checkpoint, out_ts=bts,
+                       hidden_dim=hidden_dim, num_layers=num_layers, b_max=B_MAX)
+    return bts
+
+
 def run_self_play_rust(*, out_root: Path, checkpoint: Path, num_games: int,
                        n_sims: int, hidden_dim: int, num_layers: int,
                        vp_target: int, bonuses: bool, seed_base: int,
@@ -38,20 +51,21 @@ def run_self_play_rust(*, out_root: Path, checkpoint: Path, num_games: int,
                        resume_dir: Path | None) -> Path:
     out = resume_dir if resume_dir is not None else make_run_dir(out_root, "self_play_rust")
     ts = _ensure_ts(Path(checkpoint), hidden_dim, num_layers)
+    bts = _ensure_batched_ts(Path(checkpoint), hidden_dim, num_layers)
     rec = SelfPlayRecorder(out, config={
         "experiment": "self_play_rust", "n_sims": n_sims,
         "vp_target": vp_target, "bonuses": bonuses, "device": "cuda",
-        "seed_base": seed_base, "engine": "rust"})
+        "seed_base": seed_base, "engine": "rust", "b_max": B_MAX})
     done = rec.done_seeds() if resume_dir is not None else set()
     seeds = [seed_base + i for i in range(num_games) if (seed_base + i) not in done]
 
-    # One Rust call per game keeps per-game crash-flush (records returned, then
-    # written by the recorder immediately). game_deadline is enforced Rust-side
-    # via max_steps; the Python async path's wall-clock deadline is moot here
-    # because Rust games finish naturally (the whole point of the rewrite).
+    # Task 10: cross-game batched self-play — all `seeds` games run concurrently,
+    # pooling up to B_MAX leaves per GPU forward (the throughput win). Records
+    # are returned and written by SelfPlayRecorder immediately. Reproducible:
+    # same (seeds, B_MAX, net) replays identical games (deterministic CUDA).
     records = catan_mcts_rs.run_selfplay(
         str(ts), seeds, n_sims, self_play, vp_target, bonuses,
-        30, 0.8, 0.25, max_steps)
+        30, 0.8, 0.25, max_steps, str(bts), B_MAX)
     for r in records:
         seed = int(r["seed"])
         with rec.game(seed=seed) as g:
