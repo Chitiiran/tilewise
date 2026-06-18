@@ -113,6 +113,39 @@ def _worker_seed_base(*, gen_iter: int, i: int) -> int:
     return 31_000_000 + gen_iter * 10_000_000 + i * 1_000_000
 
 
+def _rust_cuda_env() -> dict:
+    """Env for a Rust-engine self-play worker so tch uses the GPU.
+
+    The pip-wheel libtorch needs: LD_PRELOAD libtorch_cuda.so (else
+    tch::Cuda::is_available()==false), nvidia/*/lib on LD_LIBRARY_PATH (nvrtc
+    for TorchScript kernel fusion), and deterministic kernels
+    (CUBLAS_WORKSPACE_CONFIG + the .ts was traced in det mode) for the replay
+    contract. Built from the active torch install. See
+    project_task10_batching_decision_2026_06_18.
+    """
+    import os
+    import torch
+
+    torch_dir = os.path.dirname(torch.__file__)
+    site = os.path.dirname(torch_dir)
+    nvidia = os.path.join(site, "nvidia")
+    nv_libs = []
+    if os.path.isdir(nvidia):
+        for d in os.listdir(nvidia):
+            lib = os.path.join(nvidia, d, "lib")
+            if os.path.isdir(lib):
+                nv_libs.append(lib)
+    paths = [os.path.join(torch_dir, "lib"), *nv_libs]
+    env = dict(os.environ)
+    prev = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = ":".join(paths + ([prev] if prev else []))
+    preload = os.path.join(torch_dir, "lib", "libtorch_cuda.so")
+    prev_pre = env.get("LD_PRELOAD", "")
+    env["LD_PRELOAD"] = preload + (f":{prev_pre}" if prev_pre else "")
+    env.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    return env
+
+
 def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                            generator_name, gen_iter, rules_id, seed_offset=0):
     """Launch n_procs LOW-PRIORITY (nice) self_play_async procs splitting
@@ -153,11 +186,18 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                str(cfg.selfplay_game_deadline_seconds)]
         if not cfg.bonuses:
             cmd.append("--no-bonuses")
+        # Rust engine: the tch-linked extension only uses the GPU with the
+        # pip-wheel CUDA env (LD_PRELOAD libtorch_cuda, nvidia/*/lib on
+        # LD_LIBRARY_PATH for nvrtc, deterministic kernels). Without it the Rust
+        # self-play silently runs on CPU. No-op for the Python engine path.
+        env = None
+        if getattr(cfg, "engine", "python") == "rust":
+            env = _rust_cuda_env()
         # start_new_session so the workers form their own process group: lets a
         # cleanup handler kill the whole group and avoids a stray Ctrl-C
         # propagating from the parent's terminal (deep-inspect MED: orphan GPU
         # workers / parent-death leakage).
-        procs.append(subprocess.Popen(cmd, start_new_session=True))
+        procs.append(subprocess.Popen(cmd, start_new_session=True, env=env))
     # M4 (deep-inspect HIGH): a per-worker wait timeout so one hung worker can't
     # stall the iteration for hours; kill + log if it overruns its budget. Must
     # exceed the worker's own wall-clock cap (else we'd kill a healthy worker
