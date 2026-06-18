@@ -1,0 +1,15 @@
+[package]
+name = "catan_mcts_rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# rlib so `cargo test` can link the crate; cdylib for the PyO3 extension module.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+catan_engine = { path = "../catan_engine" }
+# tch added in Phase 3 (TorchScriptEvaluator) to avoid the libtorch build cost
+# during the RNG/MCTS parity phases.
+
+[dev-dependencies]

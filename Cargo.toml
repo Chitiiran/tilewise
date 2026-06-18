@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["catan_engine"]
+members = ["catan_engine", "catan_mcts_rs"]
 
 [workspace.package]
 version = "0.1.0"
