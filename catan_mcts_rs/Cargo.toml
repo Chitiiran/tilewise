@@ -9,7 +9,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 catan_engine = { path = "../catan_engine" }
-# tch added in Phase 3 (TorchScriptEvaluator) to avoid the libtorch build cost
-# during the RNG/MCTS parity phases.
+tch = "0.24.0"
 
 [dev-dependencies]
