@@ -97,10 +97,14 @@ class AzConfig:
     archive_root: str = "/mnt/d/catan_az_archive"   # HDD archive target
     dashboard_port: int = 8099
     # --- self-play/arena engine (Rust-MCTS rewrite 2026-06-18) ---
-    # "python" = legacy asyncio BatchedGnnEvaluator path (default until the
-    # Phase-9 production cross-check flips it). "rust" = catan_mcts_rs in-process
-    # MCTS + TorchScript GNN (zero per-node PyO3), proven bit-exact in the gates.
-    engine: str = "python"
+    # "rust" = catan_mcts_rs in-process MCTS + TorchScript GNN (zero per-node
+    # PyO3), proven BIT-EXACT to the legacy path through the Phase-9 production
+    # cross-check (real 128x4 net, sims=200: 2/2 games identical) and 2.8x faster
+    # single-threaded. "python" = legacy asyncio BatchedGnnEvaluator path (kept
+    # as a fallback). Default flipped to "rust" 2026-06-18 (user decision).
+    # NOTE: cross-game leaf batching (the full GPU-feeding throughput win) is not
+    # yet built — this default is correct + faster, but not the final perf target.
+    engine: str = "rust"
 
     def to_json(self, path: Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2))

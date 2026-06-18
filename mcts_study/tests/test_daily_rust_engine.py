@@ -16,8 +16,10 @@ from catan_az import arena as az_arena
 catan_mcts_rs = pytest.importorskip("catan_mcts_rs")
 
 
-def test_config_engine_defaults_python():
-    assert AzConfig().engine == "python"  # safe default until Phase-9 flip
+def test_config_engine_defaults_rust():
+    # Flipped to "rust" 2026-06-18 after the Phase-9 production cross-check
+    # passed bit-exact. "python" remains a valid fallback.
+    assert AzConfig().engine == "rust"
 
 
 def test_daily_selfplay_module_switch(monkeypatch):

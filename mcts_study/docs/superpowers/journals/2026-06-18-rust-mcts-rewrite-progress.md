@@ -38,11 +38,32 @@ AND differential/property) on every unit.
 | 6 | Self-play end-to-end gate | **24/24 games identical records** (12 greedy + 12 exploratory) | ✅ |
 | 7 | Arena gate (+ MT19937) | 8 games + winrate match, dual-RNG path | ✅ |
 | 8 | Wire into `catan_az` | `cfg.engine` flag, `self_play_rust` drop-in, arena branch; fast tests green | ✅ |
-| 9 | Production-net cross-check | bit-exact on real 128×4 net at sims=200 + timing | 🔄 running |
+| 9 | Production-net cross-check | **2/2 BIT-EXACT** on real 128×4 net at sims=200 (self-play); **Rust 2.8× faster single-threaded** | ✅ |
 | 10 | Cross-game leaf batching | (perf-only; the throughput win) | ⏳ deferred |
 
-`cfg.engine` defaults to **`"python"`** — the flip to `"rust"` is gated on the
-Phase-9 production cross-check confirming bit-exactness on the real net.
+### Phase-9 cross-check result (2026-06-18)
+Real net `az_iter_1.pt` (`GnnModel 128×4`), `sims=200`, self-play (Dirichlet +
+temperature) — the production configuration, not the toy 32×2 net the earlier
+gates used:
+
+```
+seed 0: identical=True  len=448  winner=1  py=261.6s  rs=96.3s
+seed 1: identical=True  len=384  winner=3  py=513.0s  rs=181.1s
+PRODUCTION-NET CROSS-CHECK: BIT-EXACT over 2 seeds (n_sims=200, self_play=True)
+wall-clock: Python 513.0s, Rust 181.1s per game (2.8× faster, single-threaded per-state eval)
+```
+
+**Reading the speedup:** 2.8× is the *single-threaded, per-state-eval* number —
+it comes purely from killing the per-node PyO3 / asyncio overhead, with the GNN
+still evaluated one leaf at a time. The headline throughput win (feeding the
+idle GPU) is **Task 10 cross-game leaf batching**, not yet built. So 2.8× is a
+*floor*, achieved before any batching.
+
+`cfg.engine` default **flipped to `"rust"`** (2026-06-18, user decision) after
+the Phase-9 production cross-check passed bit-exact on the real 128×4 net at
+sims=200. `"python"` remains a fallback. The next loop run will use the Rust
+engine: correct + 2.8× faster single-threaded (full GPU-feeding throughput still
+awaits Task 10 batching).
 
 ---
 
@@ -208,9 +229,8 @@ remains (env-overridable seed count) for a future overnight run if desired.
 
 ## 6. Remaining work
 
-1. **Phase 9 production cross-check** (running): confirm bit-exact on the real
-   128×4 net at sims=200; record per-game Rust-vs-Python wall-clock.
-2. **Flip `cfg.engine` default to `"rust"`** — ONLY after #1 confirms.
+1. ~~Phase 9 production cross-check~~ — ✅ DONE, bit-exact, 2.8× single-threaded.
+2. ~~Flip `cfg.engine` default to `"rust"`~~ — ✅ DONE (2026-06-18).
 3. **Task 10 — cross-game leaf batching:** the actual throughput win. Trace a
    batched wrapper (variable batch via a batch-index input; same generalization
    check as Phase 0), batch all concurrent games' leaves into one GPU forward.
