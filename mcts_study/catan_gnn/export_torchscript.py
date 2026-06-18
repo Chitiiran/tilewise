@@ -56,10 +56,12 @@ class TensorWrapper(nn.Module):
         data["vertex", "to", "edge"].edge_index = self.v2e
         data["edge", "to", "vertex"].edge_index = self.e2v
         data.scalars = scalars.view(1, -1)
-        # B=1 batch vector: every node maps to graph 0.
-        data["hex"].batch = torch.zeros(hex_x.size(0), dtype=torch.long)
-        data["vertex"].batch = torch.zeros(vertex_x.size(0), dtype=torch.long)
-        data["edge"].batch = torch.zeros(edge_x.size(0), dtype=torch.long)
+        # B=1 batch vector: every node maps to graph 0. device=hex_x.device so
+        # the traced op FOLLOWS the input device (else it bakes a CPU constant
+        # and fails on CUDA with a device-mismatch in scatter).
+        data["hex"].batch = torch.zeros(hex_x.size(0), dtype=torch.long, device=hex_x.device)
+        data["vertex"].batch = torch.zeros(vertex_x.size(0), dtype=torch.long, device=hex_x.device)
+        data["edge"].batch = torch.zeros(edge_x.size(0), dtype=torch.long, device=hex_x.device)
         return self.model(data)  # (value, logits)
 
 
@@ -153,20 +155,23 @@ def _batched_example(b_max: int):
 
 
 def export_batched(*, checkpoint: Path, out_ts: Path, hidden_dim: int,
-                   num_layers: int, b_max: int = 32) -> Path:
+                   num_layers: int, b_max: int = 32, device: str = "cpu") -> Path:
     """Trace the BatchTensorWrapper at a fixed B_MAX into a TorchScript module.
 
-    Deterministic algorithms are enabled so the (CUDA) batched forward is
-    REPRODUCIBLE — same inputs -> same outputs every run (the replayability
-    contract; see project_task10_batching_decision_2026_06_18). The Rust loader
-    must likewise run with deterministic kernels.
+    Traced ON `device` (trace bakes constructed-tensor + buffer devices — the
+    .ts must be traced on the device it runs on). Deterministic algorithms are
+    enabled so the (CUDA) batched forward is REPRODUCIBLE — same inputs -> same
+    outputs every run (the replayability contract; see
+    project_task10_batching_decision_2026_06_18). The Rust loader must likewise
+    run with deterministic kernels (CUBLAS_WORKSPACE_CONFIG + libtorch det mode).
     """
     import os
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     torch.use_deterministic_algorithms(True)
-    model = _load_gnn(checkpoint, hidden_dim, num_layers)
-    wrapper = BatchTensorWrapper(model, b_max).eval()
-    traced = torch.jit.trace(wrapper, _batched_example(b_max), strict=True)
+    model = _load_gnn(checkpoint, hidden_dim, num_layers).to(device)
+    wrapper = BatchTensorWrapper(model, b_max).to(device).eval()
+    ex = tuple(t.to(device) for t in _batched_example(b_max))
+    traced = torch.jit.trace(wrapper, ex, strict=True)
     out_ts = Path(out_ts)
     out_ts.parent.mkdir(parents=True, exist_ok=True)
     traced.save(str(out_ts))
@@ -174,16 +179,18 @@ def export_batched(*, checkpoint: Path, out_ts: Path, hidden_dim: int,
 
 
 def export(*, checkpoint: Path, out_ts: Path, hidden_dim: int,
-           num_layers: int) -> Path:
+           num_layers: int, device: str = "cpu") -> Path:
     """Trace `checkpoint`'s GnnModel into a TorchScript module at `out_ts`.
 
-    Returns the output path. The traced module's forward takes the four plain
-    observation tensors and returns (value, logits) — bit-identical to the
-    eager PyG model on the same device.
+    Traced ON `device` — torch.jit.trace BAKES the device of any tensor it
+    constructs internally (e.g. the batch-index `torch.zeros`), so the .ts must
+    be traced on the SAME device it will run on. CPU default (parity tests);
+    pass "cuda" for the GPU inference module. Returns (value, logits).
     """
     model = _load_gnn(checkpoint, hidden_dim, num_layers)
-    wrapper = TensorWrapper(model).eval()
-    traced = torch.jit.trace(wrapper, _example_inputs(), strict=True)
+    wrapper = TensorWrapper(model).to(device).eval()  # moves model + edge buffers
+    ex = tuple(t.to(device) for t in _example_inputs())
+    traced = torch.jit.trace(wrapper, ex, strict=True)
     out_ts = Path(out_ts)
     out_ts.parent.mkdir(parents=True, exist_ok=True)
     traced.save(str(out_ts))

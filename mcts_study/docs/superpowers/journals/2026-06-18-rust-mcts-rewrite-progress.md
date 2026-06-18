@@ -48,14 +48,44 @@ B=1     : 616.8s / 8 games -> 0.78 games/min  (1609 moves)
 batched : 255.2s / 8 games -> 1.88 games/min  (1609 moves, identical work)
 SPEEDUP : 2.42x  (CPU, B<=8 across 8 concurrent games)
 ```
-**Caveat:** this ran on CPU — `tch::Cuda::is_available()` returned false in the
-Rust process even though Python sees the GPU (idle, 0%, 36 MiB). The big win is
-CUDA: the forward-throughput micro-bench (scripts/bench_batch_throughput.py)
-showed deterministic-CUDA scaling B=1→51 to B=32→1554 states/s (~30×). So 2.42×
-is the CPU floor; the CUDA number (pending the tch GPU-detect fix —
-LD_PRELOAD libtorch_cuda.so / torch-sys CUDA build) should be substantially
-larger. The 2.42× CPU result already exceeds the prior single-threaded 2.8×-vs-
-Python *combined* with batching when run on the GPU.
+### CUDA throughput (2026-06-18, after the tch-GPU-detect + nvrtc + device-trace fixes)
+```
+device = Cuda(0), deterministic mode (B_MAX=8), production net, sims=200, 8 games
+  B=1     : 2408.2s -> 0.20 games/min  (1616 moves)
+  batched : 383.1s  -> 1.25 games/min  (1616 moves, identical work)
+  SPEEDUP : 6.29x
+GPU during the run: util 34%, mem 166 MiB, power 7.9W (was 0%/36MiB/3.7W idle).
+```
+
+### All measured paths (8 games, sims=200, production 128x4)
+| path | games/min | note |
+|---|---|---|
+| CUDA B=1 (deterministic) | 0.20 | det scatter ~20ms/fwd x thousands of leaves, one at a time |
+| **CUDA batched B<=8 (det)** | **1.25** | **6.29x over CUDA B=1** |
+| CPU B=1 | 0.78 | |
+| CPU batched B<=8 | 1.88 | 2.42x over CPU B=1 |
+
+**Key reading:** (1) batching is the throughput mechanism — 6.29x on GPU, 2.42x
+on CPU. (2) At B<=8 the GPU is NOT yet saturated (forward micro-bench showed
+det-CUDA scales to B=32 ~1554 states/s); CPU-batched (1.88) currently edges
+CUDA-batched (1.25) because B=8 under-feeds the GPU. The production self-play
+uses **B_MAX=32**, which should push CUDA well past CPU. (3) deterministic-CUDA
+B=1 (0.20) is the worst path — never run B=1 on deterministic CUDA.
+
+### The CUDA-enablement fixes (tch + pip-wheel libtorch) — pitfalls #11-13
+- **#11 tch silently runs on CPU.** `tch::Cuda::is_available()` returns false
+  with the pip wheel because `libtorch_cuda.so` isn't loaded (tch links CPU
+  libtorch). FIX: `LD_PRELOAD=$TORCH_DIR/lib/libtorch_cuda.so`. Probe:
+  scripts/probe_tch_cuda_preload.sh -> cuda_is_available = true.
+- **#12 trace bakes the device.** `torch.jit.trace` freezes the device of any
+  tensor it constructs (the PyG batch-index `torch.zeros`) AND of buffers — a
+  CPU-traced .ts fails on CUDA with a scatter device-mismatch. FIX: trace ON the
+  target device (export(..., device="cuda")), moving model+wrapper+example to
+  it. So the production .ts is CUDA-baked; CPU parity tests use a CPU-baked .ts.
+- **#13 nvrtc missing.** TorchScript fuses an add_relu kernel and JIT-compiles it
+  via nvrtc; `libnvrtc-builtins.so.13.0` lives in `site-packages/nvidia/cu13/lib`,
+  not on the default path. FIX: add all `site-packages/nvidia/*/lib` dirs to
+  LD_LIBRARY_PATH (scripts do this now).
 
 ### Phase-9 cross-check result (2026-06-18)
 Real net `az_iter_1.pt` (`GnnModel 128×4`), `sims=200`, self-play (Dirichlet +
