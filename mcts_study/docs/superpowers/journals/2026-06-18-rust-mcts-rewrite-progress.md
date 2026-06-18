@@ -134,6 +134,35 @@ the CPU per-leaf cost (build_observation / tree ops / NpRng) or running more
 concurrent games (more CPU cores). The GPU has huge headroom (638MB/4GB, 9k
 states/s) that self-play can't currently feed.
 
+### CPU-vs-GPU phase profile (16 games, B_MAX=32, sims=200, deterministic CUDA)
+```
+total : 533.5s
+  GPU forward : 516.5s (96.8%)   64722 batches, MEAN B = 10.7  (cap 32!)
+  CPU provide : 12.9s (2.4%)     expand + tree + backup
+  CPU advance : 3.4s  (0.6%)     chance/single-legal + finish_move
+  leaves      : 692,236
+```
+**OVERTURNS the "CPU is the bottleneck" theory.** CPU work is only 3%. The time
+is 96.8% GPU forward — but the smoking gun is **mean batch = 10.7 of 32**: we pay
+the full ~20ms deterministic-scatter per-call latency 64,722 times for a
+ONE-THIRD-FULL batch. The GPU isn't compute-bound; it's **starved within the
+batch** (games desync — only ~11 of 16 have a leaf parked at any instant). The
+real lever is **mean batch FILL**, not CPU speed and not raw batch ceiling:
+(1) run more concurrent games than B_MAX so batches fill toward the cap, and/or
+(2) cut the per-forward fixed cost (deterministic scatter is ~20ms vs ~7.5ms
+non-det). This is the original "starved GPU" problem in miniature.
+
+### CONFIRMED: more concurrent games fills batches (16 vs 64 games, B_MAX=32)
+| games | mean B | GPU% | leaves | total | leaves/s |
+|---|---|---|---|---|---|
+| 16 | 10.7 | 96.8% | 692k | 533s | 1298 |
+| 64 | 21.5 | 91.7% | 2.6M | 1148s | **2281 (1.76x)** |
+Doubling+ the concurrent games (16→64) doubled mean batch fill (10.7→21.5) and
+gave **1.76x more leaf-throughput** — pure batch-fill win, no algorithm change.
+But mean B=21.5 < 32 cap even at 64 games: ~1/3 of games are NOT parked at any
+instant (in `advance` resolving chance/single-legal runs, or finishing). THAT
+gap is the next lever after concurrency. CPU% rose 3%→8% but is still minor.
+
 ### The CUDA-enablement fixes (tch + pip-wheel libtorch) — pitfalls #11-13
 - **#11 tch silently runs on CPU.** `tch::Cuda::is_available()` returns false
   with the pip wheel because `libtorch_cuda.so` isn't loaded (tch links CPU
