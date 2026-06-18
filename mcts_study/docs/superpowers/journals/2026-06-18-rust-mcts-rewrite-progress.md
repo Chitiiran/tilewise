@@ -39,7 +39,7 @@ AND differential/property) on every unit.
 | 7 | Arena gate (+ MT19937) | 8 games + winrate match, dual-RNG path | ✅ |
 | 8 | Wire into `catan_az` | `cfg.engine` flag, `self_play_rust` drop-in, arena branch; fast tests green | ✅ |
 | 9 | Production-net cross-check | **2/2 BIT-EXACT** on real 128×4 net at sims=200 (self-play); **Rust 2.8× faster single-threaded** | ✅ |
-| 10 | Cross-game leaf batching | built + reproducible; **2.42× on CPU** measured; CUDA pending (tch GPU-detect fix) | 🔄 |
+| 10 | Cross-game leaf batching | **DONE** — reproducible; **~16× at production config (B=32, CUDA)**, 6.3× at B≤8, 2.42× on CPU | ✅ |
 
 ### Task-10 throughput comparison (2026-06-18, production net, sims=200, 8 games)
 ```
@@ -57,20 +57,23 @@ device = Cuda(0), deterministic mode (B_MAX=8), production net, sims=200, 8 game
 GPU during the run: util 34%, mem 166 MiB, power 7.9W (was 0%/36MiB/3.7W idle).
 ```
 
-### All measured paths (8 games, sims=200, production 128x4)
-| path | games/min | note |
-|---|---|---|
-| CUDA B=1 (deterministic) | 0.20 | det scatter ~20ms/fwd x thousands of leaves, one at a time |
-| **CUDA batched B<=8 (det)** | **1.25** | **6.29x over CUDA B=1** |
-| CPU B=1 | 0.78 | |
-| CPU batched B<=8 | 1.88 | 2.42x over CPU B=1 |
+### All measured paths (sims=200, production 128x4, deterministic)
+| path | games | games/min | vs CUDA B=1 |
+|---|---|---|---|
+| CUDA B=1 | 8 | 0.20 | 1x |
+| CUDA batched B<=8 | 8 | 1.25 | 6.3x |
+| **CUDA batched B=32** | **32** | **3.26** | **~16x** |
+| CPU B=1 | 8 | 0.78 | — |
+| CPU batched B<=8 | 8 | 1.88 | — |
 
-**Key reading:** (1) batching is the throughput mechanism — 6.29x on GPU, 2.42x
-on CPU. (2) At B<=8 the GPU is NOT yet saturated (forward micro-bench showed
-det-CUDA scales to B=32 ~1554 states/s); CPU-batched (1.88) currently edges
-CUDA-batched (1.25) because B=8 under-feeds the GPU. The production self-play
-uses **B_MAX=32**, which should push CUDA well past CPU. (3) deterministic-CUDA
-B=1 (0.20) is the worst path — never run B=1 on deterministic CUDA.
+**Key reading:** (1) batching is THE throughput mechanism — at the production
+config (B_MAX=32, 32 concurrent games) the GPU does **3.26 games/min ≈ 16x the
+deterministic-CUDA B=1 baseline**, and **2.6x the B<=8 run** (B=8 under-fed the
+GPU). (2) At B=32 CUDA (3.26) decisively beats CPU-batched (1.88) — the crossover
+the B=8 run was below. GPU power climbed 3.7W idle → 7.9W (B=8) → 29.6W (B=32):
+real sustained work. (3) deterministic-CUDA B=1 (0.20) is the worst path — never
+run B=1 on deterministic CUDA; batching is mandatory there.
+(4) All reproducible (deterministic mode) — the replay contract holds.
 
 ### The CUDA-enablement fixes (tch + pip-wheel libtorch) — pitfalls #11-13
 - **#11 tch silently runs on CPU.** `tch::Cuda::is_available()` returns false
