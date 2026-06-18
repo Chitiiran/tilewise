@@ -18,7 +18,9 @@ from catan_gnn.state_to_pyg import state_to_pyg
 from catan_mcts.adapter import CatanGame
 
 HIDDEN, LAYERS = 128, 4
-BATCHES = [1, 4, 8, 16, 32, 48, 64, 96, 128]
+# Push until throughput plateaus or VRAM OOMs (4GB GTX 1650). The loop stops on
+# the first OOM and reports the last good B + peak states/s.
+BATCHES = [1, 8, 32, 64, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048]
 
 
 def states(n):
@@ -35,19 +37,25 @@ def states(n):
 
 def bench(device):
     model = GnnModel(hidden_dim=HIDDEN, num_layers=LAYERS).to(device).eval()
-    pool = [state_to_pyg(o) for o in states(max(BATCHES))]
+    # Build a pool sized to the largest batch (cycle a smaller real set if huge).
+    base = [state_to_pyg(o) for o in states(min(max(BATCHES), 256))]
+    def take(B):
+        return [base[i % len(base)] for i in range(B)]
     print(f"\n=== device={device}  (deterministic) ===")
-    print(f"{'B':>4} {'fwd/s':>9} {'states/s':>10} {'ms/fwd':>8}")
+    print(f"{'B':>5} {'fwd/s':>9} {'states/s':>11} {'ms/fwd':>8} {'VRAM_MB':>9}")
     best = (0, 0.0)
     for B in BATCHES:
         try:
-            batch = Batch.from_data_list(pool[:B]).to(device)
+            if device == "cuda":
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+            batch = Batch.from_data_list(take(B)).to(device)
             with torch.no_grad():
                 for _ in range(5):
                     model(batch)
             if device == "cuda":
                 torch.cuda.synchronize()
-            N = 100
+            N = 50
             t0 = time.monotonic()
             with torch.no_grad():
                 for _ in range(N):
@@ -56,13 +64,15 @@ def bench(device):
                 torch.cuda.synchronize()
             dt = time.monotonic() - t0
             sps = N / dt * B
-            print(f"{B:>4} {N/dt:>9.1f} {sps:>10.1f} {1e3*dt/N:>8.3f}")
+            vram = (torch.cuda.max_memory_allocated() / 1e6) if device == "cuda" else 0.0
+            print(f"{B:>5} {N/dt:>9.1f} {sps:>11.1f} {1e3*dt/N:>8.3f} {vram:>9.1f}")
             if sps > best[1]:
                 best = (B, sps)
+            del batch
         except RuntimeError as e:
-            print(f"{B:>4}  OOM/err: {str(e)[:60]}")
+            print(f"{B:>5}  OOM/err: {str(e)[:70]}")
             break
-    print(f"peak states/s at B={best[0]}: {best[1]:.1f}")
+    print(f"PEAK states/s at B={best[0]}: {best[1]:.1f}")
 
 
 if __name__ == "__main__":

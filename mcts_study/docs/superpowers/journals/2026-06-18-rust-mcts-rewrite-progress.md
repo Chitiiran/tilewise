@@ -63,6 +63,7 @@ GPU during the run: util 34%, mem 166 MiB, power 7.9W (was 0%/36MiB/3.7W idle).
 | CUDA B=1 | 8 | 0.20 | 1x |
 | CUDA batched B<=8 | 8 | 1.25 | 6.3x |
 | **CUDA batched B=32** | **32** | **3.26** | **~16x** |
+| CUDA batched B=64 | 64 | 3.85 | ~19x |
 | CPU B=1 | 8 | 0.78 | — |
 | CPU batched B<=8 | 8 | 1.88 | — |
 
@@ -95,6 +96,43 @@ at B=128 it's 5317 states/s ≈ **106x the B=1 rate**, still rising, no OOM on t
 raising B_MAX to 64/128 would ~2-4x GNN throughput again. The real ceiling is
 the number of CONCURRENT GAMES with a leaf pending (you need ~B games in flight
 to fill a B batch), not the GPU. Sweep: scripts/bench_batch_sweep.py.
+
+**END-TO-END games/min is a DIFFERENT, lower ceiling** than raw states/s:
+- B=32/32g: 3.26 g/min ; B=64/64g: 3.85 g/min — doubling B_MAX gained only +18%.
+Raw GNN throughput doubles 32→64, but end-to-end is now limited by game DESYNC
+(can't keep a B=64 batch full — games are at different move counts / hit chance
+nodes) and CPU-side per-leaf work (build_observation, tree ops, NpRng) that
+does NOT batch. So past ~B=32 the GPU is no longer the bottleneck end-to-end;
+the win flattens. Practical sweet spot: B_MAX ~= 32-64 (the production B_MAX=32
+is close to the knee; 64 is +18% for 2x VRAM/concurrency). Bigger B_MAX only
+helps if you run many more concurrent games AND cut the CPU-side per-leaf cost.
+
+### THE MAXIMUM (full sweep to B=2048, deterministic CUDA, 4GB GTX 1650)
+```
+   B      fwd/s   states/s   ms/fwd   VRAM_MB
+   1       48.8       48.8    20.5       37
+  32       41.2     1317      24.3       47
+  64       36.6     2340      27.3       57
+ 128       35.4     4532      28.2       76
+ 256       27.4     7012      36.5      113
+ 512       15.9     8160      62.7      188
+1024        8.8     8974     114        339
+2048        4.6     9368     219        638   <- PEAK raw throughput (plateau)
+```
+- **Raw GNN max ≈ 9,400 states/s at B=2048**, but PLATEAUING: B=256→2048 is 8x
+  the batch for only +34% throughput. The knee is **B≈128-256** (~4.5-7k
+  states/s); past it you pay linear latency (219 ms/fwd at B=2048) for crumbs.
+- **VRAM is NOT the limit** — B=2048 used only 638 MB of 4096 MB. The h128 net is
+  tiny; memory never caps. (The ceiling would be ~B=12000 on VRAM, useless.)
+- **End-to-end games/min max ≈ 3.85** (B=64), FLAT past B=32 — this is the metric
+  that matters, and it's far below raw throughput. Limited by game desync +
+  CPU-side per-leaf work, not the GPU.
+
+**Bottom line — the useful maximum is B_MAX ≈ 32-64.** Production B_MAX=32 is at
+the knee. To go faster end-to-end the lever is NOT bigger batches: it's cutting
+the CPU per-leaf cost (build_observation / tree ops / NpRng) or running more
+concurrent games (more CPU cores). The GPU has huge headroom (638MB/4GB, 9k
+states/s) that self-play can't currently feed.
 
 ### The CUDA-enablement fixes (tch + pip-wheel libtorch) — pitfalls #11-13
 - **#11 tch silently runs on CPU.** `tch::Cuda::is_available()` returns false
