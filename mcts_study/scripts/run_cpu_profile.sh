@@ -14,6 +14,6 @@ export LD_PRELOAD="$TORCH_DIR/lib/libtorch_cuda.so${LD_PRELOAD:+:$LD_PRELOAD}"
 cd /mnt/c/dojo/catan_bot/.claude/worktrees/az-bots/mcts_study
 python scripts/reexport_spike_ts.py cuda 32 2>&1 | tail -1
 cd /mnt/c/dojo/catan_bot/.claude/worktrees/az-bots/catan_mcts_rs
-TP_BMAX=32 TP_GAMES="${1:-16}" TP_SIMS=200 \
+TP_BMAX="${3:-32}" TP_GAMES="${1:-16}" TP_SIMS="${2:-200}" \
   cargo test -p catan_mcts_rs --release --test cpu_profile -- --ignored --nocapture 2>&1 \
   | grep -E "device|games=|total|GPU|CPU|leaves|error|panic"

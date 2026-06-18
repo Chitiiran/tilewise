@@ -163,6 +163,28 @@ But mean B=21.5 < 32 cap even at 64 games: ~1/3 of games are NOT parked at any
 instant (in `advance` resolving chance/single-legal runs, or finishing). THAT
 gap is the next lever after concurrency. CPU% rose 3%→8% but is still minor.
 
+### Concurrency sweep extended to G=512 (B_MAX=32, sims=50, deterministic CUDA)
+| G | mean batch /32 | GPU% | CPU% | leaves/s |
+|---|---|---|---|---|
+| 16 | 10.7 | 96.8% | 3.0% | 1298 |
+| 64 | 21.5 | 91.7% | 8.0% | 2281 |
+| **512** | **29.9 (93%)** | 88.2% | 11.4% | **2525** |
+**Concurrency ALONE nearly fills the batch** — 29.9/32 at G=512. But sharply
+diminishing: 64→512 (8x games) only +11% leaves/s (2281→2525). Box: 12 cores /
+54GB / 4GB VRAM — RAM/VRAM never blocked; the scheduler core hit 95% (single-
+threaded) at G=512 but CPU is still only 11% of total time.
+
+**CONCLUSION — the bottleneck has MOVED.** Batch fill is ~solved by concurrency
+(93% at G=512), so Lever B (full-parked-set scheduler) has ≤7% fill headroom
+left — NOT worth the refactor. At high G we are now genuinely **GPU-forward-
+bound** (88%, 228k near-full batches) at ~2525 leaves/s — far below the 9400
+states/s raw ceiling because the **deterministic-scatter kernel (~20ms/call)**
+is the limit. The only levers left that matter: (1) cheaper forward — non-det
+CUDA is 2.6x but BREAKS the replay contract (rejected); a smaller/fused net or
+fp16 would help; (2) reduce leaves/game (tree reuse across moves). Lever B is
+effectively MOOT. Recommended production setting: **n_concurrent ≈ 256-512,
+B_MAX=32** (knee of the fill curve; past 64 it's +11% for 8x the games/RAM).
+
 ### The CUDA-enablement fixes (tch + pip-wheel libtorch) — pitfalls #11-13
 - **#11 tch silently runs on CPU.** `tch::Cuda::is_available()` returns false
   with the pip wheel because `libtorch_cuda.so` isn't loaded (tch links CPU

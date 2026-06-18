@@ -82,11 +82,22 @@ to A. The experiment will tell.)
 A controlled, reproducible benchmark producing a table, plus a parity check.
 
 ### 4.1 Concurrency sweep (Lever A)
-For G ∈ {16, 32, 64, 128, 256} at B_MAX=32, sims=200, fixed seed set, CUDA
-deterministic: measure mean batch, leaves/sec, games/min, CPU% vs GPU%, peak
-VRAM. Find the G that maximizes leaves/sec (the knee — beyond it, CPU/VRAM or
-the un-parked fraction caps the gain). Output: a table + recommended
-`n_concurrent`.
+We ALREADY have the low-G end (production net, sims=200, deterministic CUDA,
+B_MAX=32): G=16 → mean batch 10.7, 1298 leaves/s; G=64 → mean batch 21.5,
+2281 leaves/s (1.76×). Mean batch still well below the 32 cap at G=64, so the
+sweep EXTENDS the high end to find the plateau: **G ∈ {64, 128, 256, 512}** at
+B_MAX=32. (Optionally one B_MAX=64 point at G=512 to test if a higher cap helps
+once games are plentiful.) Measure mean batch, leaves/sec, games/min, CPU% vs
+GPU%, peak VRAM, peak host RAM. Find the G that maximizes leaves/sec.
+
+**512 feasibility (measured 2026-06-18):** box has 12 cores, 54 GB RAM, 4 GB
+VRAM. GPU is fine — the on-device batch is capped at B_MAX (≈47 MB @ B_MAX=32),
+NOT G; per-game trees live in host RAM. Host RAM: ~a few MB/game × 512 ≈ 1–2 GB
+≪ 54 GB. The real risk is the **single-threaded scheduler**: CPU was 8% at G=64,
+so ~8× work at G=512 could push the scheduler core toward saturation before the
+GPU is full (11 cores would sit idle). The sweep surfaces exactly where that
+crossover is — if CPU% climbs steeply past some G, that G is the practical cap
+and a multi-threaded scheduler becomes the follow-up lever.
 
 ### 4.2 Scheduler A/B (Lever B)
 Implement the "collect-full-parked-set-then-chunk" scheduler
