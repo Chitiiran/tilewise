@@ -149,7 +149,14 @@ fn debug_selfplay_game<'py>(
         dirichlet_eps,
     };
     let rec = play_one_game(&ev, seed, &cfg);
+    game_record_to_dict(py, &rec)
+}
 
+/// Convert a Rust GameRecord into the SelfPlayRecorder-shaped Python dict.
+fn game_record_to_dict<'py>(
+    py: Python<'py>,
+    rec: &crate::selfplay::GameRecord,
+) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new_bound(py);
     d.set_item("seed", rec.seed)?;
     d.set_item("terminal", rec.terminal)?;
@@ -201,6 +208,83 @@ fn debug_arena_game(
     (r.winner_seat, r.timed_out, r.vp_margin)
 }
 
+/// PRODUCTION self-play entry (coarse — one crossing for the whole stage).
+/// Runs `seeds` games with one shared net evaluator, returns a list of records
+/// (same dict shape as debug_selfplay_game) for the Python SelfPlayRecorder.
+#[pyfunction]
+#[pyo3(signature = (net_ts, seeds, n_sims, self_play=true, vp_target=10,
+                    bonuses=true, temp_moves=30, dirichlet_alpha=0.8,
+                    dirichlet_eps=0.25, max_steps=200_000))]
+#[allow(clippy::too_many_arguments)]
+fn run_selfplay<'py>(
+    py: Python<'py>,
+    net_ts: String,
+    seeds: Vec<u64>,
+    n_sims: u32,
+    self_play: bool,
+    vp_target: u8,
+    bonuses: bool,
+    temp_moves: usize,
+    dirichlet_alpha: f64,
+    dirichlet_eps: f64,
+    max_steps: u32,
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    let ev = TorchScriptEvaluator::load(&net_ts, Device::Cpu).expect("load net_ts");
+    let out = pyo3::types::PyList::empty_bound(py);
+    for seed in seeds {
+        let cfg = SelfPlayConfig {
+            n_sims, self_play, vp_target, bonuses, max_steps,
+            temp_moves, dirichlet_alpha, dirichlet_eps,
+        };
+        let rec = play_one_game(&ev, seed, &cfg);
+        out.append(game_record_to_dict(py, &rec)?)?;
+    }
+    Ok(out)
+}
+
+/// PRODUCTION arena entry (coarse). Plays the full (rot, seed) plan with two
+/// nets; returns one (seed, rot, winner_seat, winner_role, timed_out, vp_margin)
+/// dict per game for the Python ArenaResult aggregation.
+#[pyfunction]
+#[pyo3(signature = (cand_ts, champ_ts, seed_base, games, sims, vp_target=10,
+                    bonuses=true, max_steps=200_000))]
+#[allow(clippy::too_many_arguments)]
+fn run_arena<'py>(
+    py: Python<'py>,
+    cand_ts: String,
+    champ_ts: String,
+    seed_base: u64,
+    games: usize,
+    sims: u32,
+    vp_target: u8,
+    bonuses: bool,
+    max_steps: u32,
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    let ev_cand = TorchScriptEvaluator::load(&cand_ts, Device::Cpu).expect("load cand_ts");
+    let ev_champ = TorchScriptEvaluator::load(&champ_ts, Device::Cpu).expect("load champ_ts");
+    let out = pyo3::types::PyList::empty_bound(py);
+    for (rot, seed) in crate::arena::seed_plan(seed_base, games) {
+        let seating = seating_is_cand(rot);
+        let r = play_arena_game(
+            &ev_cand, &ev_champ, seed, seating, sims, vp_target, bonuses, max_steps,
+        );
+        let role: Option<&str> = if r.winner_seat >= 0 {
+            Some(if seating[r.winner_seat as usize] { "cand" } else { "champ" })
+        } else {
+            None
+        };
+        let d = PyDict::new_bound(py);
+        d.set_item("seed", seed)?;
+        d.set_item("rot", rot)?;
+        d.set_item("winner_seat", r.winner_seat)?;
+        d.set_item("winner_role", role)?;
+        d.set_item("timed_out", r.timed_out)?;
+        d.set_item("vp_margin", r.vp_margin)?;
+        out.append(d)?;
+    }
+    Ok(out)
+}
+
 #[pymodule]
 fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_legal_actions, m)?)?;
@@ -211,5 +295,7 @@ fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_search, m)?)?;
     m.add_function(wrap_pyfunction!(debug_selfplay_game, m)?)?;
     m.add_function(wrap_pyfunction!(debug_arena_game, m)?)?;
+    m.add_function(wrap_pyfunction!(run_selfplay, m)?)?;
+    m.add_function(wrap_pyfunction!(run_arena, m)?)?;
     Ok(())
 }

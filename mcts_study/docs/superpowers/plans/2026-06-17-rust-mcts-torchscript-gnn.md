@@ -668,7 +668,22 @@ Note the dual-RNG: Rust arena must use a stdlib-Mersenne-equivalent for the GAME
 - [ ] **Step 4:** Run — PASS. Also run the full existing `catan_az` test suite to confirm orchestration is intact.
 - [ ] **Step 5:** Commit `feat(az): TorchScript export in train; daily self-play+arena Rust engine (flagged)`.
 
-### Task 10: True cross-game batched self-play/arena evaluator
+> **Execution notes (Phase 8 as built):**
+> - `cfg.engine` flag added (default `"python"`; flip to `"rust"` in Phase 9).
+> - Self-play swap: `daily._launch_selfplay_procs` picks
+>   `catan_mcts.experiments.self_play_rust` (NEW, CLI-compatible drop-in) when
+>   `engine=="rust"`. That module calls `catan_mcts_rs.run_selfplay` and writes
+>   the SAME `SelfPlayRecorder` shards — daily.py's worker/seed/resume/meta
+>   logic is UNCHANGED. The `.ts` is the checkpoint's sibling (from
+>   `loop._default_train`), auto-exported if missing.
+> - Arena swap: `catan_az.arena.run_arena` branches to `_run_arena_rust`
+>   (`catan_mcts_rs.run_arena` → same `results.jsonl` schema → shared
+>   `_aggregate_arena`) when `engine=="rust"`. `ArenaResult`/`should_promote`
+>   UNCHANGED.
+> - Tests: `test_loop_exports_ts`, `test_daily_rust_engine`
+>   (config default + module switch + run_arena rust-vs-python parity).
+
+### Task 10: True cross-game batched self-play/arena evaluator (DEFERRED — perf-only follow-up)
 
 **Files:**
 - Modify: `catan_mcts_rs/src/selfplay.rs`, `arena.rs`, `evaluator.rs`

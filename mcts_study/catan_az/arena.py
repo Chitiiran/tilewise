@@ -228,6 +228,59 @@ def _load_model(ckpt: Path, cfg, device: str):
     return model.to(device).eval()
 
 
+def _aggregate_arena(done: dict[int, dict], out_dir: Path) -> ArenaResult:
+    """Shared aggregation of results.jsonl records into an ArenaResult."""
+    result = ArenaResult()
+    for rec in done.values():
+        if rec["timed_out"]:
+            result.timeouts += 1
+        if rec["winner_role"] == "cand":
+            result.wins_cand += 1
+            result.per_rotation[rec["rot"]] += 1
+        elif rec["winner_role"] == "champ":
+            result.wins_champ += 1
+        else:
+            result.draws += 1
+    result.to_json(out_dir / "arena.json")
+    return result
+
+
+def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
+                    out_dir: Path, seed_base: int, results_path: Path,
+                    done: dict[int, dict]) -> ArenaResult:
+    """Rust-engine arena: catan_mcts_rs.run_arena over the full plan, writing
+    the SAME results.jsonl schema, then shared aggregation. Resumable: seeds
+    already in results.jsonl are skipped (the Rust call replays the full plan;
+    we only append/keep records for seeds not yet done)."""
+    import time as _t
+    import catan_mcts_rs
+    from catan_gnn.export_torchscript import export
+
+    def _ts(ckpt: Path) -> str:
+        ckpt = Path(ckpt)
+        ts = ckpt.with_suffix(".ts")
+        if not ts.exists():
+            export(checkpoint=ckpt, out_ts=ts,
+                   hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers)
+        return str(ts)
+
+    plan_seeds = {s for _, s in seed_plan(seed_base=seed_base, games=cfg.arena_games)}
+    if all(s in done for s in plan_seeds):
+        return _aggregate_arena(done, out_dir)
+
+    records = catan_mcts_rs.run_arena(
+        _ts(candidate_ckpt), _ts(champion_ckpt), seed_base, cfg.arena_games,
+        cfg.arena_sims, cfg.vp_target, cfg.bonuses)
+    with open(results_path, "a") as f:
+        for rec in records:
+            if rec["seed"] in done:
+                continue
+            rec = {**rec, "ts": _t.time()}
+            f.write(json.dumps(rec) + "\n")
+            done[rec["seed"]] = rec
+    return _aggregate_arena(done, out_dir)
+
+
 def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
               out_dir: Path, seed_base: int = 30_000_000,
               device: str = "cuda", n_concurrent: int = 16) -> ArenaResult:
@@ -240,6 +293,15 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
     done = _read_arena_results(results_path)
+
+    # Rust engine path (catan_mcts_rs): in-process MCTS + TorchScript GNN, zero
+    # per-node PyO3. Games finish naturally (no wall-clock deadline). Writes the
+    # SAME results.jsonl schema, then falls through to the shared aggregation.
+    if getattr(cfg, "engine", "python") == "rust":
+        return _run_arena_rust(
+            candidate_ckpt=candidate_ckpt, champion_ckpt=champion_ckpt, cfg=cfg,
+            out_dir=out_dir, seed_base=seed_base, results_path=results_path,
+            done=done)
 
     async def _main() -> None:
         model_cand = _load_model(candidate_ckpt, cfg, device)
@@ -321,19 +383,6 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
            seed_plan(seed_base=seed_base, games=cfg.arena_games)):
         asyncio.run(_main())
 
-    result = ArenaResult()
-    for rec in done.values():
-        # A timed-out game is now credited to its VP-leader (winner_role set);
-        # count it toward wins AND toward the timeout tally (observability +
-        # rate guard). Only a VP-tie timeout (winner_role None) is a draw.
-        if rec["timed_out"]:
-            result.timeouts += 1
-        if rec["winner_role"] == "cand":
-            result.wins_cand += 1
-            result.per_rotation[rec["rot"]] += 1
-        elif rec["winner_role"] == "champ":
-            result.wins_champ += 1
-        else:
-            result.draws += 1
-    result.to_json(out_dir / "arena.json")
-    return result
+    # A timed-out game is credited to its VP-leader (winner_role set); only a
+    # VP-tie timeout (winner_role None) is a draw. Shared with the Rust path.
+    return _aggregate_arena(done, out_dir)

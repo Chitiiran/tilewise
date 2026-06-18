@@ -134,8 +134,11 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
     procs = []
     for i in range(n_procs):
         sb = _worker_seed_base(gen_iter=gen_iter, i=i) + seed_offset
+        sp_module = ("catan_mcts.experiments.self_play_rust"
+                     if getattr(cfg, "engine", "python") == "rust"
+                     else "catan_mcts.experiments.self_play_async")
         cmd = ["nice", "-n", str(cfg.worker_nice),
-               "python", "-m", "catan_mcts.experiments.self_play_async",
+               "python", "-m", sp_module,
                "--out-root", str(out_dir), "--checkpoint", str(checkpoint),
                "--num-games", str(per), "--n-sims", str(cfg.sims),
                "--n-concurrent", str(cfg.n_concurrent),

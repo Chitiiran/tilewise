@@ -96,6 +96,11 @@ class AzConfig:
     stagnation_holds: int = 5          # N trailing holds -> surface + stop day
     archive_root: str = "/mnt/d/catan_az_archive"   # HDD archive target
     dashboard_port: int = 8099
+    # --- self-play/arena engine (Rust-MCTS rewrite 2026-06-18) ---
+    # "python" = legacy asyncio BatchedGnnEvaluator path (default until the
+    # Phase-9 production cross-check flips it). "rust" = catan_mcts_rs in-process
+    # MCTS + TorchScript GNN (zero per-node PyO3), proven bit-exact in the gates.
+    engine: str = "python"
 
     def to_json(self, path: Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2))
