@@ -318,6 +318,48 @@ fn run_arena<'py>(
     Ok(out)
 }
 
+/// Arena over an EXPLICIT (rot, seed) list — lets the Python driver chunk the
+/// plan for pausability while keeping the same per-game records as run_arena.
+#[pyfunction]
+#[pyo3(signature = (cand_ts, champ_ts, pairs, sims, vp_target=10, bonuses=true,
+                    max_steps=200_000))]
+#[allow(clippy::too_many_arguments)]
+fn run_arena_games<'py>(
+    py: Python<'py>,
+    cand_ts: String,
+    champ_ts: String,
+    pairs: Vec<(usize, u64)>,
+    sims: u32,
+    vp_target: u8,
+    bonuses: bool,
+    max_steps: u32,
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    let device = infer_device();
+    let ev_cand = TorchScriptEvaluator::load(&cand_ts, device).expect("load cand_ts");
+    let ev_champ = TorchScriptEvaluator::load(&champ_ts, device).expect("load champ_ts");
+    let out = pyo3::types::PyList::empty_bound(py);
+    for (rot, seed) in pairs {
+        let seating = seating_is_cand(rot);
+        let r = play_arena_game(
+            &ev_cand, &ev_champ, seed, seating, sims, vp_target, bonuses, max_steps,
+        );
+        let role: Option<&str> = if r.winner_seat >= 0 {
+            Some(if seating[r.winner_seat as usize] { "cand" } else { "champ" })
+        } else {
+            None
+        };
+        let d = PyDict::new_bound(py);
+        d.set_item("seed", seed)?;
+        d.set_item("rot", rot)?;
+        d.set_item("winner_seat", r.winner_seat)?;
+        d.set_item("winner_role", role)?;
+        d.set_item("timed_out", r.timed_out)?;
+        d.set_item("vp_margin", r.vp_margin)?;
+        out.append(d)?;
+    }
+    Ok(out)
+}
+
 #[pymodule]
 fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_legal_actions, m)?)?;
@@ -330,5 +372,6 @@ fn catan_mcts_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_arena_game, m)?)?;
     m.add_function(wrap_pyfunction!(run_selfplay, m)?)?;
     m.add_function(wrap_pyfunction!(run_arena, m)?)?;
+    m.add_function(wrap_pyfunction!(run_arena_games, m)?)?;
     Ok(())
 }

@@ -51,6 +51,7 @@ class AzConfig:
     arena_max_draw_rate: float = 0.40      # too many VP ties -> untrustworthy
     arena_min_decisive: int = 40           # need >=N decided games for a verdict
     arena_sims: int = 200
+    arena_chunk_games: int = 64        # games per batched arena chunk (pause granularity)
     # Per-game wall-clock cap: bounds the rare pathological game that crawls
     # toward the 200k step cap and would otherwise hold the whole arena's
     # gather() hostage (2026-06-13 incident). 600s >> a normal ~2min game, so

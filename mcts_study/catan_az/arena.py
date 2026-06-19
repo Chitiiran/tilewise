@@ -264,21 +264,38 @@ def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
                    hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers)
         return str(ts)
 
-    plan_seeds = {s for _, s in seed_plan(seed_base=seed_base, games=cfg.arena_games)}
-    if all(s in done for s in plan_seeds):
+    plan = seed_plan(seed_base=seed_base, games=cfg.arena_games)
+    remaining = [(rot, s) for (rot, s) in plan if s not in done]
+    if not remaining:
         return _aggregate_arena(done, out_dir)
 
-    records = catan_mcts_rs.run_arena(
-        _ts(candidate_ckpt), _ts(champion_ckpt), seed_base, cfg.arena_games,
-        cfg.arena_sims, cfg.vp_target, cfg.bonuses)
-    with open(results_path, "a") as f:
-        for rec in records:
-            if rec["seed"] in done:
-                continue
-            rec = {**rec, "ts": _t.time()}
-            f.write(json.dumps(rec) + "\n")
-            done[rec["seed"]] = rec
+    # PAUSABLE: chunk the remaining plan, write results.jsonl after each chunk,
+    # check a PAUSE sentinel between chunks. Resume skips done seeds (results.jsonl
+    # is the per-game durable record). Chunk size ~ arena concurrency.
+    chunk = max(1, int(getattr(cfg, "arena_chunk_games", 64)))
+    cand_ts, champ_ts = _ts(candidate_ckpt), _ts(champion_ckpt)
+    for i in range(0, len(remaining), chunk):
+        if _arena_paused(out_dir):
+            print(f"[arena] PAUSED with {len(remaining) - i} games remaining "
+                  f"-> resume re-runs this dir (skips done seeds)")
+            break
+        pairs = remaining[i:i + chunk]
+        records = catan_mcts_rs.run_arena_games(
+            cand_ts, champ_ts, pairs, cfg.arena_sims, cfg.vp_target, cfg.bonuses)
+        with open(results_path, "a") as f:
+            for rec in records:
+                if rec["seed"] in done:
+                    continue
+                rec = {**rec, "ts": _t.time()}
+                f.write(json.dumps(rec) + "\n")
+                done[rec["seed"]] = rec
     return _aggregate_arena(done, out_dir)
+
+
+def _arena_paused(out_dir) -> bool:
+    """PAUSE sentinel in the arena dir or a parent (iter dir / loop root)."""
+    p = Path(out_dir)
+    return any((d / "PAUSE").exists() for d in (p, p.parent, p.parent.parent))
 
 
 def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,

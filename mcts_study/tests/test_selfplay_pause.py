@@ -7,12 +7,10 @@ from pathlib import Path
 
 import pytest
 
-# Stub catan_mcts_rs.run_selfplay BEFORE importing the module, so no GPU/tch.
-_fake = types.ModuleType("catan_mcts_rs")
+from catan_mcts.experiments import self_play_rust as spr
 
 
 def _fake_run_selfplay(ts, seeds, *a, **k):
-    # one trivial finished record per seed (1 move, winner 0).
     return [{
         "seed": int(s), "terminal": True, "winner": 0,
         "final_vp": [10, 0, 0, 0], "length_in_moves": 5,
@@ -24,15 +22,18 @@ def _fake_run_selfplay(ts, seeds, *a, **k):
     } for s in seeds]
 
 
-_fake.run_selfplay = _fake_run_selfplay
-sys.modules["catan_mcts_rs"] = _fake
-
-# Also stub the TorchScript export (no torch needed for this logic test).
-import catan_gnn.export_torchscript as _ex  # noqa: E402
-_ex.export = lambda **k: Path(k["out_ts"]).write_text("ts") or Path(k["out_ts"])
-_ex.export_batched = lambda **k: Path(k["out_ts"]).write_text("bts") or Path(k["out_ts"])
-
-from catan_mcts.experiments import self_play_rust as spr  # noqa: E402
+@pytest.fixture(autouse=True)
+def _stub_engine(monkeypatch):
+    """Hermetic stub of catan_mcts_rs + .ts export, restored after each test."""
+    fake = types.ModuleType("catan_mcts_rs")
+    fake.run_selfplay = _fake_run_selfplay
+    monkeypatch.setitem(sys.modules, "catan_mcts_rs", fake)
+    monkeypatch.setattr(spr, "catan_mcts_rs", fake, raising=False)
+    monkeypatch.setattr(spr, "export",
+                        lambda **k: Path(k["out_ts"]).write_text("ts") or Path(k["out_ts"]))
+    monkeypatch.setattr(spr, "export_batched",
+                        lambda **k: Path(k["out_ts"]).write_text("b") or Path(k["out_ts"]))
+    yield
 
 
 def _run(out, n_games, n_concurrent, pause_dir=None, resume_dir=None):
