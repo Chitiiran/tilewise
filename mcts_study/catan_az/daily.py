@@ -8,6 +8,7 @@ import csv as _csv
 import json
 import os
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -462,6 +463,19 @@ def cli_main():
     p.add_argument("--config", type=Path, default=None)
     args = p.parse_args()
     cfg = AzConfig.from_json(args.config) if args.config else AzConfig()
+    # Rust engine: the WHOLE driver needs the GPU env so the IN-PROCESS arena
+    # (_run_arena_rust runs tch in this process) uses the GPU. LD_PRELOAD can't
+    # be set after start, so re-exec once with the env if it's missing. Self-play
+    # workers are subprocesses and get the env separately (_rust_cuda_env), but
+    # the arena runs here -> the driver itself must carry it.
+    if getattr(cfg, "engine", "python") == "rust" and \
+            "libtorch_cuda.so" not in os.environ.get("LD_PRELOAD", ""):
+        env = _rust_cuda_env()
+        env["_AZ_GPU_REEXEC"] = "1"     # guard against re-exec loops
+        if os.environ.get("_AZ_GPU_REEXEC") != "1":
+            print("[az-day] re-exec with GPU env for the rust in-process arena", flush=True)
+            os.execvpe(sys.executable,
+                       [sys.executable, "-m", "catan_az.daily", *sys.argv[1:]], env)
     res = preflight(cfg, loop_root=args.loop_root,
                     archive_root=Path(cfg.archive_root))
     if not res.ok:
