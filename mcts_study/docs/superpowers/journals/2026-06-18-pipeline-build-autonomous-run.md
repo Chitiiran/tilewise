@@ -102,6 +102,14 @@ earlier 6-game smoke produced 0 records only because a 3-min sampler kill cut it
 off before the all-or-nothing chunk finished — not a bug. For finer flush
 granularity in production, set n_concurrent to the desired flush size.)
 
+## Final verification (all green)
+- Plain-pytest pipeline sweep: **45 passed, 1 skipped** (GPU arena test gated).
+- GPU arena-match (via pytest_mctsrs.sh): **1 passed** (369s) — rust arena on
+  CUDA matches the Python arena per-game + winrate, confirming the device-matched
+  .ts export fix. (This bug — CPU-traced .ts crashing on CUDA — would have
+  silently broken production arena; now fixed + verified.)
+- Integration smoke: real self-play produces records, GPU engaged, sampler runs.
+
 ## Recommended next step
 The infra is done and much faster + correct. The highest-value action now is to
 **run a real AZ iteration** on this engine (naturally-terminated self-play →
