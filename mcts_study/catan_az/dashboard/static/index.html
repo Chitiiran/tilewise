@@ -108,6 +108,18 @@
   <div class="spstats" id="sp-stats"></div>
 </div>
 
+<div class="card" id="res-card" style="display:none"><h2>🖥️ Machine — GPU &amp; CPU (live)</h2>
+  <div id="res-stats" class="spstats"></div>
+  <svg id="res-chart" viewBox="0 0 1040 120" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:140px"></svg>
+  <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.3rem">GPU util % (green) &amp; power W/75 (amber) over the last samples — high = the GPU is being fed.</div>
+</div>
+
+<div class="card" id="tr-card" style="display:none"><h2>📉 Training — live loss</h2>
+  <div id="tr-head" class="muted"></div>
+  <svg id="tr-chart" viewBox="0 0 1040 140" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:160px"></svg>
+  <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.3rem">per-batch total loss (blue) — watch it descend as the net learns.</div>
+</div>
+
 <div class="card" id="ar-card" style="display:none">
   <h2 style="display:flex;justify-content:space-between;align-items:baseline">
     <span>⚔️ Arena — live gate</span><span id="ar-live" class="ar-live"></span></h2>
@@ -185,6 +197,9 @@ async function tick(){
   else fl.innerHTML=s.flags.map(f=>`<div class="flag ${f.severity}">${f.severity==='error'?'⛔':'⚠'} <b>${f.id}</b> — ${f.message}</div>`).join('');
   // live data-generation card — only while self-play is producing games
   await drawSelfplay();
+  // live machine (GPU/CPU) + training-loss cards
+  await drawResources();
+  await drawTraining();
   // live arena gate card — only while the arena is running
   await drawArena();
   // metrics table + chart — training data is now INLINE in /api/metrics
@@ -238,6 +253,46 @@ async function drawSelfplay(){
     `<div class="s"><div class="l" title="% of games won from each board seat; ~25% each = balanced (healthy)">winner seat balance <span style="opacity:.6">(~25% each = ok)</span></div><div class="seatbar">${seatHtml}</div></div>`;
 }
 function stat(v,l){return `<div class="s"><div class="v">${v}</div><div class="l">${l}</div></div>`}
+// Tiny inline line-chart into an <svg> (no chart lib). series: array of {pts:[y..],
+// color, max}. Plots each normalized to its own max over a shared x.
+function spark(svgId, series, w=1040, h){
+  const svg=$(svgId); if(!svg)return; svg.innerHTML='';
+  const vb=svg.getAttribute('viewBox').split(' ').map(Number); h=h||vb[3];
+  const n=Math.max(...series.map(s=>s.pts.length),1);
+  if(n<2){svg.innerHTML='<text x="20" y="'+(h/2)+'" fill="#8b93a3" font-size="13">collecting…</text>';return;}
+  for(const s of series){
+    const mx=s.max||Math.max(...s.pts,1e-9);
+    const d=s.pts.map((y,i)=>{const x=(i/(n-1))*(w-20)+10;const yy=h-8-(Math.min(y,mx)/mx)*(h-16);return (i?'L':'M')+x.toFixed(1)+' '+yy.toFixed(1)}).join(' ');
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',d);p.setAttribute('fill','none');p.setAttribute('stroke',s.color);p.setAttribute('stroke-width','2');
+    svg.appendChild(p);
+  }
+}
+async function drawResources(){
+  const r=await j('/api/resources-live'); const card=$('res-card');
+  if(!r||!r.available||!r.points.length){card.style.display='none';return;}
+  card.style.display='';
+  const L=r.latest||{};
+  const memPct=L.gpu_mem_total_mb?Math.round(100*L.gpu_mem_used_mb/L.gpu_mem_total_mb):0;
+  $('res-stats').innerHTML=
+    stat((L.gpu_util_pct??0).toFixed(0)+'%','GPU util (high = fed)')+
+    stat((L.gpu_power_w??0).toFixed(1)+'W','GPU power (of 75W)')+
+    stat(memPct+'%','GPU mem '+(L.gpu_mem_used_mb??0).toFixed(0)+'MB')+
+    stat((L.load1??0).toFixed(1),'CPU load1 (of 12)')+
+    stat((L.ram_avail_gb??0).toFixed(0)+'G','RAM free');
+  spark('res-chart',[
+    {pts:r.points.map(p=>p.gpu_util_pct||0),color:'#4ade80',max:100},
+    {pts:r.points.map(p=>p.gpu_power_w||0),color:'#fbbf24',max:75},
+  ]);
+}
+async function drawTraining(){
+  const t=await j('/api/train-progress-live'); const card=$('tr-card');
+  if(!t||!t.available||!t.points.length){card.style.display='none';return;}
+  card.style.display='';
+  const L=t.latest||{};
+  $('tr-head').textContent=`epoch ${L.epoch??'?'} · batch ${L.batch??'?'}/${L.batches_total??'?'} · loss ${(L.loss??0).toFixed(3)} · grad-norm ${(L.grad_norm??0).toFixed(2)} · ${(L.ms_per_batch??0).toFixed(0)} ms/batch`;
+  spark('tr-chart',[{pts:t.points.map(p=>p.loss||0),color:'#60a5fa'}]);
+}
 let _arLastGames=null;
 async function drawArena(){
   const a=await j('/api/arena-live'); const card=$('ar-card');

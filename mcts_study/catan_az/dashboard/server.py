@@ -84,6 +84,26 @@ def create_dashboard(*, loop_root, web_port: int = 8000, cfg=None) -> FastAPI:
         out["seat_bias"] = analytics.seat_bias(loop_root, iter_n=it)
         return out
 
+    @app.get("/api/resources-live")
+    def resources_live():
+        """Live GPU/CPU/RAM samples (resources.jsonl) for the running iter."""
+        from catan_az import analytics
+        live = analytics.liveness(loop_root)
+        it = live.get("iter")
+        if it is None:
+            return {"available": False, "points": []}
+        return analytics.resources_live(loop_root, iter_n=it)
+
+    @app.get("/api/train-progress-live")
+    def train_progress_live():
+        """Live per-batch training loss curve (train_progress.jsonl)."""
+        from catan_az import analytics
+        live = analytics.liveness(loop_root)
+        it = live.get("iter")
+        if it is None:
+            return {"available": False, "points": []}
+        return analytics.train_progress_live(loop_root, iter_n=it)
+
     @app.get("/")
     def index():
         return FileResponse(_STATIC / "index.html")
