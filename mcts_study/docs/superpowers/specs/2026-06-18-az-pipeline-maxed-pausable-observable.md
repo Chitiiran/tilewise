@@ -91,30 +91,38 @@ PROCESSES** — the right model for the OLD 1-core asyncio engine, the WRONG mod
 for the Rust batched engine (N processes = N small GPU batchers fragmenting the
 4 GB card vs one fat batch).
 
-**Architecture decision — PENDING the timed profile** (marshal vs irreducible
-`forward_is` split, measuring now). Two candidates:
-- **(A) One process, parallel-CPU + 1 deterministic GPU batcher.** Thread pool
-  does per-game CPU + per-leaf tensor marshaling; a deterministic barrier (fixed
-  slot order) gathers parked leaves → ONE big forward (B up to 512+) → scatter.
-  Breaks the single-scheduler ceiling (currently 1 core at 95% while 11 idle),
-  keeps one fat batch (best fill), stays reproducible. CHOSEN IF marshal+CPU is a
-  material fraction of wall-clock.
-- **(B) Stay single-thread, just raise concurrency.** CHOSEN IF the timed
-  profile shows `forward_is` itself dominates (we're truly GPU-bound) — then more
-  threads can't help; set n_concurrent high and ship.
+**Architecture decision — SETTLED by the timed profile (2026-06-18).** Splitting
+the GPU phase with a CUDA-sync around the bare forward (G=64, B_MAX=32, sims=50):
+`forward_is`=84.7%, marshal=4.3%, extract=1.9%, CPU provide+advance=7.3%. **The
+bare GPU forward is 84.7% of wall-clock; ALL parallelizable work is ~13.5%.** So
+the multi-threaded scheduler (candidate A) can win AT MOST ~13.5% — NOT worth the
+complexity or the reproducibility risk. **Decision: candidate B — we are
+genuinely GPU-forward-bound; do NOT build the threaded scheduler.** The "single
+core at 95%" was a red herring (busy ≠ bottleneck).
 
-**Tuning targets (sweep + pick by measured leaves/s, all reproducible):**
-- self-play: n_concurrent (≥512 per user; sweep to the knee), B_MAX, process/
-  thread count, sims.
-- the launch model: collapse N processes → 1 high-concurrency batched process
-  (or the threaded scheduler from A).
-- training: batch size + DataLoader workers tuned to the 12 cores / 4 GB GPU.
-- arena: same engine; n_concurrent for the two-net batchers.
-- **Constraint:** every change keeps the reproducibility/replay contract
-  (deterministic CUDA, fixed batch composition). Non-deterministic CUDA (2.6×
-  forward) stays REJECTED.
-- **Verify:** small-batch A/B (current vs new) on leaves/s + games/min + GPU
-  util/power, AND a reproducibility check (run twice → identical records).
+**So "max out GPU" reduces to two things, both already in hand + one new lever:**
+1. **Fill the batch (DONE):** concurrency G≥256 → mean batch ~30/32 (93%). Adopt
+   it as the production launch model: collapse the N-process self-play (right for
+   the old asyncio engine) into ONE high-concurrency batched process. This is the
+   single biggest realized win and a config/launch-model change, reproducible.
+2. **Tune B_MAX + n_concurrent to the knee** (data: B_MAX≈32-64, n_concurrent
+   ≥256; raw GNN keeps scaling but end-to-end flattens). Pick by measured
+   leaves/s on the dashboard. Small B_MAX bump (32→64) is +18% e2e for 2× VRAM.
+3. **The only lever beyond batch fill is forward COST/COUNT** (documented, NOT
+   built in this spec — they are follow-ups):
+   - tree reuse across moves → fewer leaves/game → fewer forwards (biggest honest
+     remaining win; ~same GPU per forward but far fewer of them).
+   - cheaper net: fp16 inference / smaller hidden dim (must re-validate strength).
+   - non-deterministic CUDA (2.6× forward) stays REJECTED — breaks replay.
+
+**This phase's concrete deliverable:** swap the self-play launch model to ONE
+batched process at tuned n_concurrent/B_MAX (Rust engine), with a short sweep to
+pick the values, A/B'd against the current N-process model on leaves/s + games/min
++ GPU util, reproducibility intact. Training/arena tuning (DataLoader workers,
+arena n_concurrent) as smaller tune-ups. Tree reuse + fp16 are explicitly
+deferred follow-ups, not this phase.
+
+- **Constraint:** every change keeps the reproducibility/replay contract.
 
 ## 5. Out of scope
 - Net architecture changes (separate concern).

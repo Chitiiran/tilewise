@@ -128,6 +128,27 @@ helps if you run many more concurrent games AND cut the CPU-side per-leaf cost.
   that matters, and it's far below raw throughput. Limited by game desync +
   CPU-side per-leaf work, not the GPU.
 
+### TIMED PROFILE — the GPU forward is IRREDUCIBLE (settles the threading question)
+G=64, B_MAX=32, sims=50, deterministic CUDA, with CUDA-sync around the bare
+forward to separate it from host marshaling:
+```
+forward_is (IRREDUCIBLE serial GPU) : 84.7% of total
+marshal     (parallelizable)        :  4.3%
+extract     (parallelizable)        :  1.9%
+provide+advance (CPU)               :  7.3%
+```
+**84.7% of wall-clock is the bare GPU forward.** ALL parallelizable work
+(marshal+extract+provide+advance) is only ~13.5% combined. So a multi-threaded
+scheduler can remove AT MOST ~13.5% — NOT worth the complexity + reproducibility
+risk. The earlier "scheduler core pegged at 95%" was MISLEADING: a busy core ≠
+the bottleneck. The core is busy doing the 13% CPU work + spinning around the
+synchronous forward; the real limit is the **deterministic-scatter forward
+kernel (~20ms/call)**. CONCLUSION: we are GENUINELY GPU-forward-bound. Threading
+is moot. The only big levers left reduce forward COST or COUNT: non-det CUDA
+(2.6x, breaks replay — rejected), tree reuse across moves (fewer leaves/game),
+or a cheaper net (fp16/smaller). Raising concurrency to fill the batch (done) +
+B_MAX is the throughput we get; beyond that needs a forward-cost change.
+
 **Bottom line — the useful maximum is B_MAX ≈ 32-64.** Production B_MAX=32 is at
 the knee. To go faster end-to-end the lever is NOT bigger batches: it's cutting
 the CPU per-leaf cost (build_observation / tree ops / NpRng) or running more
