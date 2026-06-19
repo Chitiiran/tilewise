@@ -85,6 +85,23 @@ observability first, then pausable, then max out threads+GPU. n_concurrent can b
   inference — these are the only remaining throughput levers and are
   forward-cost/count changes, deferred follow-ups.
 
+## End-to-end integration smoke (verified this run)
+Ran the PRODUCTION self-play path (rust engine, real az_iter_1 128×4 net, CUDA,
+chunked/pausable) directly:
+```
+[self_play_rust] chunk done: 2/2 games
+[self_play_rust] done: 2 games -> .../self_play_rust-p46991   exit=0
+records: games.*.parquet + moves.*.parquet written; done.txt=2
+GPU during run: 38% util / 28.5W (engaged, was idle 3.7W)
+sampler: resources.jsonl 125 lines written alongside
+```
+So the full stack runs together: Rust batched engine + CUDA + chunked self-play +
+SelfPlayRecorder parquet + live resource sampler. (Test harness note: a chunk =
+n_concurrent games that finish together, so a chunk flushes all-at-once; an
+earlier 6-game smoke produced 0 records only because a 3-min sampler kill cut it
+off before the all-or-nothing chunk finished — not a bug. For finer flush
+granularity in production, set n_concurrent to the desired flush size.)
+
 ## Recommended next step
 The infra is done and much faster + correct. The highest-value action now is to
 **run a real AZ iteration** on this engine (naturally-terminated self-play →
