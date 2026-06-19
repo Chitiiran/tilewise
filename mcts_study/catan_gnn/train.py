@@ -357,6 +357,7 @@ def train_main(
     early_stop_patience: int = 0,
     status_file: Path | None = None,
     status_label: str = "",
+    pause_dir: Path | None = None,
     mid_tournament_every: int = 0,
     mid_tournament_games_per_seating: int = 30,
     mid_tournament_drop_threshold: int = 3,
@@ -439,9 +440,14 @@ def train_main(
         rng = np.random.default_rng(seed)
         keep = rng.choice(len(train_ds), size=max_train_samples, replace=False)
         train_ds = Subset(train_ds, sorted(keep.tolist()))
+    # Per-epoch-seeded shuffle generator: epoch K's data order is seed+K,
+    # INDEPENDENT of how K is reached (in-process vs resumed-from-checkpoint).
+    # This makes pause/resume produce a run IDENTICAL to a never-paused run —
+    # the replayability contract for training (re-seeded at each epoch top).
+    _shuffle_gen = torch.Generator()
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, collate_fn=_collate,
-        num_workers=num_workers,
+        num_workers=num_workers, generator=_shuffle_gen,
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False, collate_fn=_collate,
@@ -543,6 +549,9 @@ def train_main(
     progress_every = max(1, batches_total // 50)  # ~50 lines/epoch
 
     for epoch in range(start_epoch, epochs + 1):
+        # Deterministic per-epoch shuffle: order depends only on (seed, epoch),
+        # so a resumed run reproduces the same epoch orders as a straight run.
+        _shuffle_gen.manual_seed(seed * 1_000_003 + epoch)
         # Train.
         model.train()
         tot, tv, tp, n = 0.0, 0.0, 0.0, 0
@@ -942,6 +951,20 @@ def train_main(
 
         if mid_tournament_stop:
             break
+
+        # PAUSE (pausability): a PAUSE sentinel in pause_dir (or a parent) stops
+        # cleanly at the epoch boundary. The per-epoch checkpoint.pt (next_epoch=
+        # epoch+1) was JUST written above, so resume_from=checkpoint.pt continues
+        # from the next epoch — reproducible (epoch-granular; an epoch is minutes).
+        if pause_dir is not None:
+            _pd = Path(pause_dir)
+            if ((_pd / "PAUSE").exists() or (_pd.parent / "PAUSE").exists()
+                    or (_pd.parent.parent / "PAUSE").exists()):
+                print(f"  ↳ PAUSED at epoch {epoch}; checkpoint.pt holds "
+                      f"next_epoch={epoch + 1}. Resume with resume_from=checkpoint.pt",
+                      flush=True)
+                (out_dir / "PAUSED").write_text(str(epoch + 1))
+                break
 
         # Early-stop check: if patience set and we've not improved for N epochs, stop.
         if early_stop_patience > 0 and epochs_since_best >= early_stop_patience:
