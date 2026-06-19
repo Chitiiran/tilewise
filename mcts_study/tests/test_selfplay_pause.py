@@ -24,10 +24,10 @@ def _fake_run_selfplay(ts, seeds, *a, **k):
 
 @pytest.fixture(autouse=True)
 def _stub_engine(monkeypatch):
-    """Hermetic stub of catan_mcts_rs + .ts export, restored after each test."""
+    """Hermetic stub: bind the lazy engine handle to a fake + dummy .ts export.
+    No sys.modules pollution (engine is lazily imported via _engine())."""
     fake = types.ModuleType("catan_mcts_rs")
     fake.run_selfplay = _fake_run_selfplay
-    monkeypatch.setitem(sys.modules, "catan_mcts_rs", fake)
     monkeypatch.setattr(spr, "catan_mcts_rs", fake, raising=False)
     monkeypatch.setattr(spr, "export",
                         lambda **k: Path(k["out_ts"]).write_text("ts") or Path(k["out_ts"]))

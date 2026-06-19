@@ -256,12 +256,19 @@ def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
     import catan_mcts_rs
     from catan_gnn.export_torchscript import export
 
+    # The .ts MUST be traced on the SAME device the rust engine runs on (trace
+    # bakes the device of internally-constructed tensors; a CPU-traced .ts fails
+    # on CUDA with a scatter device-mismatch). The engine uses CUDA when
+    # available, so export to match.
+    import torch as _torch
+    _dev = "cuda" if _torch.cuda.is_available() else "cpu"
+
     def _ts(ckpt: Path) -> str:
         ckpt = Path(ckpt)
-        ts = ckpt.with_suffix(".ts")
+        ts = ckpt.with_suffix(f".{_dev}.ts")
         if not ts.exists():
-            export(checkpoint=ckpt, out_ts=ts,
-                   hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers)
+            export(checkpoint=ckpt, out_ts=ts, hidden_dim=cfg.hidden_dim,
+                   num_layers=cfg.num_layers, device=_dev)
         return str(ts)
 
     plan = seed_plan(seed_base=seed_base, games=cfg.arena_games)

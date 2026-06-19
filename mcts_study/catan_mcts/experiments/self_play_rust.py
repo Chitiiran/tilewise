@@ -16,10 +16,26 @@ from pathlib import Path
 
 import numpy as np
 
-import catan_mcts_rs
+# NOTE: `catan_mcts_rs` (tch-linked) is imported LAZILY inside the run function,
+# not at module top — importing it requires libtorch on LD_LIBRARY_PATH, which
+# the daily worker env (and pytest_mctsrs.sh) provide but plain `import` does
+# not. Lazy import keeps this module importable for unit tests (which stub the
+# engine) and surfaces a clear error only when actually generating games.
 from catan_gnn.export_torchscript import export, export_batched
 from ..recorder import SelfPlayRecorder
 from .common import make_run_dir
+
+# Lazily-bound engine handle. Tests monkeypatch this with a fake; production
+# code calls _engine() which imports the real extension on first use.
+catan_mcts_rs = None
+
+
+def _engine():
+    global catan_mcts_rs
+    if catan_mcts_rs is None:
+        import catan_mcts_rs as _rs
+        catan_mcts_rs = _rs
+    return catan_mcts_rs
 
 # Cross-game batch width (Task 10). The batched .ts is traced at this fixed
 # B_MAX; the scheduler pools up to B_MAX concurrent games' leaves per GPU
@@ -27,19 +43,29 @@ from .common import make_run_dir
 B_MAX = 32
 
 
+def _infer_device() -> str:
+    """The device the rust engine will run on (CUDA if available). The .ts MUST
+    be traced on this device — trace bakes the device of internally-constructed
+    tensors, so a CPU-traced .ts fails on CUDA with a scatter device-mismatch."""
+    import torch
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def _ensure_ts(checkpoint: Path, hidden_dim: int, num_layers: int) -> Path:
-    ts = checkpoint.with_suffix(".ts")
+    dev = _infer_device()
+    ts = checkpoint.with_suffix(f".{dev}.ts")
     if not ts.exists():
         export(checkpoint=checkpoint, out_ts=ts,
-               hidden_dim=hidden_dim, num_layers=num_layers)
+               hidden_dim=hidden_dim, num_layers=num_layers, device=dev)
     return ts
 
 
 def _ensure_batched_ts(checkpoint: Path, hidden_dim: int, num_layers: int) -> Path:
-    bts = checkpoint.with_suffix(".batch.ts")
+    dev = _infer_device()
+    bts = checkpoint.with_suffix(f".{dev}.batch.ts")
     if not bts.exists():
-        export_batched(checkpoint=checkpoint, out_ts=bts,
-                       hidden_dim=hidden_dim, num_layers=num_layers, b_max=B_MAX)
+        export_batched(checkpoint=checkpoint, out_ts=bts, hidden_dim=hidden_dim,
+                       num_layers=num_layers, b_max=B_MAX, device=dev)
     return bts
 
 
@@ -105,7 +131,7 @@ def run_self_play_rust(*, out_root: Path, checkpoint: Path, num_games: int,
                   f"({len(seeds) - total} remaining) -> resume re-runs this dir")
             return out
         chunk = seeds[start:start + n_concurrent]
-        records = catan_mcts_rs.run_selfplay(
+        records = _engine().run_selfplay(
             str(ts), chunk, n_sims, self_play, vp_target, bonuses,
             30, 0.8, 0.25, max_steps, str(bts), B_MAX)
         for r in records:

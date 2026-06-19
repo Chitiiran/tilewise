@@ -13,7 +13,27 @@ from catan_gnn.export_torchscript import export
 from catan_az.config import AzConfig
 from catan_az import arena as az_arena
 
-catan_mcts_rs = pytest.importorskip("catan_mcts_rs")
+try:
+    import catan_mcts_rs  # noqa: F401
+    _ENGINE_OK = True
+except Exception:
+    # The tch-linked extension needs libtorch on LD_LIBRARY_PATH (provided by
+    # scripts/pytest_mctsrs.sh / the daily worker env, NOT plain pytest). Tests
+    # that need the REAL engine skip cleanly when it can't import.
+    catan_mcts_rs = None
+    _ENGINE_OK = False
+
+def _gpu_env_ready() -> bool:
+    """The real-engine arena test needs the GPU env (LD_PRELOAD libtorch_cuda +
+    nvrtc on LD_LIBRARY_PATH) that scripts/pytest_mctsrs.sh sets. Detect it so
+    plain pytest skips this GPU integration test instead of erroring."""
+    import os
+    return _ENGINE_OK and "libtorch_cuda.so" in os.environ.get("LD_PRELOAD", "")
+
+
+_needs_engine = pytest.mark.skipif(
+    not _gpu_env_ready(),
+    reason="GPU engine env not set — run via scripts/pytest_mctsrs.sh")
 
 
 def test_config_engine_defaults_rust():
@@ -94,9 +114,11 @@ def test_rust_selfplay_uses_one_process(monkeypatch):
     assert "100" in cmd, f"single process should run all games, got {cmd}"
 
 
+@_needs_engine
 def test_run_arena_rust_matches_python(tmp_path):
     """run_arena(engine='rust') vs run_arena(engine='python') on the same small
-    plan: identical winrate + wins (the production-path version of the gate)."""
+    plan: identical winrate + wins (the production-path version of the gate).
+    GPU integration test — run via scripts/pytest_mctsrs.sh."""
     # Two small nets.
     paths = {}
     for label, seed in (("cand", 111), ("champ", 222)):
