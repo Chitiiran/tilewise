@@ -59,12 +59,14 @@ def test_arena_pause_then_resume(tmp_path):
     out = tmp_path / "arena"; out.mkdir(parents=True)
     rp = out / "results.jsonl"
     (out / "PAUSE").write_text("")
-    A._run_arena_rust(candidate_ckpt=tmp_path / "c.pt",
-                      champion_ckpt=tmp_path / "h.pt",
-                      cfg=_cfg(arena_chunk_games=4), out_dir=out,
-                      seed_base=30_000_000, results_path=rp, done={})
+    # M4: a paused arena RAISES (does NOT return a partial verdict).
+    with pytest.raises(A.ArenaPaused):
+        A._run_arena_rust(candidate_ckpt=tmp_path / "c.pt",
+                          champion_ckpt=tmp_path / "h.pt",
+                          cfg=_cfg(arena_chunk_games=4), out_dir=out,
+                          seed_base=30_000_000, results_path=rp, done={})
     n0 = len(rp.read_text().splitlines()) if rp.exists() else 0
-    assert n0 == 0, "PAUSE present from start -> no games played"
+    assert n0 == 0, "PAUSE present from start -> no games played, no verdict"
 
     (out / "PAUSE").unlink()
     done = A._read_arena_results(rp)

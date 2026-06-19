@@ -60,12 +60,16 @@ def _ensure_ts(checkpoint: Path, hidden_dim: int, num_layers: int) -> Path:
     return ts
 
 
-def _ensure_batched_ts(checkpoint: Path, hidden_dim: int, num_layers: int) -> Path:
+def _ensure_batched_ts(checkpoint: Path, hidden_dim: int, num_layers: int,
+                       b_max: int = B_MAX) -> Path:
     dev = _infer_device()
-    bts = checkpoint.with_suffix(f".{dev}.batch.ts")
+    # Encode b_max in the filename so a different B_MAX produces a DIFFERENT file
+    # (re-export) rather than silently loading a wrong-width batched .ts. Must
+    # match loop._default_train's naming for the export to be reused.
+    bts = checkpoint.with_suffix(f".{dev}.b{b_max}.batch.ts")
     if not bts.exists():
         export_batched(checkpoint=checkpoint, out_ts=bts, hidden_dim=hidden_dim,
-                       num_layers=num_layers, b_max=B_MAX, device=dev)
+                       num_layers=num_layers, b_max=b_max, device=dev)
     return bts
 
 
@@ -104,14 +108,14 @@ def run_self_play_rust(*, out_root: Path, checkpoint: Path, num_games: int,
                        game_deadline_seconds: float | None,
                        resume_dir: Path | None,
                        n_concurrent: int = 256,
+                       b_max: int = B_MAX,
                        pause_dir: Path | None = None) -> Path:
     out = resume_dir if resume_dir is not None else make_run_dir(out_root, "self_play_rust")
-    ts = _ensure_ts(Path(checkpoint), hidden_dim, num_layers)
-    bts = _ensure_batched_ts(Path(checkpoint), hidden_dim, num_layers)
+    bts = _ensure_batched_ts(Path(checkpoint), hidden_dim, num_layers, b_max=b_max)
     rec = SelfPlayRecorder(out, config={
         "experiment": "self_play_rust", "n_sims": n_sims,
         "vp_target": vp_target, "bonuses": bonuses, "device": "cuda",
-        "seed_base": seed_base, "engine": "rust", "b_max": B_MAX,
+        "seed_base": seed_base, "engine": "rust", "b_max": b_max,
         "n_concurrent": n_concurrent})
     done = rec.done_seeds()  # always resume-aware (skip already-done seeds)
     seeds = [seed_base + i for i in range(num_games) if (seed_base + i) not in done]
@@ -131,9 +135,12 @@ def run_self_play_rust(*, out_root: Path, checkpoint: Path, num_games: int,
                   f"({len(seeds) - total} remaining) -> resume re-runs this dir")
             return out
         chunk = seeds[start:start + n_concurrent]
+        # net_ts (plain B=1) is unused by the batched path — pass bts for both;
+        # the batched_ts arg is what run_selfplay loads (L2: skip the dead B=1
+        # export entirely for self-play).
         records = _engine().run_selfplay(
-            str(ts), chunk, n_sims, self_play, vp_target, bonuses,
-            30, 0.8, 0.25, max_steps, str(bts), B_MAX)
+            str(bts), chunk, n_sims, self_play, vp_target, bonuses,
+            30, 0.8, 0.25, max_steps, str(bts), b_max)
         for r in records:
             _write_record(rec, r)
         total += len(records)
@@ -156,7 +163,7 @@ def cli_main():
     p.add_argument("--bonuses", action="store_true", default=True)
     p.add_argument("--no-bonuses", dest="bonuses", action="store_false")
     p.add_argument("--device", type=str, default="cuda")  # accepted (tch picks device)
-    p.add_argument("--max-batch", type=int, default=64)    # accepted, unused (Task 10)
+    p.add_argument("--max-batch", type=int, default=32)    # rust batched B_MAX (GNN forward cap)
     p.add_argument("--window-ms", type=float, default=5.0) # accepted, unused
     p.add_argument("--seed-base", type=int, default=20_000_000)
     p.add_argument("--max-seconds", type=float, default=900.0)  # accepted, unused
@@ -173,7 +180,7 @@ def cli_main():
         vp_target=a.vp_target, bonuses=a.bonuses, seed_base=a.seed_base,
         self_play=a.self_play, max_steps=a.max_steps,
         game_deadline_seconds=a.game_deadline_seconds, resume_dir=a.resume_dir,
-        n_concurrent=a.n_concurrent, pause_dir=a.pause_dir)
+        n_concurrent=a.n_concurrent, b_max=a.max_batch, pause_dir=a.pause_dir)
     print(f"self_play_rust wrote to {out}")
 
 

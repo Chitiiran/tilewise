@@ -108,18 +108,6 @@
   <div class="spstats" id="sp-stats"></div>
 </div>
 
-<div class="card" id="res-card" style="display:none"><h2>🖥️ Machine — GPU &amp; CPU (live)</h2>
-  <div id="res-stats" class="spstats"></div>
-  <svg id="res-chart" viewBox="0 0 1040 120" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:140px"></svg>
-  <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.3rem">GPU util % (green) &amp; power W/75 (amber) over the last samples — high = the GPU is being fed.</div>
-</div>
-
-<div class="card" id="tr-card" style="display:none"><h2>📉 Training — live loss</h2>
-  <div id="tr-head" class="muted"></div>
-  <svg id="tr-chart" viewBox="0 0 1040 140" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:160px"></svg>
-  <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.3rem">per-batch total loss (blue) — watch it descend as the net learns.</div>
-</div>
-
 <div class="card" id="ar-card" style="display:none">
   <h2 style="display:flex;justify-content:space-between;align-items:baseline">
     <span>⚔️ Arena — live gate</span><span id="ar-live" class="ar-live"></span></h2>
@@ -139,6 +127,20 @@
   <div id="ar-seats"></div>
   <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.5rem">recent games (newest first) — <span style="color:#4ade80">C</span> cand win · <span style="color:#fca5a5">H</span> champ win · <span style="color:#8b93a3">D</span> draw</div>
   <div id="ar-feed" class="ar-feed"></div>
+</div>
+
+<!-- Infrastructure cards: placed BELOW the decision-relevant cards (arena/elo).
+     They answer "is the box busy", not "is the bot improving". -->
+<div class="card" id="tr-card" style="display:none"><h2>📉 Training — live loss</h2>
+  <div id="tr-head" class="muted"></div>
+  <svg id="tr-chart" viewBox="0 0 1040 140" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:160px"></svg>
+  <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.3rem">total loss per logged batch (blue), <b>zero-anchored</b> — a flat line means flat (not learning); the start→now delta is in the header. grad-norm ≈ steady is healthy, spikes = instability.</div>
+</div>
+
+<div class="card" id="res-card" style="display:none"><h2>🖥️ Machine — GPU &amp; CPU (live)</h2>
+  <div id="res-stats" class="spstats"></div>
+  <svg id="res-chart" viewBox="0 0 1040 120" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:140px"></svg>
+  <div class="l" style="font-size:.68rem;color:#8b93a3;margin-top:.3rem">GPU utilisation % (0–100 axis); high = the GPU is being fed by self-play/arena. Power &amp; mem are in the stats above.</div>
 </div>
 
 <div class="card"><h2>Failure-mode alarms</h2>
@@ -255,43 +257,62 @@ async function drawSelfplay(){
 function stat(v,l){return `<div class="s"><div class="v">${v}</div><div class="l">${l}</div></div>`}
 // Tiny inline line-chart into an <svg> (no chart lib). series: array of {pts:[y..],
 // color, max}. Plots each normalized to its own max over a shared x.
-function spark(svgId, series, w=1040, h){
+// Single-series line chart with an EXPLICIT y-range [ymin,ymax] (honest scale —
+// no per-series auto-normalize). Draws 0 / ymax gridlines so the eye has an
+// anchor. opts: {ymin,ymax,color,label}. One unit per chart only.
+function spark(svgId, pts, opts){
   const svg=$(svgId); if(!svg)return; svg.innerHTML='';
-  const vb=svg.getAttribute('viewBox').split(' ').map(Number); h=h||vb[3];
-  const n=Math.max(...series.map(s=>s.pts.length),1);
-  if(n<2){svg.innerHTML='<text x="20" y="'+(h/2)+'" fill="#8b93a3" font-size="13">collecting…</text>';return;}
-  for(const s of series){
-    const mx=s.max||Math.max(...s.pts,1e-9);
-    const d=s.pts.map((y,i)=>{const x=(i/(n-1))*(w-20)+10;const yy=h-8-(Math.min(y,mx)/mx)*(h-16);return (i?'L':'M')+x.toFixed(1)+' '+yy.toFixed(1)}).join(' ');
-    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
-    p.setAttribute('d',d);p.setAttribute('fill','none');p.setAttribute('stroke',s.color);p.setAttribute('stroke-width','2');
-    svg.appendChild(p);
+  const vb=svg.getAttribute('viewBox').split(' ').map(Number);
+  const w=vb[2], h=vb[3];
+  if(!pts || pts.length<2){svg.innerHTML='<text x="20" y="'+(h/2)+'" fill="#8b93a3" font-size="13">collecting…</text>';return;}
+  const ymin=(opts.ymin!=null)?opts.ymin:Math.min(...pts);
+  let ymax=(opts.ymax!=null)?opts.ymax:Math.max(...pts);
+  if(ymax<=ymin) ymax=ymin+1e-9;
+  const X=i=>(i/(pts.length-1))*(w-46)+40;
+  const Y=y=>h-14-((Math.max(ymin,Math.min(y,ymax))-ymin)/(ymax-ymin))*(h-22);
+  // gridlines + y labels at ymin and ymax
+  let g='';
+  for(const v of [ymin,ymax]){
+    g+=`<line x1="40" x2="${w}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="#2a2f3a" stroke-width="1"/>`;
+    g+=`<text x="2" y="${(Y(v)+3).toFixed(1)}" fill="#8b93a3" font-size="10">${(Math.abs(v)>=100?v.toFixed(0):v.toFixed(2))}</text>`;
   }
+  const d=pts.map((y,i)=>(i?'L':'M')+X(i).toFixed(1)+' '+Y(y).toFixed(1)).join(' ');
+  svg.innerHTML=g+`<path d="${d}" fill="none" stroke="${opts.color}" stroke-width="2"/>`;
 }
+function _ok(v){return (v!=null && v>=0)?v:null;}   // -1 sentinel / null -> unavailable
+function _fmt(v,suf,dp){return (v==null)?'—':v.toFixed(dp)+(suf||'');}
 async function drawResources(){
   const r=await j('/api/resources-live'); const card=$('res-card');
   if(!r||!r.available||!r.points.length){card.style.display='none';return;}
   card.style.display='';
   const L=r.latest||{};
-  const memPct=L.gpu_mem_total_mb?Math.round(100*L.gpu_mem_used_mb/L.gpu_mem_total_mb):0;
+  const util=_ok(L.gpu_util_pct), pw=_ok(L.gpu_power_w), mu=_ok(L.gpu_mem_used_mb),
+        mt=_ok(L.gpu_mem_total_mb), ld=_ok(L.load1), ram=_ok(L.ram_avail_gb);
+  const memPct=(mu!=null&&mt)?Math.round(100*mu/mt):null;
   $('res-stats').innerHTML=
-    stat((L.gpu_util_pct??0).toFixed(0)+'%','GPU util (high = fed)')+
-    stat((L.gpu_power_w??0).toFixed(1)+'W','GPU power (of 75W)')+
-    stat(memPct+'%','GPU mem '+(L.gpu_mem_used_mb??0).toFixed(0)+'MB')+
-    stat((L.load1??0).toFixed(1),'CPU load1 (of 12)')+
-    stat((L.ram_avail_gb??0).toFixed(0)+'G','RAM free');
-  spark('res-chart',[
-    {pts:r.points.map(p=>p.gpu_util_pct||0),color:'#4ade80',max:100},
-    {pts:r.points.map(p=>p.gpu_power_w||0),color:'#fbbf24',max:75},
-  ]);
+    stat(_fmt(util,'%',0),'GPU util (high = fed)')+
+    stat(_fmt(pw,'W',1),'GPU power draw')+
+    stat(memPct==null?'—':memPct+'%','GPU mem '+(mu==null?'—':mu.toFixed(0)+'MB'))+
+    stat(_fmt(ld,'',1),'CPU load (1-min avg)')+
+    stat(_fmt(ram,'G',0),'RAM free');
+  // ONE unit per chart: GPU util %, fixed 0–100 axis (no dual-unit overlay).
+  spark('res-chart', r.points.map(p=>p.gpu_util_pct).filter(v=>v!=null&&v>=0),
+        {ymin:0, ymax:100, color:'#4ade80'});
 }
 async function drawTraining(){
   const t=await j('/api/train-progress-live'); const card=$('tr-card');
   if(!t||!t.available||!t.points.length){card.style.display='none';return;}
   card.style.display='';
   const L=t.latest||{};
-  $('tr-head').textContent=`epoch ${L.epoch??'?'} · batch ${L.batch??'?'}/${L.batches_total??'?'} · loss ${(L.loss??0).toFixed(3)} · grad-norm ${(L.grad_norm??0).toFixed(2)} · ${(L.ms_per_batch??0).toFixed(0)} ms/batch`;
-  spark('tr-chart',[{pts:t.points.map(p=>p.loss||0),color:'#60a5fa'}]);
+  const losses=t.points.map(p=>p.loss).filter(v=>v!=null);
+  const first=losses.length?losses[0]:0, now=L.loss??0;
+  const delta=(first-now);
+  $('tr-head').textContent=
+    `epoch ${L.epoch??'?'} · batch ${L.batch??'?'}/${L.batches_total??'?'} · `+
+    `loss ${first.toFixed(3)} → ${now.toFixed(3)} (${delta>=0?'−':'+'}${Math.abs(delta).toFixed(3)}) · `+
+    `grad-norm ${(L.grad_norm??0).toFixed(2)} · ${(L.ms_per_batch??0).toFixed(0)} ms/batch`;
+  // Zero-anchored y-axis so a flat-but-high loss reads as FLAT, not "descending".
+  spark('tr-chart', losses, {ymin:0, ymax:Math.max(first,now,1e-9), color:'#60a5fa'});
 }
 let _arLastGames=null;
 async function drawArena(){

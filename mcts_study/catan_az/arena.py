@@ -228,6 +228,12 @@ def _load_model(ckpt: Path, cfg, device: str):
     return model.to(device).eval()
 
 
+class ArenaPaused(Exception):
+    """Raised when a PAUSE sentinel stops the arena mid-plan. Signals the
+    iteration to stop WITHOUT publishing a verdict (a partial arena is not a
+    valid gate). Resume re-runs and completes the plan (skips done seeds)."""
+
+
 def _aggregate_arena(done: dict[int, dict], out_dir: Path) -> ArenaResult:
     """Shared aggregation of results.jsonl records into an ArenaResult."""
     result = ArenaResult()
@@ -283,9 +289,13 @@ def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
     cand_ts, champ_ts = _ts(candidate_ckpt), _ts(champion_ckpt)
     for i in range(0, len(remaining), chunk):
         if _arena_paused(out_dir):
-            print(f"[arena] PAUSED with {len(remaining) - i} games remaining "
-                  f"-> resume re-runs this dir (skips done seeds)")
-            break
+            # M4 fix (code review 2026-06-19): do NOT fall through to
+            # _aggregate_arena — a partial arena must never yield a promote/hold
+            # verdict (could promote on a fraction). Raise so the iteration stops
+            # WITHOUT publishing; results.jsonl is durable, resume completes it.
+            raise ArenaPaused(
+                f"arena paused with {len(remaining) - i}/{len(remaining)} games "
+                f"remaining; resume completes (skips done seeds)")
         pairs = remaining[i:i + chunk]
         records = catan_mcts_rs.run_arena_games(
             cand_ts, champ_ts, pairs, cfg.arena_sims, cfg.vp_target, cfg.bonuses)

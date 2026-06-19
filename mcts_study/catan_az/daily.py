@@ -15,6 +15,7 @@ from pathlib import Path
 from .archive import archive_out_of_window
 from .buffer import fresh_deficit, gen_window, select_window
 from .ladder import Ladder
+from .arena import ArenaPaused
 from .loop import run_iteration
 from .status import StatusWriter
 
@@ -42,6 +43,10 @@ class DailyManifest:
 
 def _stop_requested(loop_root: Path) -> bool:
     return (Path(loop_root) / "STOP").exists()
+
+
+def _pause_requested(loop_root: Path) -> bool:
+    return (Path(loop_root) / "PAUSE").exists()
 
 
 def _next_iter_number(loop_root: Path) -> int:
@@ -91,7 +96,24 @@ def run_day(cfg, *, loop_root: Path, capped_procs: int, cycle_fn,
     while done < max_iters:
         if _stop_requested(loop_root):
             break
-        cycle_fn(cfg, loop_root, n, capped_procs)
+        # PAUSE at the top stops the loop cleanly (M1 fix, code review
+        # 2026-06-19): the per-stage pausers also bail on PAUSE, but checking
+        # here means the operator must REMOVE the PAUSE file before relaunch —
+        # otherwise resume would re-enter and immediately re-pause on the first
+        # chunk. Surfaced so it's not a silent no-op.
+        if _pause_requested(loop_root):
+            print("[az-day] PAUSE present — stopping. Remove the PAUSE file to resume.",
+                  flush=True)
+            StatusWriter(loop_root).stage(n, "paused", PAUSED=True)
+            break
+        try:
+            cycle_fn(cfg, loop_root, n, capped_procs)
+        except ArenaPaused as e:
+            # A mid-arena pause: stop WITHOUT a verdict (results.jsonl durable;
+            # resume completes). Do not advance the iter counter.
+            print(f"[az-day] {e} — stopping (no verdict published).", flush=True)
+            StatusWriter(loop_root).stage(n, "paused", PAUSED=True)
+            break
         n += 1
         done += 1
         # Terminal: max_iters_per_model iterations since the last promotion ->
@@ -141,8 +163,12 @@ def _rust_cuda_env() -> dict:
     prev = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ":".join(paths + ([prev] if prev else []))
     preload = os.path.join(torch_dir, "lib", "libtorch_cuda.so")
-    prev_pre = env.get("LD_PRELOAD", "")
-    env["LD_PRELOAD"] = preload + (f":{prev_pre}" if prev_pre else "")
+    # Only inject the preload if the .so actually exists — a missing path in
+    # LD_PRELOAD aborts the interpreter at startup (M2). Caller checks for its
+    # presence to decide whether the GPU env is usable.
+    if os.path.exists(preload):
+        prev_pre = env.get("LD_PRELOAD", "")
+        env["LD_PRELOAD"] = preload + (f":{prev_pre}" if prev_pre else "")
     env.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     return env
 
@@ -176,7 +202,12 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
     per = max(1, n_games // max(1, n_procs))
     procs = []
     for i in range(n_procs):
-        sb = _worker_seed_base(gen_iter=gen_iter, i=i) + seed_offset
+        # Resume dedup (C2 fix, code review 2026-06-19): the rust path is ONE
+        # process with a DETERMINISTIC run dir + --resume-dir, so resume reuses
+        # the dir and its done.txt skip-list does the dedup. No seed_offset for
+        # rust (offset + done-skip stacked could lose/dup games). The async path
+        # keeps its per-worker-dir + offset scheme unchanged.
+        sb = _worker_seed_base(gen_iter=gen_iter, i=i) + (0 if is_rust else seed_offset)
         sp_module = ("catan_mcts.experiments.self_play_rust" if is_rust
                      else "catan_mcts.experiments.self_play_async")
         cmd = ["nice", "-n", str(cfg.worker_nice),
@@ -196,8 +227,15 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
         if not cfg.bonuses:
             cmd.append("--no-bonuses")
         if is_rust:
-            # check a PAUSE sentinel in the iter dir / loop root between chunks.
-            cmd += ["--pause-dir", str(out_dir.parent)]
+            # Deterministic run dir + resume-dir so a kill/pause resumes INTO the
+            # same dir and skips done seeds (C2). PAUSE sentinel checked in the
+            # iter dir / loop root between chunks.
+            # Name includes "self_play_rust" so the *self_play_* globs (tagging +
+            # _all_selfplay_dirs) find it. Fixed (not timestamped) so resume reuses.
+            rust_dir = out_dir / "self_play_rust"
+            rust_dir.mkdir(parents=True, exist_ok=True)
+            cmd += ["--resume-dir", str(rust_dir),
+                    "--pause-dir", str(out_dir.parent)]
         # Rust engine: the tch-linked extension only uses the GPU with the
         # pip-wheel CUDA env (LD_PRELOAD libtorch_cuda, nvidia/*/lib on
         # LD_LIBRARY_PATH for nvrtc, deterministic kernels). Without it the Rust
@@ -302,7 +340,12 @@ def _all_selfplay_dirs(loop_root: Path) -> list:
     for it in iters:
         sp = it / "selfplay"
         if sp.exists():
-            dirs.extend(sorted(sp.glob("*self_play_async*"), reverse=True))
+            # Match BOTH engines' run-dir names (self_play_async / self_play_rust)
+            # — must mirror the tagging glob in _launch_selfplay_procs. Using the
+            # async-only glob silently hid all rust prior-iter dirs, collapsing
+            # the training window to one iteration (C1, code review 2026-06-19).
+            dirs.extend(sorted((d for d in sp.glob("*self_play_*") if d.is_dir()),
+                               reverse=True))
     return dirs
 
 
@@ -468,14 +511,22 @@ def cli_main():
     # be set after start, so re-exec once with the env if it's missing. Self-play
     # workers are subprocesses and get the env separately (_rust_cuda_env), but
     # the arena runs here -> the driver itself must carry it.
-    if getattr(cfg, "engine", "python") == "rust" and \
-            "libtorch_cuda.so" not in os.environ.get("LD_PRELOAD", ""):
+    # M2 fix (code review 2026-06-19): gate the re-exec SOLELY on the explicit
+    # one-shot guard (not a fragile LD_PRELOAD substring check that could mask a
+    # broken-path preload). _rust_cuda_env validates libtorch_cuda.so exists and
+    # returns env without the preload if not, so we never re-exec into a bad
+    # LD_PRELOAD that aborts the interpreter.
+    if getattr(cfg, "engine", "python") == "rust" \
+            and os.environ.get("_AZ_GPU_REEXEC") != "1":
         env = _rust_cuda_env()
-        env["_AZ_GPU_REEXEC"] = "1"     # guard against re-exec loops
-        if os.environ.get("_AZ_GPU_REEXEC") != "1":
+        if "libtorch_cuda.so" in env.get("LD_PRELOAD", ""):
+            env["_AZ_GPU_REEXEC"] = "1"
             print("[az-day] re-exec with GPU env for the rust in-process arena", flush=True)
             os.execvpe(sys.executable,
                        [sys.executable, "-m", "catan_az.daily", *sys.argv[1:]], env)
+        else:
+            print("[az-day] WARNING: engine=rust but libtorch_cuda.so not found — "
+                  "in-process arena will run on CPU", flush=True)
     res = preflight(cfg, loop_root=args.loop_root,
                     archive_root=Path(cfg.archive_root))
     if not res.ok:

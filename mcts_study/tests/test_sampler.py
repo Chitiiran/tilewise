@@ -28,6 +28,20 @@ def test_sample_once_shape(tmp_path):
     assert row["ts"] == 123.0 and row["stage"] == "selfplay"
 
 
+def test_sentinel_stop_detects_pause_and_stop(tmp_path):
+    """H3: an orphaned sampler self-terminates when a STOP/PAUSE sentinel appears
+    in out_dir or a parent (matches the docstring)."""
+    sub = tmp_path / "iter_1" / "selfplay"
+    sub.mkdir(parents=True)
+    s = Sampler(sub, stage="selfplay")
+    assert s._sentinel_stop() is False
+    (tmp_path / "PAUSE").write_text("")          # loop-root parent
+    assert s._sentinel_stop() is True
+    (tmp_path / "PAUSE").unlink()
+    (sub / "STOP").write_text("")                # own dir
+    assert s._sentinel_stop() is True
+
+
 def test_run_until_writes_lines(tmp_path):
     s = Sampler(tmp_path, interval_s=0.0, stage="train")
     n = {"i": 0}

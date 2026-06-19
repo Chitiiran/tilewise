@@ -34,10 +34,19 @@ def test_default_train_emits_loadable_ts(tmp_path, monkeypatch):
 
     best = az_loop._default_train(cfg, run_dirs=[tmp_path / "sp"], iter_dir=iter_dir,
                                   init_ckpt=str(tmp_path / "init.pt"))
-    ts = best.with_suffix(".ts")
-    assert ts.exists(), "TorchScript .ts not emitted beside checkpoint_best.pt"
+    # Device-matched path the consumers load (cpu in CI; cuda on the GPU box).
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    bmax = getattr(cfg, "max_batch", 32)
+    ts = best.with_suffix(f".{dev}.ts")
+    assert ts.exists(), f"TorchScript {ts.name} not emitted beside checkpoint_best.pt"
+    # batched export uses the b{bmax} naming the consumer (_ensure_batched_ts) reuses
+    assert best.with_suffix(f".{dev}.b{bmax}.batch.ts").exists(), "batched .ts not emitted"
 
-    # Bit-exact vs eager on a real state.
+    # Bit-exact vs eager on a real state. The .ts is traced on `dev`; only run
+    # the CPU comparison when dev==cpu (CUDA bit-exactness is covered by
+    # test_export_torchscript). On a GPU box the export PATHS are what we assert.
+    if dev != "cpu":
+        return
     loaded = torch.jit.load(str(ts)).eval()
     o = CatanGame().new_initial_state()._engine.observation()
     f = lambda k: torch.from_numpy(np.ascontiguousarray(o[k], dtype=np.float32))

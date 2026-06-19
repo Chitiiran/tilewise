@@ -81,12 +81,23 @@ def _default_train(cfg: AzConfig, run_dirs: list[Path], iter_dir: Path,
     best = out_dir / "checkpoint_best.pt"
     if not best.exists():
         raise FileNotFoundError(f"training produced no {best}")
-    # TorchScript export for the Rust self-play/arena engines (Rust-MCTS rewrite).
-    # The traced .ts sits beside the checkpoint; the Rust path loads it. A no-op
-    # for the legacy Python engine path, so this is safe to always emit.
-    from catan_gnn.export_torchscript import export
-    export(checkpoint=best, out_ts=best.with_suffix(".ts"),
-           hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers)
+    # TorchScript export for the Rust self-play/arena engines. MUST match the
+    # device-suffixed paths the consumers load (self_play_rust._ensure_ts /
+    # _ensure_batched_ts, arena._ts) AND be traced on the inference device — a
+    # plain CPU-traced .ts is both orphaned (nobody reads it) and crashes on
+    # CUDA (H1, code review 2026-06-19). Export both single + batched on-device
+    # so consumers reuse them instead of re-tracing every launch.
+    import torch
+    from catan_gnn.export_torchscript import export, export_batched
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    bmax = getattr(cfg, "max_batch", 32)
+    export(checkpoint=best, out_ts=best.with_suffix(f".{dev}.ts"),
+           hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers, device=dev)
+    # Match self_play_rust._ensure_batched_ts naming (.{dev}.b{bmax}.batch.ts) so
+    # the export is REUSED, not re-traced per worker launch.
+    export_batched(checkpoint=best, out_ts=best.with_suffix(f".{dev}.b{bmax}.batch.ts"),
+                   hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers,
+                   b_max=bmax, device=dev)
     return best
 
 

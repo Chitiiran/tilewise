@@ -45,12 +45,22 @@ class Sampler:
             self._write(self.sample_once(clock))
             sleep(self.interval_s)
 
+    def _sentinel_stop(self) -> bool:
+        """True if a STOP/PAUSE sentinel exists in out_dir or a parent (iter dir
+        / loop root). Ensures an ORPHANED sampler (parent kill -9, no SIGTERM)
+        self-terminates when the run stops — matching the module docstring."""
+        for d in (self.out_dir, self.out_dir.parent, self.out_dir.parent.parent):
+            if (d / "STOP").exists() or (d / "PAUSE").exists():
+                return True
+        return False
+
     def run_forever(self) -> None:
         def _handle(_sig, _frm):
             self._stop = True
         signal.signal(signal.SIGTERM, _handle)
         signal.signal(signal.SIGINT, _handle)
-        self.run_until(lambda: self._stop)
+        # Stop on a signal OR a STOP/PAUSE sentinel (orphan self-termination).
+        self.run_until(lambda: self._stop or self._sentinel_stop())
 
 
 def cli_main(argv=None) -> None:
