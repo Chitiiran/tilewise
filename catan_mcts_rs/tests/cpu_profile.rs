@@ -7,7 +7,7 @@
 //! Run: cargo test -p catan_mcts_rs --release --test cpu_profile -- --ignored --nocapture
 
 use catan_mcts_rs::evaluator::TorchScriptEvaluator;
-use catan_mcts_rs::selfplay::{profile_batched, SelfPlayConfig};
+use catan_mcts_rs::selfplay::{profile_batched, profile_batched_timed, SelfPlayConfig};
 use std::path::PathBuf;
 use tch::Device;
 
@@ -29,8 +29,22 @@ fn profile_cpu_phases() {
     let cfg = SelfPlayConfig { n_sims, self_play: true, max_steps: 200_000, ..Default::default() };
     let seeds: Vec<u64> = (0..n_games).collect();
 
-    let prof = profile_batched(&ev, &seeds, &cfg);
-    eprintln!("games={n_games} b_max={b_max} sims={n_sims}");
+    let timed = std::env::var("TP_TIMED").is_ok();
+    let prof = if timed {
+        profile_batched_timed(&ev, &seeds, &cfg)
+    } else {
+        profile_batched(&ev, &seeds, &cfg)
+    };
+    eprintln!("games={n_games} b_max={b_max} sims={n_sims} timed={timed}");
+    if timed {
+        eprintln!("  GPU phase split (of {:.1}s GPU):", prof.gpu_s);
+        eprintln!("    marshal (parallelizable) : {:.1}s ({:.1}% of total)",
+                  prof.marshal_s, 100.0 * prof.marshal_s / prof.total_s);
+        eprintln!("    forward_is (IRREDUCIBLE) : {:.1}s ({:.1}% of total)",
+                  prof.forward_s, 100.0 * prof.forward_s / prof.total_s);
+        eprintln!("    extract (parallelizable) : {:.1}s ({:.1}% of total)",
+                  prof.extract_s, 100.0 * prof.extract_s / prof.total_s);
+    }
     eprintln!("total           : {:.1}s", prof.total_s);
     eprintln!("  GPU forward    : {:.1}s ({:.1}%)  [{} batches, mean B={:.1}]",
               prof.gpu_s, 100.0 * prof.gpu_s / prof.total_s, prof.n_batches,

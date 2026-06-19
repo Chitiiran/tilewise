@@ -342,6 +342,10 @@ pub struct ProfileResult {
     pub advance_s: f64,
     pub n_batches: usize,
     pub total_leaves: usize,
+    // Fine split of gpu_s (only populated by profile_batched_timed):
+    pub marshal_s: f64,  // host-side tensor build (PARALLELIZABLE)
+    pub forward_s: f64,  // bare forward_is + CUDA sync (IRREDUCIBLE serial GPU)
+    pub extract_s: f64,  // host-side result copy-out (PARALLELIZABLE)
 }
 
 /// Instrumented copy of play_games_batched: attributes wall-clock to GPU
@@ -404,5 +408,75 @@ pub fn profile_batched(
         advance_s: advance,
         n_batches,
         total_leaves,
+        marshal_s: 0.0,
+        forward_s: 0.0,
+        extract_s: 0.0,
+    }
+}
+
+/// Like profile_batched but splits the GPU phase into marshal / forward /
+/// extract via evaluate_batch_timed, to size how much of "GPU time" is the
+/// irreducible serial forward vs parallelizable host marshaling.
+pub fn profile_batched_timed(
+    ev: &TorchScriptEvaluator,
+    seeds: &[u64],
+    cfg: &SelfPlayConfig,
+) -> ProfileResult {
+    use std::time::Instant;
+    let b_max = ev.b_max().expect("batched");
+    let t_all = Instant::now();
+    let (mut marshal, mut forward, mut extract, mut provide, mut advance) =
+        (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let (mut n_batches, mut total_leaves) = (0usize, 0usize);
+
+    let mut slots: Vec<Slot> = seeds.iter().map(|&s| Slot::new(s, cfg)).collect();
+    let t0 = Instant::now();
+    let mut parked: Vec<Option<Observation>> =
+        slots.iter_mut().map(|sl| sl.advance_to_search(cfg)).collect();
+    advance += t0.elapsed().as_secs_f64();
+
+    loop {
+        let active: Vec<usize> = (0..slots.len()).filter(|&i| parked[i].is_some()).collect();
+        if active.is_empty() {
+            break;
+        }
+        for chunk in active.chunks(b_max) {
+            let obs_refs: Vec<&Observation> =
+                chunk.iter().map(|&i| parked[i].as_ref().unwrap()).collect();
+            let (outs, m, f, e) = ev.evaluate_batch_timed(&obs_refs);
+            marshal += m;
+            forward += f;
+            extract += e;
+            n_batches += 1;
+            total_leaves += chunk.len();
+            for (pos, &i) in chunk.iter().enumerate() {
+                let tp = Instant::now();
+                let next = {
+                    let sl = &mut slots[i];
+                    sl.session.as_mut().unwrap().provide(&outs[pos], &mut sl.rng)
+                };
+                provide += tp.elapsed().as_secs_f64();
+                match next {
+                    SessionStep::NeedEval(obs) => parked[i] = Some(obs),
+                    SessionStep::Done => {
+                        let ta = Instant::now();
+                        slots[i].finish_move(cfg);
+                        parked[i] = slots[i].advance_to_search(cfg);
+                        advance += ta.elapsed().as_secs_f64();
+                    }
+                }
+            }
+        }
+    }
+    ProfileResult {
+        total_s: t_all.elapsed().as_secs_f64(),
+        gpu_s: marshal + forward + extract,
+        provide_s: provide,
+        advance_s: advance,
+        n_batches,
+        total_leaves,
+        marshal_s: marshal,
+        forward_s: forward,
+        extract_s: extract,
     }
 }

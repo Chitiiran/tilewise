@@ -186,4 +186,75 @@ impl TorchScriptEvaluator {
     pub fn evaluate(&self, batch: &[&Observation]) -> Vec<NetOutput> {
         batch.iter().map(|o| self.evaluate_one(o)).collect()
     }
+
+    /// Same as evaluate_batch but returns timing (marshal_s, forward_s,
+    /// extract_s) with a CUDA sync around the bare forward, so we can see how
+    /// much of "GPU time" is the irreducible forward_is vs parallelizable
+    /// host-side tensor marshaling. (Investigation only; not the hot path.)
+    pub fn evaluate_batch_timed(
+        &self,
+        batch: &[&Observation],
+    ) -> (Vec<NetOutput>, f64, f64, f64) {
+        use std::time::Instant;
+        let b_max = self.b_max.expect("batched module");
+        let k = batch.len();
+        let t0 = Instant::now();
+        let mut hex = Vec::with_capacity(b_max * (N_HEX * F_HEX as i64) as usize);
+        let mut vertex = Vec::with_capacity(b_max * (N_VERT * F_VERT as i64) as usize);
+        let mut edge = Vec::with_capacity(b_max * (N_EDGE * F_EDGE as i64) as usize);
+        let mut scalars = Vec::with_capacity(b_max * N_SCALARS);
+        for i in 0..b_max {
+            let o = batch[if i < k { i } else { 0 }];
+            hex.extend_from_slice(&o.hex_features);
+            vertex.extend_from_slice(&o.vertex_features);
+            edge.extend_from_slice(&o.edge_features);
+            scalars.extend_from_slice(&o.scalars);
+        }
+        let bm = b_max as i64;
+        let t_hex = Tensor::from_slice(&hex).reshape([bm * N_HEX, F_HEX as i64]).to_device(self.device);
+        let t_vert = Tensor::from_slice(&vertex).reshape([bm * N_VERT, F_VERT as i64]).to_device(self.device);
+        let t_edge = Tensor::from_slice(&edge).reshape([bm * N_EDGE, F_EDGE as i64]).to_device(self.device);
+        let t_scal = Tensor::from_slice(&scalars).reshape([bm, N_SCALARS as i64]).to_device(self.device);
+        if self.device.is_cuda() {
+            tch::Cuda::synchronize(0);
+        }
+        let marshal_s = t0.elapsed().as_secs_f64();
+
+        let t1 = Instant::now();
+        let out = self
+            .module
+            .forward_is(&[
+                IValue::Tensor(t_hex),
+                IValue::Tensor(t_vert),
+                IValue::Tensor(t_edge),
+                IValue::Tensor(t_scal),
+            ])
+            .expect("forward");
+        if self.device.is_cuda() {
+            tch::Cuda::synchronize(0);
+        }
+        let forward_s = t1.elapsed().as_secs_f64();
+
+        let t2 = Instant::now();
+        let (value_t, logits_t) = match out {
+            IValue::Tuple(mut t) => {
+                let logits = t.pop().unwrap();
+                let value = t.pop().unwrap();
+                match (value, logits) {
+                    (IValue::Tensor(v), IValue::Tensor(l)) => (v, l),
+                    _ => panic!("not tensors"),
+                }
+            }
+            _ => panic!("not a tuple"),
+        };
+        let value_flat: Vec<f32> = value_t.to_kind(Kind::Float).reshape([bm * N_VALUE as i64]).try_into().unwrap();
+        let logits_flat: Vec<f32> = logits_t.to_kind(Kind::Float).reshape([bm * ACTION_SPACE_SIZE as i64]).try_into().unwrap();
+        let outs: Vec<NetOutput> = (0..k).map(|i| {
+            let mut value = [0.0f32; N_VALUE];
+            value.copy_from_slice(&value_flat[i * N_VALUE..(i + 1) * N_VALUE]);
+            NetOutput { logits: logits_flat[i * ACTION_SPACE_SIZE..(i + 1) * ACTION_SPACE_SIZE].to_vec(), value }
+        }).collect();
+        let extract_s = t2.elapsed().as_secs_f64();
+        (outs, marshal_s, forward_s, extract_s)
+    }
 }

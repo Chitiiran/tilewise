@@ -640,6 +640,26 @@ def train_main(
                     flush=True,
                 )
                 last_progress_time = now
+                # Streaming per-batch metrics for the live dashboard loss curve
+                # (feedback_training_observability: per-batch, not per-epoch).
+                # grad-norm is read before the next zero_grad clears grads.
+                try:
+                    import json as _json
+                    gnorm = 0.0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            gnorm += float(p.grad.detach().norm().item()) ** 2
+                    gnorm = gnorm ** 0.5
+                    tp_path = out_dir / "train_progress.jsonl"
+                    with tp_path.open("a", encoding="utf-8") as _f:
+                        _f.write(_json.dumps({
+                            "epoch": epoch, "batch": n, "batches_total": batches_total,
+                            "loss": float(loss.item()), "loss_value": float(lv.item()),
+                            "loss_policy": float(lp.item()), "grad_norm": gnorm,
+                            "ms_per_batch": ms_per_batch, "ts": now,
+                        }) + "\n")
+                except Exception:
+                    pass
                 # Mid-epoch dashboard update so the dashboard isn't silent
                 # for hours between epoch boundaries.
                 if status_file is not None:
