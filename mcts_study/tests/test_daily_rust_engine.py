@@ -57,6 +57,43 @@ def test_daily_selfplay_module_switch(monkeypatch):
             f"engine={engine} should invoke {expect}, got {captured['cmd']}"
 
 
+def test_rust_selfplay_uses_one_process(monkeypatch):
+    """Phase 3: the rust engine launches ONE high-concurrency process (one fat
+    GPU batch), not N small ones. Asserts a single Popen + --pause-dir present."""
+    from catan_az import daily
+
+    n_popen = {"count": 0}
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kw):
+            n_popen["count"] += 1
+            captured["cmd"] = cmd
+
+        def wait(self, timeout=None):
+            return 0
+
+        @property
+        def returncode(self):
+            return 0
+
+    monkeypatch.setattr(daily.subprocess, "Popen", _FakePopen)
+    cfg = AzConfig(engine="rust", worker_nice=10, sims=8, n_concurrent=256,
+                   max_batch=32, hidden_dim=32, num_layers=2, vp_target=10)
+    try:
+        daily._launch_selfplay_procs(
+            cfg, out_dir=Path("/tmp/sp_one"), checkpoint=Path("x.pt"),
+            n_games=100, n_procs=7, generator_name="g", gen_iter=0,
+            rules_id="v3-full")
+    except Exception:
+        pass
+    assert n_popen["count"] == 1, "rust engine must use exactly ONE process"
+    cmd = [str(c) for c in captured["cmd"]]
+    assert "--pause-dir" in cmd, "rust worker needs --pause-dir for pausability"
+    # all 100 games go to the single process
+    assert "100" in cmd, f"single process should run all games, got {cmd}"
+
+
 def test_run_arena_rust_matches_python(tmp_path):
     """run_arena(engine='rust') vs run_arena(engine='python') on the same small
     plan: identical winrate + wins (the production-path version of the gate)."""

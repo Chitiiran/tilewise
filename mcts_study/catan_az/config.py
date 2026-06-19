@@ -21,8 +21,14 @@ class AzConfig:
     dirichlet_eps: float = 0.25
     temp_moves: int = 30
     n_procs: int = 5                   # until the B1 spike verdict
-    n_concurrent: int = 24             # coroutines per proc
-    max_batch: int = 24
+    # n_concurrent: games run concurrently per self-play process.
+    #   - python (asyncio) engine: coroutines/proc (small; 1-core bound).
+    #   - rust engine: games per batched chunk. Measured knee ~256 (mean GPU
+    #     batch ~30/32 = 93%; 64->512 only +~40% per-call, diminishing). 256
+    #     balances batch fill vs host RAM + scheduler core. See
+    #     project_gpu_forward_bound_2026_06_18 / Task-10 sweep.
+    n_concurrent: int = 256
+    max_batch: int = 32                # rust batched B_MAX (GNN forward batch cap)
     # Buffer
     window_games: int = 1200           # ~3 iterations
     # Train

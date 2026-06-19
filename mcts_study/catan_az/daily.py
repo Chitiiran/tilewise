@@ -163,12 +163,20 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
     seed collision."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    is_rust = getattr(cfg, "engine", "python") == "rust"
+    # THROUGHPUT (Phase 3, GPU-forward-bound finding): the Rust engine batches
+    # ALL its games into one GPU forward, so the optimal model is ONE process
+    # with high n_concurrent (one fat batch ~93% full), NOT N small processes
+    # each fragmenting the GPU into a tiny batch (that was right only for the old
+    # 1-core asyncio engine). So force n_procs=1 for rust; the in-process chunked
+    # batcher (self_play_rust) handles concurrency + pausability + resume.
+    if is_rust:
+        n_procs = 1
     per = max(1, n_games // max(1, n_procs))
     procs = []
     for i in range(n_procs):
         sb = _worker_seed_base(gen_iter=gen_iter, i=i) + seed_offset
-        sp_module = ("catan_mcts.experiments.self_play_rust"
-                     if getattr(cfg, "engine", "python") == "rust"
+        sp_module = ("catan_mcts.experiments.self_play_rust" if is_rust
                      else "catan_mcts.experiments.self_play_async")
         cmd = ["nice", "-n", str(cfg.worker_nice),
                "python", "-m", sp_module,
@@ -186,6 +194,9 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                str(cfg.selfplay_game_deadline_seconds)]
         if not cfg.bonuses:
             cmd.append("--no-bonuses")
+        if is_rust:
+            # check a PAUSE sentinel in the iter dir / loop root between chunks.
+            cmd += ["--pause-dir", str(out_dir.parent)]
         # Rust engine: the tch-linked extension only uses the GPU with the
         # pip-wheel CUDA env (LD_PRELOAD libtorch_cuda, nvidia/*/lib on
         # LD_LIBRARY_PATH for nvrtc, deterministic kernels). Without it the Rust
@@ -218,7 +229,8 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
     if nonzero:
         print(f"[selfplay] WARNING: {len(nonzero)}/{len(procs)} workers exited "
               f"non-zero: {nonzero}")
-    dirs = sorted(out_dir.glob("*self_play_async*"))
+    # match both engines' run-dir names (self_play_async / self_play_rust).
+    dirs = sorted(d for d in out_dir.glob("*self_play_*") if d.is_dir())
     for d in dirs:
         # atomic meta.json tag (M2-class: a torn write would orphan the dir).
         tmp = d / "meta.json.tmp"
