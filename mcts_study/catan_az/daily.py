@@ -293,12 +293,50 @@ def _all_selfplay_dirs(loop_root: Path) -> list:
     return dirs
 
 
+def _start_sampler(iter_dir: Path):
+    """Spawn the background resource sampler writing iter_dir/resources.jsonl for
+    live observability. Returns the Popen (or None if it can't start). Best
+    effort — never blocks the cycle."""
+    try:
+        iter_dir.mkdir(parents=True, exist_ok=True)
+        return subprocess.Popen(
+            ["python", "-m", "catan_az.sampler", str(iter_dir), "2.0", "cycle"],
+            start_new_session=True)
+    except Exception:
+        return None
+
+
+def _stop_sampler(proc) -> None:
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def run_cycle(cfg, loop_root: Path, iter_n: int, capped_procs: int) -> str:
     """One full AZ cycle (redesign 2026-06-14): self-play with the LATEST
     candidate -> gen_iter window (reset on promotion) -> train/arena/publish ->
-    archive. Returns the verdict. Spec 2026-06-14 §4."""
+    archive. Returns the verdict. Spec 2026-06-14 §4.
+
+    A background resource sampler runs for the whole cycle, streaming GPU/CPU/RAM
+    to iter_dir/resources.jsonl for the live dashboard (observability phase 1)."""
     loop_root = Path(loop_root)
     iter_dir = loop_root / f"iter_{iter_n}"
+    _sampler = _start_sampler(iter_dir)
+    try:
+        return _run_cycle_inner(cfg, loop_root, iter_n, capped_procs, iter_dir)
+    finally:
+        _stop_sampler(_sampler)
+
+
+def _run_cycle_inner(cfg, loop_root: Path, iter_n: int, capped_procs: int,
+                     iter_dir: Path) -> str:
     ladder = Ladder(loop_root)
     champion = (ladder.champion()["name"], ladder.champion()["checkpoint"])
     boundary = ladder.last_promotion_iter()      # window reset boundary
