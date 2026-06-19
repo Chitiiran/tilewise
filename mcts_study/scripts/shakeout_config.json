@@ -1,0 +1,21 @@
+{
+  "engine": "rust",
+  "sims": 100,
+  "n_concurrent": 256,
+  "max_batch": 32,
+  "games_per_iter": 160,
+  "max_epochs": 4,
+  "arena_games": 40,
+  "arena_sims": 100,
+  "arena_min_decisive": 20,
+  "arena_max_draw_rate": 0.5,
+  "arena_chunk_games": 40,
+  "promote_threshold": 0.65,
+  "max_iters_per_model": 10,
+  "selfplay_floor_ratio": 0.6,
+  "selfplay_game_deadline_seconds": 1200.0,
+  "vp_target": 10,
+  "bonuses": true,
+  "hidden_dim": 128,
+  "num_layers": 4
+}

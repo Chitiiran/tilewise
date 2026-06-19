@@ -504,6 +504,10 @@ def cli_main():
     p.add_argument("--loop-root", type=Path, required=True)
     p.add_argument("--max-iters", type=int, default=1000)
     p.add_argument("--config", type=Path, default=None)
+    p.add_argument("--next-iter", type=int, default=None,
+                   help="force the starting iteration number (skip the "
+                        "resume-the-incomplete-latest default). Use to start a "
+                        "CLEAN iter instead of resuming a partial one.")
     args = p.parse_args()
     cfg = AzConfig.from_json(args.config) if args.config else AzConfig()
     # Rust engine: the WHOLE driver needs the GPU env so the IN-PROCESS arena
@@ -534,7 +538,7 @@ def cli_main():
         raise SystemExit(1)
     print(f"[az-day] preflight ok, {res.capped_procs} procs")
     run_day(cfg, loop_root=args.loop_root, capped_procs=res.capped_procs,
-            cycle_fn=run_cycle, max_iters=args.max_iters)
+            cycle_fn=run_cycle, max_iters=args.max_iters, next_iter=args.next_iter)
 
 
 if __name__ == "__main__":
