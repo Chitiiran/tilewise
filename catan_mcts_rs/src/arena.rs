@@ -205,6 +205,7 @@ impl ArenaSlot {
     /// or None when the game reached terminal/max_steps (sets done + result
     /// exactly like arena.rs:119-134).
     pub fn advance_to_search(&mut self, sims: u32, max_steps: u32) -> Option<Observation> {
+        debug_assert!(self.session.is_none(), "advance_to_search called with a parked session");
         loop {
             if self.engine.is_terminal() || self.steps >= max_steps {
                 self.finish_game();
@@ -274,4 +275,63 @@ impl ArenaSlot {
             ArenaGameResult { winner_seat: winner, timed_out: false, vp_margin: state::vp_margin(&self.engine) }
         });
     }
+}
+
+/// Task 2: cross-game leaf batching for the arena, over TWO nets. Each active
+/// game's parked leaf belongs to whichever net owns the CURRENT session
+/// (`ArenaSlot::cur_is_cand`); the scheduler partitions active games into a
+/// cand-queue and a champ-queue each iteration (ownership can flip between a
+/// slot's sessions, so it is recomputed every pass, not cached) and flushes
+/// each queue in `b_max`-sized chunks against its own evaluator. Mirrors
+/// `selfplay::play_games_batched` (selfplay.rs:298-335); returns results in
+/// `pairs` order regardless of which game finishes first.
+#[allow(clippy::too_many_arguments)]
+pub fn play_arena_games_batched(
+    ev_cand: &TorchScriptEvaluator,
+    ev_champ: &TorchScriptEvaluator,
+    pairs: &[(usize, u64)],
+    sims: u32,
+    vp_target: u8,
+    bonuses: bool,
+    max_steps: u32,
+) -> Vec<ArenaGameResult> {
+    let b_max_cand =
+        ev_cand.b_max().expect("play_arena_games_batched needs a batched cand evaluator");
+    let b_max_champ =
+        ev_champ.b_max().expect("play_arena_games_batched needs a batched champ evaluator");
+
+    let mut slots: Vec<ArenaSlot> =
+        pairs.iter().map(|&(rot, seed)| ArenaSlot::new(rot, seed, vp_target, bonuses)).collect();
+    let mut parked: Vec<Option<Observation>> =
+        slots.iter_mut().map(|sl| sl.advance_to_search(sims, max_steps)).collect();
+
+    loop {
+        let active: Vec<usize> = (0..slots.len()).filter(|&i| parked[i].is_some()).collect();
+        if active.is_empty() {
+            break;
+        }
+        let (q_cand, q_champ): (Vec<usize>, Vec<usize>) =
+            active.into_iter().partition(|&i| slots[i].cur_is_cand);
+
+        for (queue, ev, b_max) in
+            [(q_cand, ev_cand, b_max_cand), (q_champ, ev_champ, b_max_champ)]
+        {
+            for chunk in queue.chunks(b_max) {
+                let obs_refs: Vec<&Observation> =
+                    chunk.iter().map(|&i| parked[i].as_ref().unwrap()).collect();
+                let outs = ev.evaluate_batch(&obs_refs);
+                for (pos, &i) in chunk.iter().enumerate() {
+                    match slots[i].provide_cur(&outs[pos]) {
+                        SessionStep::NeedEval(obs) => parked[i] = Some(obs),
+                        SessionStep::Done => {
+                            slots[i].finish_move();
+                            parked[i] = slots[i].advance_to_search(sims, max_steps);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    slots.into_iter().map(|s| s.result.expect("slot finished without result")).collect()
 }
