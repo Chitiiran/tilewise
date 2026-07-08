@@ -295,7 +295,11 @@ def test_run_arena_sets_active_game_count(tmp_path, monkeypatch):
     monkeypatch.setattr(arena_mod, "_load_model", lambda *a, **k: object())
     monkeypatch.setattr(arena_mod, "_play_arena_game", fake_play)
 
-    cfg = AzConfig(arena_games=8, arena_sims=2)
+    # active_game_count is a property of the PYTHON BatchedGnnEvaluator arena;
+    # the rust arena (engine default since 2026-06-18) has no such sentinel and
+    # would bypass every fake above (and hit a real _ts export on the fake
+    # checkpoint path). Pin the path this regression test was written for.
+    cfg = AzConfig(engine="python", arena_games=8, arena_sims=2)
     arena_mod.run_arena(candidate_ckpt=tmp_path / "c.pt",
                         champion_ckpt=tmp_path / "x.pt", cfg=cfg,
                         out_dir=tmp_path / "arena", seed_base=1, device="cpu",

@@ -135,7 +135,11 @@ def test_deficit_resume_offsets_seed_base(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(daily.subprocess, "Popen", lambda cmd, **k: _FakeProc(cmd))
-    cfg = AzConfig()
+    # The seed-offset dedup scheme belongs to the PYTHON async path (per-worker
+    # timestamped dirs can't see prior done seeds). The rust path deliberately
+    # does NOT offset (C2, code review 2026-06-19) — covered by
+    # test_rust_resume_deterministic_dir_no_offset below.
+    cfg = AzConfig(engine="python")
     out = tmp_path / "sp"
     # 731 games already produced -> resume offset
     daily._launch_selfplay_procs(cfg, out, tmp_path / "c.pt", n_games=269,
@@ -147,6 +151,44 @@ def test_deficit_resume_offsets_seed_base(tmp_path, monkeypatch):
     assert bases[1] == daily._worker_seed_base(gen_iter=6, i=1) + 731
     # offset stays well within each worker's 1M block (no cross-worker collision)
     assert all(b % 1_000_000 < 100_000 for b in bases)
+
+
+def test_rust_resume_deterministic_dir_no_offset(tmp_path, monkeypatch):
+    """C2 contract (code review 2026-06-19): the rust path is ONE process that
+    resumes INTO a deterministic dir whose done.txt skip-list dedups — so its
+    seed-base must NOT be offset (offset + done-skip stacked could lose/dup
+    games), and the launch must pass --resume-dir/--pause-dir."""
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+
+    cmds = []
+
+    class _FakeProc:
+        pid = 1
+        returncode = 0
+
+        def __init__(self, cmd):
+            cmds.append(cmd)
+
+        def wait(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(daily.subprocess, "Popen", lambda cmd, **k: _FakeProc(cmd))
+    monkeypatch.setattr(daily, "_rust_cuda_env", lambda: None)
+    cfg = AzConfig(engine="rust")
+    out = tmp_path / "sp"
+    daily._launch_selfplay_procs(cfg, out, tmp_path / "c.pt", n_games=269,
+                                 n_procs=7, generator_name="g", gen_iter=6,
+                                 rules_id="v3-full", seed_offset=731)
+    # ONE fat batched process, regardless of requested n_procs.
+    assert len(cmds) == 1
+    cmd = cmds[0]
+    # Seed-base is exactly the worker-0 base: NO deficit offset on rust.
+    assert int(cmd[cmd.index("--seed-base") + 1]) == \
+        daily._worker_seed_base(gen_iter=6, i=0)
+    # Deterministic resume dir + pause sentinel dir are wired.
+    assert cmd[cmd.index("--resume-dir") + 1] == str(out / "self_play_rust")
+    assert "--pause-dir" in cmd
 
 
 # ---- M1: seed-base must vary per iteration ----------------------------------
