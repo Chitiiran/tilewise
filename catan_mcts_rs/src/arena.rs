@@ -10,11 +10,12 @@
 //! Returns (winner_seat or -1, timed_out, vp_margin) per game, plus the seat
 //! roles, so Python aggregates the existing ArenaResult unchanged.
 
-use crate::evaluator::TorchScriptEvaluator;
-use crate::mcts::{best_action, Mcts};
+use crate::evaluator::{NetOutput, TorchScriptEvaluator};
+use crate::mcts::{best_action, Mcts, SearchSession, SessionStep};
 use crate::mt19937::MtRng;
 use crate::rng::NpRng;
 use crate::state;
+use catan_engine::observation::Observation;
 use catan_engine::Engine;
 
 const C_PUCT: f64 = 1.4;
@@ -131,5 +132,146 @@ pub fn play_arena_game(
         winner_seat: winner,
         timed_out: false,
         vp_margin: state::vp_margin(&engine),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 1: pausable per-game arena state (Task 10's Slot pattern, ported to the
+// arena's dual-RNG contract). Drives the SAME SearchSession algorithm as
+// play_arena_game but YIELDS at each leaf net-eval so Task 2's scheduler can
+// batch leaves across many concurrent arena games into one evaluate_batch
+// call. See selfplay.rs's Slot for the donor pattern; the differences are:
+// game-level chance uses MtRng (byte-copy of the walk above, not
+// state::sample_chance), TWO per-seat MCTS RNGs (cand/champ) selected by
+// seating_cand[current_player], greedy search (no Dirichlet/temperature), and
+// no move recording — only the final ArenaGameResult.
+// ---------------------------------------------------------------------------
+
+pub struct ArenaSlot {
+    pub engine: Engine,
+    pub chance_rng: MtRng, // game-level chance (arena contract)
+    pub rng_cand: NpRng,   // seed+11 — MCTS chance for cand searches
+    pub rng_champ: NpRng,  // seed+13 — champ searches
+    pub seating_cand: [bool; 4],
+    pub seed: u64,
+    pub rot: usize,
+    pub session: Option<SearchSession>,
+    pub cur_is_cand: bool, // net owning the CURRENT session
+    pub steps: u32,
+    pub done: bool,
+    pub result: Option<ArenaGameResult>,
+}
+
+impl ArenaSlot {
+    pub fn new(rot: usize, seed: u64, vp_target: u8, bonuses: bool) -> Self {
+        ArenaSlot {
+            engine: new_engine(seed, vp_target, bonuses),
+            chance_rng: MtRng::from_seed(seed),
+            rng_cand: NpRng::from_seed(seed.wrapping_add(11)),
+            rng_champ: NpRng::from_seed(seed.wrapping_add(13)),
+            seating_cand: seating_is_cand(rot),
+            seed,
+            rot,
+            session: None,
+            cur_is_cand: false,
+            steps: 0,
+            done: false,
+            result: None,
+        }
+    }
+
+    /// The rng matching cur_is_cand (for provide()).
+    pub fn cur_rng(&mut self) -> &mut NpRng {
+        if self.cur_is_cand {
+            &mut self.rng_cand
+        } else {
+            &mut self.rng_champ
+        }
+    }
+
+    /// Feed the net output for the current session's parked leaf, routing to
+    /// the correct per-seat rng internally (split borrows of struct fields
+    /// avoid the session+rng aliasing conflict callers would hit doing this
+    /// by hand).
+    pub fn provide_cur(&mut self, out: &NetOutput) -> SessionStep {
+        let rng = if self.cur_is_cand { &mut self.rng_cand } else { &mut self.rng_champ };
+        self.session.as_mut().expect("provide_cur without session").provide(out, rng)
+    }
+
+    /// Advance through chance (MtRng cumulative walk, byte-copy of
+    /// arena.rs:86-97) and single-legal fast-paths; at a decision node start
+    /// a SearchSession (greedy: dirichlet_eps=0.0, alpha=0.8, c=1.4) and pump
+    /// it with the MOVER's rng; set cur_is_cand. Returns the parked leaf obs,
+    /// or None when the game reached terminal/max_steps (sets done + result
+    /// exactly like arena.rs:119-134).
+    pub fn advance_to_search(&mut self, sims: u32, max_steps: u32) -> Option<Observation> {
+        loop {
+            if self.engine.is_terminal() || self.steps >= max_steps {
+                self.finish_game();
+                return None;
+            }
+            if self.engine.is_chance_pending() {
+                let outs = self.engine.chance_outcomes();
+                let r = self.chance_rng.random_f64();
+                let mut cum = 0.0f64;
+                let mut chosen = outs.last().unwrap().0;
+                for &(v, p) in &outs {
+                    cum += p;
+                    if r <= cum {
+                        chosen = v;
+                        break;
+                    }
+                }
+                self.engine.apply_chance_outcome(chosen);
+                self.steps += 1;
+                continue;
+            }
+            let legal = self.engine.legal_actions();
+            if legal.len() == 1 {
+                self.engine.step(legal[0]);
+                self.steps += 1;
+                continue;
+            }
+            let cp = self.engine.state.current_player as usize;
+            self.cur_is_cand = self.seating_cand[cp];
+            let mut sess = SearchSession::new(self.engine.clone(), sims, C_PUCT, 0.8, 0.0);
+            let rng = if self.cur_is_cand { &mut self.rng_cand } else { &mut self.rng_champ };
+            match sess.pump(rng) {
+                SessionStep::NeedEval(obs) => {
+                    self.session = Some(sess);
+                    return Some(obs);
+                }
+                SessionStep::Done => {
+                    self.session = Some(sess);
+                    self.finish_move();
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Session Done: take_visit_counts -> best_action -> engine.apply; clears
+    /// session, bumps steps.
+    pub fn finish_move(&mut self) {
+        let sess = self.session.take().expect("finish_move without session");
+        let visit_counts = sess.take_visit_counts();
+        let action = best_action(&visit_counts) as u32;
+        self.engine.step(action);
+        self.steps += 1;
+    }
+
+    fn finish_game(&mut self) {
+        self.done = true;
+        self.result = Some(if !self.engine.is_terminal() {
+            ArenaGameResult {
+                winner_seat: state::vp_leader_margin(&self.engine),
+                timed_out: true,
+                vp_margin: state::vp_margin(&self.engine),
+            }
+        } else {
+            let rets = state::returns_abs(&self.engine);
+            let winner = rets.iter().position(|&r| r == 1.0).map(|i| i as i32).unwrap_or(-1);
+            ArenaGameResult { winner_seat: winner, timed_out: false, vp_margin: state::vp_margin(&self.engine) }
+        });
     }
 }
