@@ -17,3 +17,16 @@ def test_batched_kwargs_same_schema_and_dedup_key():
         assert set(r) == {"seed", "rot", "winner_seat", "winner_role",
                           "timed_out", "vp_margin"}
         assert r["winner_role"] in ("cand", "champ", None)
+
+
+def test_partial_batched_kwargs_raises_value_error():
+    # Supplying only some of the three batched kwargs must raise, not
+    # silently fall back to the slow serial B=1 path (review finding).
+    # Validation happens before any net is loaded, so this doesn't need the
+    # spike .ts fixtures — bogus paths are fine, the ValueError fires first.
+    import catan_mcts_rs
+    pairs = [(0, 9001)]
+    with pytest.raises(ValueError):
+        catan_mcts_rs.run_arena_games(
+            "bogus_cand.ts", "bogus_champ.ts", pairs, 8, 10, True,
+            batched_cand_ts="bogus_batched_cand.ts", b_max=8)

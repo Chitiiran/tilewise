@@ -6,7 +6,7 @@
 //! sequence on a fresh engine, return a queried value). These hooks stay (test
 //! surface) but are not on the hot path.
 
-use crate::arena::{play_arena_game, seating_is_cand};
+use crate::arena::{play_arena_game, seating_is_cand, ArenaGameResult};
 use crate::evaluator::TorchScriptEvaluator;
 use crate::mcts::{best_action, Mcts};
 use crate::rng::NpRng;
@@ -182,6 +182,32 @@ fn game_record_to_dict<'py>(
     Ok(d)
 }
 
+/// Convert a Rust ArenaGameResult into the Python ArenaResult-shaped dict
+/// {seed, rot, winner_seat, winner_role, timed_out, vp_margin}. Shared by
+/// run_arena_games's batched and B=1 fallback branches (Task 3 review fix —
+/// was previously duplicated in both).
+fn arena_result_to_dict<'py>(
+    py: Python<'py>,
+    rot: usize,
+    seed: u64,
+    r: &ArenaGameResult,
+) -> PyResult<Bound<'py, PyDict>> {
+    let seating = seating_is_cand(rot);
+    let role: Option<&str> = if r.winner_seat >= 0 {
+        Some(if seating[r.winner_seat as usize] { "cand" } else { "champ" })
+    } else {
+        None
+    };
+    let d = PyDict::new_bound(py);
+    d.set_item("seed", seed)?;
+    d.set_item("rot", rot)?;
+    d.set_item("winner_seat", r.winner_seat)?;
+    d.set_item("winner_role", role)?;
+    d.set_item("timed_out", r.timed_out)?;
+    d.set_item("vp_margin", r.vp_margin)?;
+    Ok(d)
+}
+
 /// Phase-7 hook: play ONE arena game (cand vs champ nets, greedy) at the given
 /// rotation+seed. Returns (winner_seat, timed_out, vp_margin) — same triple as
 /// arena._play_arena_game.
@@ -340,6 +366,20 @@ fn run_arena_games<'py>(
 ) -> PyResult<Bound<'py, pyo3::types::PyList>> {
     let device = infer_device();
 
+    // Reject partial batched kwargs (review finding): supplying one or two of
+    // the three batched args must not silently fall back to the slow serial
+    // B=1 path below — that's a surprising perf cliff. Require all-or-nothing.
+    let any_batched =
+        batched_cand_ts.is_some() || batched_champ_ts.is_some() || b_max.is_some();
+    let all_batched =
+        batched_cand_ts.is_some() && batched_champ_ts.is_some() && b_max.is_some();
+    if any_batched && !all_batched {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "batched arena requires all three of batched_cand_ts, batched_champ_ts, \
+             b_max — got a partial set",
+        ));
+    }
+
     // Batched path (Task 3): cross-game leaf batching over two nets — the
     // GPU-feeding fast path. Used when both batched .ts paths and b_max are
     // supplied. Mirrors run_selfplay's batched branch (:255-265).
@@ -357,20 +397,7 @@ fn run_arena_games<'py>(
         });
         let out = pyo3::types::PyList::empty_bound(py);
         for ((rot, seed), r) in pairs.iter().zip(results.iter()) {
-            let seating = seating_is_cand(*rot);
-            let role: Option<&str> = if r.winner_seat >= 0 {
-                Some(if seating[r.winner_seat as usize] { "cand" } else { "champ" })
-            } else {
-                None
-            };
-            let d = PyDict::new_bound(py);
-            d.set_item("seed", seed)?;
-            d.set_item("rot", rot)?;
-            d.set_item("winner_seat", r.winner_seat)?;
-            d.set_item("winner_role", role)?;
-            d.set_item("timed_out", r.timed_out)?;
-            d.set_item("vp_margin", r.vp_margin)?;
-            out.append(d)?;
+            out.append(arena_result_to_dict(py, *rot, *seed, r)?)?;
         }
         return Ok(out);
     }
@@ -384,19 +411,7 @@ fn run_arena_games<'py>(
         let r = play_arena_game(
             &ev_cand, &ev_champ, seed, seating, sims, vp_target, bonuses, max_steps,
         );
-        let role: Option<&str> = if r.winner_seat >= 0 {
-            Some(if seating[r.winner_seat as usize] { "cand" } else { "champ" })
-        } else {
-            None
-        };
-        let d = PyDict::new_bound(py);
-        d.set_item("seed", seed)?;
-        d.set_item("rot", rot)?;
-        d.set_item("winner_seat", r.winner_seat)?;
-        d.set_item("winner_role", role)?;
-        d.set_item("timed_out", r.timed_out)?;
-        d.set_item("vp_margin", r.vp_margin)?;
-        out.append(d)?;
+        out.append(arena_result_to_dict(py, rot, seed, &r)?)?;
     }
     Ok(out)
 }
