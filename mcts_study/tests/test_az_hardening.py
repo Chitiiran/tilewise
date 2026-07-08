@@ -7,6 +7,7 @@ docs/superpowers/journals/2026-06-14-az-pipeline-deep-inspection.md.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -311,3 +312,86 @@ def test_count_games_dedups_seed_shards(tmp_path):
     pd.DataFrame({"seed": [2, 3], "winner": [1, -1]}).to_parquet(d / "games.seed=2.parquet")
     # unique real games: seeds {1,2,3} minus phantom seed-3 winner=-1 -> {1,2} = 2
     assert count_games(d) == 2
+
+
+# ---- BUG B: git SHA stamping must survive WSL+worktree (shake-out 2026-06-19 §6) --
+#
+# The worktree's `.git` file holds `gitdir: C:/dojo/catan_bot/.git/worktrees/az-bots`
+# — a Windows path, meaningless when `git rev-parse` is shelled out from a WSL cwd.
+# git then fails with "fatal: not a git repository" and the run silently records an
+# empty/unknown SHA — reproducibility metadata lost with no warning. Fallback chain:
+# (1) AZ_GIT_SHA env var, (2) plain `git rev-parse HEAD`, (3) textual worktree parse,
+# (4) "unknown" + logged warning (never a silent empty string).
+
+def test_git_sha_env_var_takes_precedence(monkeypatch):
+    """If AZ_GIT_SHA is set, use it directly — never shell out to git at all."""
+    from catan_gnn.train import _git_sha
+
+    monkeypatch.setenv("AZ_GIT_SHA", "abc123")
+
+    def _boom(*a, **k):
+        raise AssertionError("git subprocess must not be invoked when AZ_GIT_SHA is set")
+
+    monkeypatch.setattr("catan_gnn.train.subprocess.check_output", _boom)
+    assert _git_sha() == "abc123"
+
+
+def test_git_sha_worktree_textual_fallback(tmp_path, monkeypatch):
+    """When git itself fails (as it does shelling out from WSL against a
+    Windows-path worktree gitdir), fall back to a textual parse of the worktree
+    layout: `.git` file -> gitdir -> HEAD -> `ref: refs/heads/X` -> resolve X
+    under the MAIN repo's refs directory (a worktree's gitdir is
+    `<main>/.git/worktrees/<name>`, so refs live at `<main>/.git/refs/...`)."""
+    from catan_gnn.train import _git_sha
+
+    monkeypatch.delenv("AZ_GIT_SHA", raising=False)
+
+    sha = "a" * 40
+    main_git = tmp_path / "main" / ".git"
+    wt_gitdir = main_git / "worktrees" / "wt"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "HEAD").write_text("ref: refs/heads/feat\n")
+    refs_heads = main_git / "refs" / "heads"
+    refs_heads.mkdir(parents=True)
+    (refs_heads / "feat").write_text(sha + "\n")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {wt_gitdir}\n")
+
+    def _fail(*a, **k):
+        raise FileNotFoundError("git: not a git repository (simulated WSL failure)")
+
+    monkeypatch.setattr("catan_gnn.train.subprocess.check_output", _fail)
+    assert _git_sha(cwd=worktree) == sha
+
+
+def test_git_sha_never_silently_empty(tmp_path, monkeypatch):
+    """When env is unset, git fails, AND no worktree files are readable, the
+    helper must return the literal 'unknown' sentinel — never '' or None."""
+    from catan_gnn.train import _git_sha
+
+    monkeypatch.delenv("AZ_GIT_SHA", raising=False)
+
+    def _fail(*a, **k):
+        raise FileNotFoundError("git: not a git repository (simulated)")
+
+    monkeypatch.setattr("catan_gnn.train.subprocess.check_output", _fail)
+    empty_dir = tmp_path / "no_git_here"
+    empty_dir.mkdir()
+    result = _git_sha(cwd=empty_dir)
+    assert result == "unknown"
+    assert result not in ("", None)
+
+
+def test_daily_sets_az_git_sha_for_workers(tmp_path, monkeypatch):
+    """daily.py must compute the SHA once at driver start and put it in
+    AZ_GIT_SHA in the subprocess env so self-play workers (WSL-side) inherit a
+    valid SHA instead of re-deriving it (and failing) themselves."""
+    import catan_az.daily as daily
+
+    monkeypatch.setattr(daily, "_git_sha", lambda **k: "deadbeef" * 5)
+    monkeypatch.delenv("AZ_GIT_SHA", raising=False)
+
+    daily._stamp_git_sha_env()
+    assert os.environ["AZ_GIT_SHA"] == "deadbeef" * 5

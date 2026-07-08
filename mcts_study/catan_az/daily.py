@@ -12,6 +12,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from catan_gnn.train import _git_sha
+
 from .archive import archive_out_of_window
 from .buffer import fresh_deficit, gen_window, select_window
 from .ladder import Ladder
@@ -134,6 +136,25 @@ def _worker_seed_base(*, gen_iter: int, i: int) -> int:
     (10M) is wide enough that a worker's 1000-game seed range never collides
     with another iter/worker across a 10-iter x 7-worker grid."""
     return 31_000_000 + gen_iter * 10_000_000 + i * 1_000_000
+
+
+def _stamp_git_sha_env() -> str:
+    """Compute the driver's own commit SHA ONCE and publish it via AZ_GIT_SHA
+    in this process's os.environ (BUG B, shake-out journal 2026-06-19 §6).
+
+    Self-play workers are subprocesses launched with `env=None` (inherits
+    os.environ directly) or via `_rust_cuda_env()` (which does
+    `dict(os.environ)`) — either way, setting it here once means every worker
+    sees a valid SHA via the env-var fast path in `_git_sha()` instead of each
+    one independently re-deriving it (and failing under WSL+worktree, where a
+    worker's shelled-out `git rev-parse` hits the Windows-path `gitdir:` and
+    can't resolve). The in-process TRAIN stage (_git_sha() called from
+    catan_gnn.train) also picks this up directly via os.environ, no plumbing
+    needed there.
+    """
+    sha = _git_sha()
+    os.environ["AZ_GIT_SHA"] = sha
+    return sha
 
 
 def _rust_cuda_env() -> dict:
@@ -510,6 +531,11 @@ def cli_main():
                         "CLEAN iter instead of resuming a partial one.")
     args = p.parse_args()
     cfg = AzConfig.from_json(args.config) if args.config else AzConfig()
+    # BUG B fix (shake-out journal 2026-06-19 §6): compute the SHA ONCE, here,
+    # driver-side, before any subprocess (self-play workers) or in-process
+    # stage (TRAIN) needs it. Must happen before the re-exec below so
+    # AZ_GIT_SHA survives into the re-exec'd process's env too.
+    _stamp_git_sha_env()
     # Rust engine: the WHOLE driver needs the GPU env so the IN-PROCESS arena
     # (_run_arena_rust runs tch in this process) uses the GPU. LD_PRELOAD can't
     # be set after start, so re-exec once with the env if it's missing. Self-play

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import re
 import subprocess
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -192,14 +194,108 @@ def _vp_prior_loss(logits: torch.Tensor, vp_target: torch.Tensor, mask: torch.Te
     return -(vp_target * log_probs).sum(dim=1).mean()
 
 
-def _git_sha() -> str:
+def _parse_worktree_sha(cwd: Path) -> str | None:
+    """Textual fallback for `git rev-parse HEAD` when the git binary itself
+    can't resolve the repo (BUG B, shake-out journal 2026-06-19 §6): a git
+    WORKTREE's `.git` file is `gitdir: <main>/.git/worktrees/<name>`. On a
+    Windows worktree checked out under WSL, that path is a Windows path
+    (`C:/...`) which is meaningless as a WSL cwd, so `git rev-parse` fails
+    with "fatal: not a git repository" and the run silently loses its SHA.
+
+    Parses the layout by hand instead of shelling out:
+      <worktree>/.git            -> "gitdir: <main>/.git/worktrees/<name>"
+      <main>/.git/worktrees/<name>/HEAD -> "ref: refs/heads/<branch>"
+      <main>/.git/refs/heads/<branch>   -> "<40-hex sha>\n"
+    (falls back to <main>/.git/packed-refs if the loose ref file is absent).
+
+    Returns the 40-hex SHA, or None if any step of the chain is unavailable
+    (caller is responsible for the final "unknown" sentinel — never raises).
+    """
     try:
-        sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent
+        # mirror git's own behaviour: walk UP from cwd looking for `.git`
+        # (real `git rev-parse` does this automatically; our textual parser
+        # must too, or it only works when cwd IS the worktree root).
+        dot_git = None
+        for candidate in (Path(cwd), *Path(cwd).resolve().parents):
+            probe = candidate / ".git"
+            if probe.is_file() or probe.is_dir():
+                dot_git = probe
+                break
+        if dot_git is None or not dot_git.is_file():
+            return None
+        text = dot_git.read_text().strip()
+        if not text.startswith("gitdir:"):
+            return None
+        gitdir = text.split(":", 1)[1].strip()
+        # Windows path (worktree checked out on Windows, read from WSL) ->
+        # translate C:/... or C:\... to /mnt/c/... so the path resolves here.
+        m = re.match(r"^([A-Za-z]):[/\\](.*)$", gitdir)
+        if m and not Path(gitdir).exists():
+            drive, rest = m.group(1).lower(), m.group(2).replace("\\", "/")
+            gitdir = f"/mnt/{drive}/{rest}"
+        gitdir_path = Path(gitdir)
+        head_file = gitdir_path / "HEAD"
+        if not head_file.is_file():
+            return None
+        head_text = head_file.read_text().strip()
+        if head_text.startswith("ref:"):
+            ref = head_text.split(":", 1)[1].strip()
+            # gitdir for a worktree is <main>/.git/worktrees/<name>; refs for
+            # the main repo live at <main>/.git/refs/... (two levels up).
+            main_git_dir = gitdir_path.parent.parent
+            ref_file = main_git_dir / ref
+            if ref_file.is_file():
+                sha = ref_file.read_text().strip()
+                if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+                    return sha
+            # loose ref not found (or already packed) -> check packed-refs.
+            packed = main_git_dir / "packed-refs"
+            if packed.is_file():
+                for line in packed.read_text().splitlines():
+                    if line.endswith(f" {ref}"):
+                        sha = line.split(" ", 1)[0].strip()
+                        if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+                            return sha
+            return None
+        # detached HEAD: HEAD file itself holds the sha.
+        if re.fullmatch(r"[0-9a-fA-F]{40}", head_text):
+            return head_text
+        return None
+    except OSError:
+        return None
+
+
+def _git_sha(cwd: Path | None = None) -> str:
+    """Commit SHA for reproducibility metadata (ENGINEERING-PRINCIPLES §1/§7).
+
+    Fallback chain (BUG B, shake-out journal 2026-06-19 §6):
+      1. AZ_GIT_SHA env var, if set and non-empty (the launch path sets this
+         once, driver-side, so subprocess workers never need to re-derive it).
+      2. plain `git rev-parse HEAD` (works Windows-side or in a normal clone).
+      3. textual worktree parse (works when git itself can't resolve a
+         Windows-path `gitdir:` from a WSL cwd).
+      4. "unknown" + a logged warning — NEVER a silent empty string.
+    """
+    env_sha = os.environ.get("AZ_GIT_SHA", "").strip()
+    if env_sha:
+        return env_sha
+
+    cwd = Path(cwd) if cwd is not None else Path(__file__).parent
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=cwd
         ).decode().strip()
-        return sha
     except Exception:
-        return "unknown"
+        pass
+
+    sha = _parse_worktree_sha(cwd)
+    if sha:
+        return sha
+
+    print(f"[git_sha] WARNING: could not resolve a commit SHA from {cwd} "
+          "(git failed and no worktree files were readable); stamping "
+          "'unknown'", flush=True)
+    return "unknown"
 
 
 def _resolve_device(device: str) -> torch.device:
