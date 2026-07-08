@@ -7,9 +7,86 @@ docs/superpowers/journals/2026-06-14-az-pipeline-deep-inspection.md.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+
+# ---- self-play floor ratio is config-driven (2026-06-17 long-tail timeouts) --
+
+def test_selfplay_floor_ratio_is_config_driven():
+    """The M4 floor must come from cfg.selfplay_floor_ratio, not a hardcoded 0.8.
+
+    2026-06-17: iter_7 at deadline=2400 produced 712/994 healthy games (72%) but
+    the hardcoded 0.8 floor (800) rejected them. The 282 timed-out games were NOT
+    stragglers — they were healthy LONG games (376-566 moves, same range as the
+    healthy 170-575) cut by the wall-clock deadline under concurrency contention.
+    Lowered the floor to 0.7 so a ~72% healthy yield trains instead of stalling."""
+    from catan_az.config import AzConfig
+    cfg = AzConfig()
+    assert cfg.selfplay_floor_ratio == 0.7
+
+
+def test_generate_iter_games_floor_uses_config(tmp_path, monkeypatch):
+    """generate_iter_games must compute its reject-floor from selfplay_floor_ratio.
+    With ratio=0.7 and quota=1000, 712 own-iter games must PASS (>=700), where the
+    old 0.8 floor (800) raised RuntimeError."""
+    import pandas as pd
+
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+
+    # d0 holds real (healthy, decisive) games so the post-floor data-quality
+    # gate (Task 7, final review) doesn't fire on a fixture with no parquet
+    # data — this test's own concern is the FLOOR threshold, not the gate.
+    d0 = tmp_path / "d0"
+    d0.mkdir(exist_ok=True)
+    pd.DataFrame({"seed": range(712), "winner": [i % 4 for i in range(712)]}
+                 ).to_parquet(d0 / "games.x.parquet")
+
+    monkeypatch.setattr(daily, "_launch_selfplay_procs",
+                        lambda *a, **k: [d0])
+    # 712 own-iter games available after the (mocked) launch
+    monkeypatch.setattr(daily, "own_iter_games", lambda dirs, gen_iter: 712,
+                        raising=False)
+    # buffer.own_iter_games is imported inside the function — patch there too
+    import catan_az.buffer as buffer
+    monkeypatch.setattr(buffer, "own_iter_games", lambda dirs, gen_iter: 712)
+
+    cfg = AzConfig(games_per_iter=1000, selfplay_floor_ratio=0.7)
+    # 712 >= int(0.7*1000)=700 -> must NOT raise
+    daily.generate_iter_games(cfg, iter_dir=tmp_path, generator=("g", "c.pt"),
+                              gen_iter=7, capped_procs=1, prior_dirs=[])
+
+    cfg_strict = AzConfig(games_per_iter=1000, selfplay_floor_ratio=0.8)
+    with pytest.raises(RuntimeError):  # 712 < 800
+        daily.generate_iter_games(cfg_strict, iter_dir=tmp_path,
+                                  generator=("g", "c.pt"), gen_iter=7,
+                                  capped_procs=1, prior_dirs=[])
+
+
+# ---- per-game deadline must clear real all-4-seat self-play (2026-06-16) -----
+
+def test_selfplay_game_deadline_clears_measured_game_cost():
+    """The per-game wall-clock deadline must exceed the MEASURED cost of a real
+    all-4-seat self-play game at concurrency=24, sims=200.
+
+    2026-06-16: iter_7 came back 994/994 timed_out (0 winners, all VP=0) because
+    the deadline was 600s but a no-deadline probe measured these games at
+    median 1078s, max 1316s wall-clock (24/24 finished healthy 10VP). iter_6's
+    1322-move tail implies an even longer worst case. 600s cut 23/24 healthy
+    games. Verified vs iter_6 timestamps (~47s/game throughput x24 ≈ 1100s).
+    The deadline must sit above the measured max with headroom so it only ever
+    fires on a genuinely stuck game, never a healthy long one."""
+    from catan_az.config import AzConfig
+    cfg = AzConfig()
+    MEASURED_MAX_S = 1316          # observed worst case, 24-game probe 2026-06-16
+    assert cfg.selfplay_game_deadline_seconds == 2400.0, (
+        "per-game deadline must be 2400s (≈1.8x measured max 1316s)")
+    assert cfg.selfplay_game_deadline_seconds > MEASURED_MAX_S, (
+        f"deadline {cfg.selfplay_game_deadline_seconds}s must exceed measured "
+        f"max {MEASURED_MAX_S}s or it cuts healthy games (the iter_7 failure)")
 
 
 # ---- self-play worker time-cap is config-driven (2026-06-15 cap-vs-quota) ----
@@ -69,7 +146,11 @@ def test_deficit_resume_offsets_seed_base(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(daily.subprocess, "Popen", lambda cmd, **k: _FakeProc(cmd))
-    cfg = AzConfig()
+    # The seed-offset dedup scheme belongs to the PYTHON async path (per-worker
+    # timestamped dirs can't see prior done seeds). The rust path deliberately
+    # does NOT offset (C2, code review 2026-06-19) — covered by
+    # test_rust_resume_deterministic_dir_no_offset below.
+    cfg = AzConfig(engine="python")
     out = tmp_path / "sp"
     # 731 games already produced -> resume offset
     daily._launch_selfplay_procs(cfg, out, tmp_path / "c.pt", n_games=269,
@@ -81,6 +162,44 @@ def test_deficit_resume_offsets_seed_base(tmp_path, monkeypatch):
     assert bases[1] == daily._worker_seed_base(gen_iter=6, i=1) + 731
     # offset stays well within each worker's 1M block (no cross-worker collision)
     assert all(b % 1_000_000 < 100_000 for b in bases)
+
+
+def test_rust_resume_deterministic_dir_no_offset(tmp_path, monkeypatch):
+    """C2 contract (code review 2026-06-19): the rust path is ONE process that
+    resumes INTO a deterministic dir whose done.txt skip-list dedups — so its
+    seed-base must NOT be offset (offset + done-skip stacked could lose/dup
+    games), and the launch must pass --resume-dir/--pause-dir."""
+    import catan_az.daily as daily
+    from catan_az.config import AzConfig
+
+    cmds = []
+
+    class _FakeProc:
+        pid = 1
+        returncode = 0
+
+        def __init__(self, cmd):
+            cmds.append(cmd)
+
+        def wait(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(daily.subprocess, "Popen", lambda cmd, **k: _FakeProc(cmd))
+    monkeypatch.setattr(daily, "_rust_cuda_env", lambda: None)
+    cfg = AzConfig(engine="rust")
+    out = tmp_path / "sp"
+    daily._launch_selfplay_procs(cfg, out, tmp_path / "c.pt", n_games=269,
+                                 n_procs=7, generator_name="g", gen_iter=6,
+                                 rules_id="v3-full", seed_offset=731)
+    # ONE fat batched process, regardless of requested n_procs.
+    assert len(cmds) == 1
+    cmd = cmds[0]
+    # Seed-base is exactly the worker-0 base: NO deficit offset on rust.
+    assert int(cmd[cmd.index("--seed-base") + 1]) == \
+        daily._worker_seed_base(gen_iter=6, i=0)
+    # Deterministic resume dir + pause sentinel dir are wired.
+    assert cmd[cmd.index("--resume-dir") + 1] == str(out / "self_play_rust")
+    assert "--pause-dir" in cmd
 
 
 # ---- M1: seed-base must vary per iteration ----------------------------------
@@ -203,3 +322,86 @@ def test_count_games_dedups_seed_shards(tmp_path):
     pd.DataFrame({"seed": [2, 3], "winner": [1, -1]}).to_parquet(d / "games.seed=2.parquet")
     # unique real games: seeds {1,2,3} minus phantom seed-3 winner=-1 -> {1,2} = 2
     assert count_games(d) == 2
+
+
+# ---- BUG B: git SHA stamping must survive WSL+worktree (shake-out 2026-06-19 §6) --
+#
+# The worktree's `.git` file holds `gitdir: C:/dojo/catan_bot/.git/worktrees/az-bots`
+# — a Windows path, meaningless when `git rev-parse` is shelled out from a WSL cwd.
+# git then fails with "fatal: not a git repository" and the run silently records an
+# empty/unknown SHA — reproducibility metadata lost with no warning. Fallback chain:
+# (1) AZ_GIT_SHA env var, (2) plain `git rev-parse HEAD`, (3) textual worktree parse,
+# (4) "unknown" + logged warning (never a silent empty string).
+
+def test_git_sha_env_var_takes_precedence(monkeypatch):
+    """If AZ_GIT_SHA is set, use it directly — never shell out to git at all."""
+    from catan_gnn.train import _git_sha
+
+    monkeypatch.setenv("AZ_GIT_SHA", "abc123")
+
+    def _boom(*a, **k):
+        raise AssertionError("git subprocess must not be invoked when AZ_GIT_SHA is set")
+
+    monkeypatch.setattr("catan_gnn.train.subprocess.check_output", _boom)
+    assert _git_sha() == "abc123"
+
+
+def test_git_sha_worktree_textual_fallback(tmp_path, monkeypatch):
+    """When git itself fails (as it does shelling out from WSL against a
+    Windows-path worktree gitdir), fall back to a textual parse of the worktree
+    layout: `.git` file -> gitdir -> HEAD -> `ref: refs/heads/X` -> resolve X
+    under the MAIN repo's refs directory (a worktree's gitdir is
+    `<main>/.git/worktrees/<name>`, so refs live at `<main>/.git/refs/...`)."""
+    from catan_gnn.train import _git_sha
+
+    monkeypatch.delenv("AZ_GIT_SHA", raising=False)
+
+    sha = "a" * 40
+    main_git = tmp_path / "main" / ".git"
+    wt_gitdir = main_git / "worktrees" / "wt"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "HEAD").write_text("ref: refs/heads/feat\n")
+    refs_heads = main_git / "refs" / "heads"
+    refs_heads.mkdir(parents=True)
+    (refs_heads / "feat").write_text(sha + "\n")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {wt_gitdir}\n")
+
+    def _fail(*a, **k):
+        raise FileNotFoundError("git: not a git repository (simulated WSL failure)")
+
+    monkeypatch.setattr("catan_gnn.train.subprocess.check_output", _fail)
+    assert _git_sha(cwd=worktree) == sha
+
+
+def test_git_sha_never_silently_empty(tmp_path, monkeypatch):
+    """When env is unset, git fails, AND no worktree files are readable, the
+    helper must return the literal 'unknown' sentinel — never '' or None."""
+    from catan_gnn.train import _git_sha
+
+    monkeypatch.delenv("AZ_GIT_SHA", raising=False)
+
+    def _fail(*a, **k):
+        raise FileNotFoundError("git: not a git repository (simulated)")
+
+    monkeypatch.setattr("catan_gnn.train.subprocess.check_output", _fail)
+    empty_dir = tmp_path / "no_git_here"
+    empty_dir.mkdir()
+    result = _git_sha(cwd=empty_dir)
+    assert result == "unknown"
+    assert result not in ("", None)
+
+
+def test_daily_sets_az_git_sha_for_workers(tmp_path, monkeypatch):
+    """daily.py must compute the SHA once at driver start and put it in
+    AZ_GIT_SHA in the subprocess env so self-play workers (WSL-side) inherit a
+    valid SHA instead of re-deriving it (and failing) themselves."""
+    import catan_az.daily as daily
+
+    monkeypatch.setattr(daily, "_git_sha", lambda **k: "deadbeef" * 5)
+    monkeypatch.delenv("AZ_GIT_SHA", raising=False)
+
+    daily._stamp_git_sha_env()
+    assert os.environ["AZ_GIT_SHA"] == "deadbeef" * 5

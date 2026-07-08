@@ -21,8 +21,14 @@ class AzConfig:
     dirichlet_eps: float = 0.25
     temp_moves: int = 30
     n_procs: int = 5                   # until the B1 spike verdict
-    n_concurrent: int = 24             # coroutines per proc
-    max_batch: int = 24
+    # n_concurrent: games run concurrently per self-play process.
+    #   - python (asyncio) engine: coroutines/proc (small; 1-core bound).
+    #   - rust engine: games per batched chunk. Measured knee ~256 (mean GPU
+    #     batch ~30/32 = 93%; 64->512 only +~40% per-call, diminishing). 256
+    #     balances batch fill vs host RAM + scheduler core. See
+    #     project_gpu_forward_bound_2026_06_18 / Task-10 sweep.
+    n_concurrent: int = 256
+    max_batch: int = 32                # rust batched B_MAX (GNN forward batch cap)
     # Buffer
     window_games: int = 1200           # ~3 iterations
     # Train
@@ -36,6 +42,13 @@ class AzConfig:
                                        # (vs ±11pp at 120). 4 rotations x 75.
     promote_threshold: float = 0.65    # strictly-greater; demand clear improvement
     max_iters_per_model: int = 10      # stop after 10 iters w/o promotion -> user
+    # M4 reject-floor: train only if own-iter healthy games >= ratio*quota. Was a
+    # hardcoded 0.8; lowered to 0.7 (2026-06-17) because real self-play at
+    # concurrency=24 yields ~72% healthy games — the ~28% that time out are
+    # healthy LONG games (376-566 moves) cut by the per-game wall-clock deadline,
+    # not stragglers. 0.7 lets a normal yield train instead of stalling, while
+    # still catching a genuine partial-worker-death / OOM (which drops far below).
+    selfplay_floor_ratio: float = 0.7
     arena_timeout_rate_max: float = 0.05   # legacy; surfaced, no longer a gate
     # Validity guards under VP-leader tiebreak (2026-06-13): a timed-out game
     # is decided by VP leader, so the gate keys on genuine no-signal games
@@ -43,7 +56,13 @@ class AzConfig:
     # winrate — not on how many stalled past the wall-clock cap.
     arena_max_draw_rate: float = 0.40      # too many VP ties -> untrustworthy
     arena_min_decisive: int = 40           # need >=N decided games for a verdict
+    # Self-play data-quality gate (Task 7, observability minimum — shake-out
+    # journal 2026-06-19 §3): >20% timeouts or >40% draws (no decisive winner)
+    # in a fresh self-play run marks it degenerate and refuses to train on it.
+    data_quality_max_timeout_rate: float = 0.20
+    data_quality_max_draw_rate: float = 0.40
     arena_sims: int = 200
+    arena_chunk_games: int = 64        # games per batched arena chunk (pause granularity)
     # Per-game wall-clock cap: bounds the rare pathological game that crawls
     # toward the 200k step cap and would otherwise hold the whole arena's
     # gather() hostage (2026-06-13 incident). 600s >> a normal ~2min game, so
@@ -59,11 +78,16 @@ class AzConfig:
     # Per-GAME wall-clock cap for self-play. A pathological game can churn for an
     # hour+ under the 200k-step cap, stalling its worker (24 concurrent games
     # finalize together) and the whole stage — production iter_6 needed a manual
-    # straggler-kill (2026-06-15). MEASURED: normal games avg ~190s wall-clock at
-    # concurrency=24; stragglers ran 20-60+ min. 600s (~3.2x mean, == the arena's
-    # own cap) clears virtually all healthy games yet kills stragglers in 10min.
-    # The cut game is recorded timed_out (data preserved, not silently dropped).
-    selfplay_game_deadline_seconds: float = 600.0
+    # straggler-kill (2026-06-15). The 600s value was WRONG: it was sized against
+    # a stale 256s/game figure that measured a 1-MCTS-seat, workers=1 game. Real
+    # all-4-seat self-play (MCTS every move, all players) at concurrency=24
+    # MEASURED 2026-06-16: median 1078s, max 1316s wall-clock (24/24 healthy 10VP,
+    # no-deadline probe), verified vs iter_6 timestamps (~47s/game x24 ≈ 1100s).
+    # So 600s cut 23/24 HEALTHY games -> iter_7 came back 994/994 timed_out.
+    # 2400s ≈ 1.8x the measured max: clears the healthy tail (incl. iter_6's
+    # 1322-move games) yet still kills a genuinely stuck game in ~40min. The cut
+    # game is recorded timed_out (data preserved, not silently dropped).
+    selfplay_game_deadline_seconds: float = 2400.0
     # Anchor (absolute calibration vs LookV3)
     anchor_every: int = 5
     anchor_games: int = 60
@@ -84,6 +108,15 @@ class AzConfig:
     stagnation_holds: int = 5          # N trailing holds -> surface + stop day
     archive_root: str = "/mnt/d/catan_az_archive"   # HDD archive target
     dashboard_port: int = 8099
+    # --- self-play/arena engine (Rust-MCTS rewrite 2026-06-18) ---
+    # "rust" = catan_mcts_rs in-process MCTS + TorchScript GNN (zero per-node
+    # PyO3), proven BIT-EXACT to the legacy path through the Phase-9 production
+    # cross-check (real 128x4 net, sims=200: 2/2 games identical) and 2.8x faster
+    # single-threaded. "python" = legacy asyncio BatchedGnnEvaluator path (kept
+    # as a fallback). Default flipped to "rust" 2026-06-18 (user decision).
+    # NOTE: cross-game leaf batching (the full GPU-feeding throughput win) is not
+    # yet built — this default is correct + faster, but not the final perf target.
+    engine: str = "rust"
 
     def to_json(self, path: Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2))

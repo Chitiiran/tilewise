@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import re
 import subprocess
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -40,6 +42,8 @@ class EpochStats:
     val_loss_value: float
     val_loss_policy: float
     val_value_mae: float
+    val_value_mse: float
+    val_value_sign_acc: float
     val_policy_top1_acc: float
     # Per-game val_top1 distribution (wishlist §4b.5). Aggregate val_top1 is
     # noisy because effective n is the # of distinct val games, not positions.
@@ -192,14 +196,108 @@ def _vp_prior_loss(logits: torch.Tensor, vp_target: torch.Tensor, mask: torch.Te
     return -(vp_target * log_probs).sum(dim=1).mean()
 
 
-def _git_sha() -> str:
+def _parse_worktree_sha(cwd: Path) -> str | None:
+    """Textual fallback for `git rev-parse HEAD` when the git binary itself
+    can't resolve the repo (BUG B, shake-out journal 2026-06-19 §6): a git
+    WORKTREE's `.git` file is `gitdir: <main>/.git/worktrees/<name>`. On a
+    Windows worktree checked out under WSL, that path is a Windows path
+    (`C:/...`) which is meaningless as a WSL cwd, so `git rev-parse` fails
+    with "fatal: not a git repository" and the run silently loses its SHA.
+
+    Parses the layout by hand instead of shelling out:
+      <worktree>/.git            -> "gitdir: <main>/.git/worktrees/<name>"
+      <main>/.git/worktrees/<name>/HEAD -> "ref: refs/heads/<branch>"
+      <main>/.git/refs/heads/<branch>   -> "<40-hex sha>\n"
+    (falls back to <main>/.git/packed-refs if the loose ref file is absent).
+
+    Returns the 40-hex SHA, or None if any step of the chain is unavailable
+    (caller is responsible for the final "unknown" sentinel — never raises).
+    """
     try:
-        sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent
+        # mirror git's own behaviour: walk UP from cwd looking for `.git`
+        # (real `git rev-parse` does this automatically; our textual parser
+        # must too, or it only works when cwd IS the worktree root).
+        dot_git = None
+        for candidate in (Path(cwd), *Path(cwd).resolve().parents):
+            probe = candidate / ".git"
+            if probe.is_file() or probe.is_dir():
+                dot_git = probe
+                break
+        if dot_git is None or not dot_git.is_file():
+            return None
+        text = dot_git.read_text().strip()
+        if not text.startswith("gitdir:"):
+            return None
+        gitdir = text.split(":", 1)[1].strip()
+        # Windows path (worktree checked out on Windows, read from WSL) ->
+        # translate C:/... or C:\... to /mnt/c/... so the path resolves here.
+        m = re.match(r"^([A-Za-z]):[/\\](.*)$", gitdir)
+        if m and not Path(gitdir).exists():
+            drive, rest = m.group(1).lower(), m.group(2).replace("\\", "/")
+            gitdir = f"/mnt/{drive}/{rest}"
+        gitdir_path = Path(gitdir)
+        head_file = gitdir_path / "HEAD"
+        if not head_file.is_file():
+            return None
+        head_text = head_file.read_text().strip()
+        if head_text.startswith("ref:"):
+            ref = head_text.split(":", 1)[1].strip()
+            # gitdir for a worktree is <main>/.git/worktrees/<name>; refs for
+            # the main repo live at <main>/.git/refs/... (two levels up).
+            main_git_dir = gitdir_path.parent.parent
+            ref_file = main_git_dir / ref
+            if ref_file.is_file():
+                sha = ref_file.read_text().strip()
+                if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+                    return sha
+            # loose ref not found (or already packed) -> check packed-refs.
+            packed = main_git_dir / "packed-refs"
+            if packed.is_file():
+                for line in packed.read_text().splitlines():
+                    if line.endswith(f" {ref}"):
+                        sha = line.split(" ", 1)[0].strip()
+                        if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+                            return sha
+            return None
+        # detached HEAD: HEAD file itself holds the sha.
+        if re.fullmatch(r"[0-9a-fA-F]{40}", head_text):
+            return head_text
+        return None
+    except OSError:
+        return None
+
+
+def _git_sha(cwd: Path | None = None) -> str:
+    """Commit SHA for reproducibility metadata (ENGINEERING-PRINCIPLES §1/§7).
+
+    Fallback chain (BUG B, shake-out journal 2026-06-19 §6):
+      1. AZ_GIT_SHA env var, if set and non-empty (the launch path sets this
+         once, driver-side, so subprocess workers never need to re-derive it).
+      2. plain `git rev-parse HEAD` (works Windows-side or in a normal clone).
+      3. textual worktree parse (works when git itself can't resolve a
+         Windows-path `gitdir:` from a WSL cwd).
+      4. "unknown" + a logged warning — NEVER a silent empty string.
+    """
+    env_sha = os.environ.get("AZ_GIT_SHA", "").strip()
+    if env_sha:
+        return env_sha
+
+    cwd = Path(cwd) if cwd is not None else Path(__file__).parent
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=cwd
         ).decode().strip()
-        return sha
     except Exception:
-        return "unknown"
+        pass
+
+    sha = _parse_worktree_sha(cwd)
+    if sha:
+        return sha
+
+    print(f"[git_sha] WARNING: could not resolve a commit SHA from {cwd} "
+          "(git failed and no worktree files were readable); stamping "
+          "'unknown'", flush=True)
+    return "unknown"
 
 
 def _resolve_device(device: str) -> torch.device:
@@ -357,6 +455,7 @@ def train_main(
     early_stop_patience: int = 0,
     status_file: Path | None = None,
     status_label: str = "",
+    pause_dir: Path | None = None,
     mid_tournament_every: int = 0,
     mid_tournament_games_per_seating: int = 30,
     mid_tournament_drop_threshold: int = 3,
@@ -439,9 +538,14 @@ def train_main(
         rng = np.random.default_rng(seed)
         keep = rng.choice(len(train_ds), size=max_train_samples, replace=False)
         train_ds = Subset(train_ds, sorted(keep.tolist()))
+    # Per-epoch-seeded shuffle generator: epoch K's data order is seed+K,
+    # INDEPENDENT of how K is reached (in-process vs resumed-from-checkpoint).
+    # This makes pause/resume produce a run IDENTICAL to a never-paused run —
+    # the replayability contract for training (re-seeded at each epoch top).
+    _shuffle_gen = torch.Generator()
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, collate_fn=_collate,
-        num_workers=num_workers,
+        num_workers=num_workers, generator=_shuffle_gen,
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False, collate_fn=_collate,
@@ -543,6 +647,9 @@ def train_main(
     progress_every = max(1, batches_total // 50)  # ~50 lines/epoch
 
     for epoch in range(start_epoch, epochs + 1):
+        # Deterministic per-epoch shuffle: order depends only on (seed, epoch),
+        # so a resumed run reproduces the same epoch orders as a straight run.
+        _shuffle_gen.manual_seed(seed * 1_000_003 + epoch)
         # Train.
         model.train()
         tot, tv, tp, n = 0.0, 0.0, 0.0, 0
@@ -640,6 +747,26 @@ def train_main(
                     flush=True,
                 )
                 last_progress_time = now
+                # Streaming per-batch metrics for the live dashboard loss curve
+                # (feedback_training_observability: per-batch, not per-epoch).
+                # grad-norm is read before the next zero_grad clears grads.
+                try:
+                    import json as _json
+                    gnorm = 0.0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            gnorm += float(p.grad.detach().norm().item()) ** 2
+                    gnorm = gnorm ** 0.5
+                    tp_path = out_dir / "train_progress.jsonl"
+                    with tp_path.open("a", encoding="utf-8") as _f:
+                        _f.write(_json.dumps({
+                            "epoch": epoch, "batch": n, "batches_total": batches_total,
+                            "loss": float(loss.item()), "loss_value": float(lv.item()),
+                            "loss_policy": float(lp.item()), "grad_norm": gnorm,
+                            "ms_per_batch": ms_per_batch, "ts": now,
+                        }) + "\n")
+                except Exception:
+                    pass
                 # Mid-epoch dashboard update so the dashboard isn't silent
                 # for hours between epoch boundaries.
                 if status_file is not None:
@@ -668,6 +795,20 @@ def train_main(
         # Val.
         model.eval()
         vt, vv, vp_, vmae, top1, n_pos = 0.0, 0.0, 0.0, 0.0, 0, 0
+        # Value-head metrics (Task 7, observability minimum — the value head,
+        # the project's documented root-cause villain for miscalibration, had
+        # NO validation metric before this; only the policy head (val_top1)
+        # was measured). val_value_mse mirrors val_value_mae's per-batch-mean
+        # accumulation (consistent with the existing MAE convention here,
+        # even though it under-weights the last partial batch slightly).
+        # val_value_sign_acc is computed over NONZERO targets only: value_t is
+        # all-zero for winner==-1 (no-decisive-winner) games (dataset.py:159),
+        # and sign(0) vs sign(pred) is not a meaningful calibration question —
+        # counting those positions would dilute the metric with undefined-target
+        # noise instead of measuring "does the value head pick the right side".
+        vmse = 0.0
+        sign_hits = 0
+        sign_total = 0
         # Per-game tracking (wishlist §4b.5): hit/total counts per game seed.
         per_game_hits: dict[int, int] = defaultdict(int)
         per_game_total: dict[int, int] = defaultdict(int)
@@ -700,6 +841,12 @@ def train_main(
                 lp = _masked_policy_loss(p_logits, policy_t_for_loss, legal)
                 vt += float(w_value * lv + w_policy * lp); vv += float(lv); vp_ += float(lp)
                 vmae += float((v_pred - value_t).abs().mean())
+                vmse += float(((v_pred - value_t) ** 2).mean())
+                nonzero_mask = value_t != 0.0
+                if nonzero_mask.any():
+                    sign_hits += int((torch.sign(v_pred[nonzero_mask])
+                                      == torch.sign(value_t[nonzero_mask])).sum())
+                    sign_total += int(nonzero_mask.sum())
                 # Top-1: did argmax(masked logits) hit argmax(target)?
                 masked = p_logits.masked_fill(~legal, float("-inf"))
                 pred = masked.argmax(dim=1)
@@ -741,6 +888,8 @@ def train_main(
             val_loss_value=vv / max(1, len(val_loader)),
             val_loss_policy=vp_ / max(1, len(val_loader)),
             val_value_mae=vmae / max(1, len(val_loader)),
+            val_value_mse=vmse / max(1, len(val_loader)),
+            val_value_sign_acc=sign_hits / max(1, sign_total),
             val_policy_top1_acc=top1 / max(1, n_pos),
             val_top1_per_game_min=pg_min,
             val_top1_per_game_p25=pg_p25,
@@ -756,6 +905,8 @@ def train_main(
             vp_swap_str = f" vp_swap={vp_swap_total}/{vp_swap_samples} ({100*vp_swap_rate:.2f}%)"
         print(f"[epoch {epoch}/{epochs}] train_loss={stats.train_loss_total:.3f} "
               f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f} "
+              f"val_value_mse={stats.val_value_mse:.4f} "
+              f"val_value_sign_acc={stats.val_value_sign_acc:.3f} "
               f"per_game[{pg_min:.2f}|{pg_p25:.2f}|{pg_p50:.2f}|{pg_p75:.2f}|{pg_max:.2f}]"
               f"{vp_swap_str} "
               f"[timing] train={train_secs:.1f}s ({n} batches, "
@@ -922,6 +1073,20 @@ def train_main(
 
         if mid_tournament_stop:
             break
+
+        # PAUSE (pausability): a PAUSE sentinel in pause_dir (or a parent) stops
+        # cleanly at the epoch boundary. The per-epoch checkpoint.pt (next_epoch=
+        # epoch+1) was JUST written above, so resume_from=checkpoint.pt continues
+        # from the next epoch — reproducible (epoch-granular; an epoch is minutes).
+        if pause_dir is not None:
+            _pd = Path(pause_dir)
+            if ((_pd / "PAUSE").exists() or (_pd.parent / "PAUSE").exists()
+                    or (_pd.parent.parent / "PAUSE").exists()):
+                print(f"  ↳ PAUSED at epoch {epoch}; checkpoint.pt holds "
+                      f"next_epoch={epoch + 1}. Resume with resume_from=checkpoint.pt",
+                      flush=True)
+                (out_dir / "PAUSED").write_text(str(epoch + 1))
+                break
 
         # Early-stop check: if patience set and we've not improved for N epochs, stop.
         if early_stop_patience > 0 and epochs_since_best >= early_stop_patience:

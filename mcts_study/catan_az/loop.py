@@ -25,6 +25,7 @@ from pathlib import Path
 from .arena import ArenaResult, run_arena, should_promote
 from .buffer import select_window
 from .config import AzConfig
+from .data_quality import check_data_quality
 from .ladder import Ladder
 from .status import StatusWriter
 
@@ -49,6 +50,30 @@ def _mark_done(iter_dir: Path, stage: str, payload: dict) -> None:
 def _load_done(iter_dir: Path, stage: str) -> dict | None:
     m = _done_marker(iter_dir, stage)
     return json.loads(m.read_text()) if m.exists() else None
+
+
+def _check_data_quality(cfg: AzConfig, iter_dir: Path, run_dirs: list[Path]) -> None:
+    """Summarize this iteration's freshly-generated self-play dirs, write
+    data_quality.json next to SELFPLAY.done, and refuse to mark the stage
+    healthy (raise) when the data is degenerate (Task 7, observability
+    minimum — shake-out journal 2026-06-19 §3: an all-timeout self-play run
+    was invisible until training wasted hours on it).
+
+    Aggregates ACROSS all of this iteration's run_dirs (a single verdict for
+    the iteration, not per-dir) — self-play launches multiple worker dirs for
+    one logical iteration, and a per-dir verdict would let one degenerate
+    worker hide behind healthy siblings' totals or vice versa. Thin wrapper
+    over catan_az.data_quality.check_data_quality — the shared aggregation +
+    gate + writer also used by catan_az.daily.generate_iter_games (the
+    production driver's own completion point, final review Task 7 finding).
+
+    Deliberately NOT applied to the existing_selfplay_dirs salvage path: that
+    branch consumes pre-existing, already-produced data by explicit operator
+    choice (e.g. iteration-1 salvage) — gating it here would make the loop
+    refuse data the operator already decided to use, which is a different
+    control point than this fresh-self-play stage.
+    """
+    check_data_quality(cfg, iter_dir, run_dirs, context=str(iter_dir))
 
 
 # -- default stage implementations ------------------------------------------
@@ -81,6 +106,23 @@ def _default_train(cfg: AzConfig, run_dirs: list[Path], iter_dir: Path,
     best = out_dir / "checkpoint_best.pt"
     if not best.exists():
         raise FileNotFoundError(f"training produced no {best}")
+    # TorchScript export for the Rust self-play/arena engines. MUST match the
+    # device-suffixed paths the consumers load (self_play_rust._ensure_ts /
+    # _ensure_batched_ts, arena._ts) AND be traced on the inference device — a
+    # plain CPU-traced .ts is both orphaned (nobody reads it) and crashes on
+    # CUDA (H1, code review 2026-06-19). Export both single + batched on-device
+    # so consumers reuse them instead of re-tracing every launch.
+    import torch
+    from catan_gnn.export_torchscript import export, export_batched
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    bmax = getattr(cfg, "max_batch", 32)
+    export(checkpoint=best, out_ts=best.with_suffix(f".{dev}.ts"),
+           hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers, device=dev)
+    # Match self_play_rust._ensure_batched_ts naming (.{dev}.b{bmax}.batch.ts) so
+    # the export is REUSED, not re-traced per worker launch.
+    export_batched(checkpoint=best, out_ts=best.with_suffix(f".{dev}.b{bmax}.batch.ts"),
+                   hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers,
+                   b_max=bmax, device=dev)
     return best
 
 
@@ -117,11 +159,31 @@ def run_iteration(cfg: AzConfig, loop_root: Path, iter_n: int, *,
     else:
         status.stage(iter_n, "selfplay", champion=champion["name"])
         run_dirs = selfplay_fn(cfg, iter_dir, champion["checkpoint"])
+        # Degeneracy gate BEFORE the done-marker: a degenerate run must not be
+        # remembered as "self-play complete" — a rerun should retry self-play,
+        # not resume past it (RuntimeError below prevents _mark_done from
+        # ever executing on the degenerate path).
+        _check_data_quality(cfg, iter_dir, run_dirs)
         _mark_done(iter_dir, "SELFPLAY", {"run_dirs": [str(p) for p in run_dirs]})
 
     # BUFFER: window over this + previous iterations' self-play dirs.
-    all_dirs_newest_first = run_dirs + _previous_selfplay_dirs(loop_root, iter_n)
-    window = select_window(all_dirs_newest_first, cfg.window_games)
+    # When run_cycle hands us the accumulating window (gen_window over
+    # gen_iter>=last_promotion_iter), HONOR IT — do NOT re-derive + re-truncate
+    # to cfg.window_games. That second select_window silently capped the
+    # design's accumulating window (2786 games) back to 1200 (2026-06-17 bug).
+    #
+    # CRUCIAL: the window comes from existing_selfplay_dirs (the accumulating
+    # set), NOT from run_dirs. On a RESUME run_dirs is loaded from SELFPLAY.done,
+    # which lists only THIS iteration's own self-play dirs (for not regenerating
+    # games) — using it for the window would shadow the accumulating set and
+    # train on just this iter's ~945 games (2026-06-17 resume-window bug). The
+    # SELFPLAY marker governs self-play-resume; the WINDOW must follow the
+    # accumulating dirs run_cycle computed.
+    if existing_selfplay_dirs is not None:
+        window = [Path(p) for p in existing_selfplay_dirs]
+    else:
+        all_dirs_newest_first = run_dirs + _previous_selfplay_dirs(loop_root, iter_n)
+        window = select_window(all_dirs_newest_first, cfg.window_games)
 
     # TRAIN
     _check_stop(loop_root)

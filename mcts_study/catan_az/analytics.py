@@ -379,6 +379,56 @@ def selfplay_health(loop_root, *, iter_n: int) -> dict:
     }
 
 
+def _tail_jsonl(path, max_lines: int = 600) -> list:
+    """Read the last `max_lines` parseable JSON objects from a .jsonl file.
+    Tolerant of a torn final line. Returns [] if missing/unreadable."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    out = []
+    for line in lines[-max_lines:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out
+
+
+def resources_live(loop_root, *, iter_n: int, max_points: int = 300) -> dict:
+    """Tail resources.jsonl (GPU util/power/mem, CPU load, RAM) for the live
+    iter. Searches the iter dir + its stage subdirs for resources.jsonl."""
+    base = Path(loop_root) / f"iter_{iter_n}"
+    candidates = [base / "resources.jsonl",
+                  base / "selfplay" / "resources.jsonl",
+                  base / "training" / "resources.jsonl",
+                  base / "arena" / "resources.jsonl"]
+    # Also catch per-worker selfplay dirs.
+    candidates += list(base.glob("selfplay/*/resources.jsonl"))
+    rows = []
+    for c in candidates:
+        rows.extend(_tail_jsonl(c, max_points))
+    rows.sort(key=lambda r: r.get("ts", 0))
+    rows = rows[-max_points:]
+    latest = rows[-1] if rows else {}
+    return {"available": bool(rows), "points": rows, "latest": latest}
+
+
+def train_progress_live(loop_root, *, iter_n: int, max_points: int = 600) -> dict:
+    """Tail train_progress.jsonl (per-batch loss/value/policy/grad-norm) for the
+    live iter's training stage — the live loss curve."""
+    rows = _tail_jsonl(Path(loop_root) / f"iter_{iter_n}" / "training" /
+                       "train_progress.jsonl", max_points)
+    return {"available": bool(rows), "points": rows,
+            "latest": rows[-1] if rows else {}}
+
+
 def selfplay_live(loop_root, *, iter_n: int, target: int, now=None) -> dict:
     """LIVE data-generation view for the RUNNING self-play stage.
 

@@ -228,6 +228,110 @@ def _load_model(ckpt: Path, cfg, device: str):
     return model.to(device).eval()
 
 
+class ArenaPaused(Exception):
+    """Raised when a PAUSE sentinel stops the arena mid-plan. Signals the
+    iteration to stop WITHOUT publishing a verdict (a partial arena is not a
+    valid gate). Resume re-runs and completes the plan (skips done seeds)."""
+
+
+def _aggregate_arena(done: dict[int, dict], out_dir: Path) -> ArenaResult:
+    """Shared aggregation of results.jsonl records into an ArenaResult."""
+    result = ArenaResult()
+    for rec in done.values():
+        if rec["timed_out"]:
+            result.timeouts += 1
+        if rec["winner_role"] == "cand":
+            result.wins_cand += 1
+            result.per_rotation[rec["rot"]] += 1
+        elif rec["winner_role"] == "champ":
+            result.wins_champ += 1
+        else:
+            result.draws += 1
+    result.to_json(out_dir / "arena.json")
+    return result
+
+
+def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
+                    out_dir: Path, seed_base: int, results_path: Path,
+                    done: dict[int, dict]) -> ArenaResult:
+    """Rust-engine arena: catan_mcts_rs.run_arena over the full plan, writing
+    the SAME results.jsonl schema, then shared aggregation. Resumable: seeds
+    already in results.jsonl are skipped (the Rust call replays the full plan;
+    we only append/keep records for seeds not yet done)."""
+    import time as _t
+    import catan_mcts_rs
+    from catan_gnn.export_torchscript import export, export_batched
+
+    # The .ts MUST be traced on the SAME device the rust engine runs on (trace
+    # bakes the device of internally-constructed tensors; a CPU-traced .ts fails
+    # on CUDA with a scatter device-mismatch). The engine uses CUDA when
+    # available, so export to match.
+    import torch as _torch
+    _dev = "cuda" if _torch.cuda.is_available() else "cpu"
+
+    def _ts(ckpt: Path) -> str:
+        ckpt = Path(ckpt)
+        ts = ckpt.with_suffix(f".{_dev}.ts")
+        if not ts.exists():
+            export(checkpoint=ckpt, out_ts=ts, hidden_dim=cfg.hidden_dim,
+                   num_layers=cfg.num_layers, device=_dev)
+        return str(ts)
+
+    def _ts_batched(ckpt: Path) -> str:
+        # Cross-game leaf batching (Task 1-3): the GPU-feeding fast path.
+        # Encode max_batch in the filename so a different B_MAX produces a
+        # DIFFERENT file (re-export) instead of silently loading a wrong-width
+        # batched .ts — mirrors self_play_rust.py:_ensure_batched_ts.
+        ckpt = Path(ckpt)
+        bts = ckpt.with_suffix(f".{_dev}.b{cfg.max_batch}.batch.ts")
+        if not bts.exists():
+            export_batched(checkpoint=ckpt, out_ts=bts, hidden_dim=cfg.hidden_dim,
+                           num_layers=cfg.num_layers, b_max=cfg.max_batch,
+                           device=_dev)
+        return str(bts)
+
+    plan = seed_plan(seed_base=seed_base, games=cfg.arena_games)
+    remaining = [(rot, s) for (rot, s) in plan if s not in done]
+    if not remaining:
+        return _aggregate_arena(done, out_dir)
+
+    # PAUSABLE: chunk the remaining plan, write results.jsonl after each chunk,
+    # check a PAUSE sentinel between chunks. Resume skips done seeds (results.jsonl
+    # is the per-game durable record). Chunk size ~ arena concurrency.
+    chunk = max(1, int(getattr(cfg, "arena_chunk_games", 64)))
+    cand_ts, champ_ts = _ts(candidate_ckpt), _ts(champion_ckpt)
+    batched_cand_ts = _ts_batched(candidate_ckpt)
+    batched_champ_ts = _ts_batched(champion_ckpt)
+    for i in range(0, len(remaining), chunk):
+        if _arena_paused(out_dir):
+            # M4 fix (code review 2026-06-19): do NOT fall through to
+            # _aggregate_arena — a partial arena must never yield a promote/hold
+            # verdict (could promote on a fraction). Raise so the iteration stops
+            # WITHOUT publishing; results.jsonl is durable, resume completes it.
+            raise ArenaPaused(
+                f"arena paused with {len(remaining) - i}/{len(remaining)} games "
+                f"remaining; resume completes (skips done seeds)")
+        pairs = remaining[i:i + chunk]
+        records = catan_mcts_rs.run_arena_games(
+            cand_ts, champ_ts, pairs, cfg.arena_sims, cfg.vp_target, cfg.bonuses,
+            batched_cand_ts=batched_cand_ts, batched_champ_ts=batched_champ_ts,
+            b_max=cfg.max_batch)
+        with open(results_path, "a") as f:
+            for rec in records:
+                if rec["seed"] in done:
+                    continue
+                rec = {**rec, "ts": _t.time()}
+                f.write(json.dumps(rec) + "\n")
+                done[rec["seed"]] = rec
+    return _aggregate_arena(done, out_dir)
+
+
+def _arena_paused(out_dir) -> bool:
+    """PAUSE sentinel in the arena dir or a parent (iter dir / loop root)."""
+    p = Path(out_dir)
+    return any((d / "PAUSE").exists() for d in (p, p.parent, p.parent.parent))
+
+
 def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
               out_dir: Path, seed_base: int = 30_000_000,
               device: str = "cuda", n_concurrent: int = 16) -> ArenaResult:
@@ -240,6 +344,15 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
     done = _read_arena_results(results_path)
+
+    # Rust engine path (catan_mcts_rs): in-process MCTS + TorchScript GNN, zero
+    # per-node PyO3. Games finish naturally (no wall-clock deadline). Writes the
+    # SAME results.jsonl schema, then falls through to the shared aggregation.
+    if getattr(cfg, "engine", "python") == "rust":
+        return _run_arena_rust(
+            candidate_ckpt=candidate_ckpt, champion_ckpt=champion_ckpt, cfg=cfg,
+            out_dir=out_dir, seed_base=seed_base, results_path=results_path,
+            done=done)
 
     async def _main() -> None:
         model_cand = _load_model(candidate_ckpt, cfg, device)
@@ -321,19 +434,6 @@ def run_arena(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
            seed_plan(seed_base=seed_base, games=cfg.arena_games)):
         asyncio.run(_main())
 
-    result = ArenaResult()
-    for rec in done.values():
-        # A timed-out game is now credited to its VP-leader (winner_role set);
-        # count it toward wins AND toward the timeout tally (observability +
-        # rate guard). Only a VP-tie timeout (winner_role None) is a draw.
-        if rec["timed_out"]:
-            result.timeouts += 1
-        if rec["winner_role"] == "cand":
-            result.wins_cand += 1
-            result.per_rotation[rec["rot"]] += 1
-        elif rec["winner_role"] == "champ":
-            result.wins_champ += 1
-        else:
-            result.draws += 1
-    result.to_json(out_dir / "arena.json")
-    return result
+    # A timed-out game is credited to its VP-leader (winner_role set); only a
+    # VP-tie timeout (winner_role None) is a draw. Shared with the Rust path.
+    return _aggregate_arena(done, out_dir)

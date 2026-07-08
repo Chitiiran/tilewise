@@ -1,0 +1,14 @@
+# Standalone spike: opt out of the parent catan workspace.
+[workspace]
+
+[package]
+name = "tch_spike"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tch_spike"
+path = "main.rs"
+
+[dependencies]
+tch = "0.24.0"

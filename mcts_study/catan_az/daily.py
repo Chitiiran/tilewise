@@ -8,12 +8,16 @@ import csv as _csv
 import json
 import os
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from catan_gnn.train import _git_sha
 
 from .archive import archive_out_of_window
 from .buffer import fresh_deficit, gen_window, select_window
 from .ladder import Ladder
+from .arena import ArenaPaused
 from .loop import run_iteration
 from .status import StatusWriter
 
@@ -41,6 +45,10 @@ class DailyManifest:
 
 def _stop_requested(loop_root: Path) -> bool:
     return (Path(loop_root) / "STOP").exists()
+
+
+def _pause_requested(loop_root: Path) -> bool:
+    return (Path(loop_root) / "PAUSE").exists()
 
 
 def _next_iter_number(loop_root: Path) -> int:
@@ -90,7 +98,24 @@ def run_day(cfg, *, loop_root: Path, capped_procs: int, cycle_fn,
     while done < max_iters:
         if _stop_requested(loop_root):
             break
-        cycle_fn(cfg, loop_root, n, capped_procs)
+        # PAUSE at the top stops the loop cleanly (M1 fix, code review
+        # 2026-06-19): the per-stage pausers also bail on PAUSE, but checking
+        # here means the operator must REMOVE the PAUSE file before relaunch —
+        # otherwise resume would re-enter and immediately re-pause on the first
+        # chunk. Surfaced so it's not a silent no-op.
+        if _pause_requested(loop_root):
+            print("[az-day] PAUSE present — stopping. Remove the PAUSE file to resume.",
+                  flush=True)
+            StatusWriter(loop_root).stage(n, "paused", PAUSED=True)
+            break
+        try:
+            cycle_fn(cfg, loop_root, n, capped_procs)
+        except ArenaPaused as e:
+            # A mid-arena pause: stop WITHOUT a verdict (results.jsonl durable;
+            # resume completes). Do not advance the iter counter.
+            print(f"[az-day] {e} — stopping (no verdict published).", flush=True)
+            StatusWriter(loop_root).stage(n, "paused", PAUSED=True)
+            break
         n += 1
         done += 1
         # Terminal: max_iters_per_model iterations since the last promotion ->
@@ -113,6 +138,62 @@ def _worker_seed_base(*, gen_iter: int, i: int) -> int:
     return 31_000_000 + gen_iter * 10_000_000 + i * 1_000_000
 
 
+def _stamp_git_sha_env() -> str:
+    """Compute the driver's own commit SHA ONCE and publish it via AZ_GIT_SHA
+    in this process's os.environ (BUG B, shake-out journal 2026-06-19 §6).
+
+    Self-play workers are subprocesses launched with `env=None` (inherits
+    os.environ directly) or via `_rust_cuda_env()` (which does
+    `dict(os.environ)`) — either way, setting it here once means every worker
+    sees a valid SHA via the env-var fast path in `_git_sha()` instead of each
+    one independently re-deriving it (and failing under WSL+worktree, where a
+    worker's shelled-out `git rev-parse` hits the Windows-path `gitdir:` and
+    can't resolve). The in-process TRAIN stage (_git_sha() called from
+    catan_gnn.train) also picks this up directly via os.environ, no plumbing
+    needed there.
+    """
+    sha = _git_sha()
+    os.environ["AZ_GIT_SHA"] = sha
+    return sha
+
+
+def _rust_cuda_env() -> dict:
+    """Env for a Rust-engine self-play worker so tch uses the GPU.
+
+    The pip-wheel libtorch needs: LD_PRELOAD libtorch_cuda.so (else
+    tch::Cuda::is_available()==false), nvidia/*/lib on LD_LIBRARY_PATH (nvrtc
+    for TorchScript kernel fusion), and deterministic kernels
+    (CUBLAS_WORKSPACE_CONFIG + the .ts was traced in det mode) for the replay
+    contract. Built from the active torch install. See
+    project_task10_batching_decision_2026_06_18.
+    """
+    import os
+    import torch
+
+    torch_dir = os.path.dirname(torch.__file__)
+    site = os.path.dirname(torch_dir)
+    nvidia = os.path.join(site, "nvidia")
+    nv_libs = []
+    if os.path.isdir(nvidia):
+        for d in os.listdir(nvidia):
+            lib = os.path.join(nvidia, d, "lib")
+            if os.path.isdir(lib):
+                nv_libs.append(lib)
+    paths = [os.path.join(torch_dir, "lib"), *nv_libs]
+    env = dict(os.environ)
+    prev = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = ":".join(paths + ([prev] if prev else []))
+    preload = os.path.join(torch_dir, "lib", "libtorch_cuda.so")
+    # Only inject the preload if the .so actually exists — a missing path in
+    # LD_PRELOAD aborts the interpreter at startup (M2). Caller checks for its
+    # presence to decide whether the GPU env is usable.
+    if os.path.exists(preload):
+        prev_pre = env.get("LD_PRELOAD", "")
+        env["LD_PRELOAD"] = preload + (f":{prev_pre}" if prev_pre else "")
+    env.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    return env
+
+
 def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                            generator_name, gen_iter, rules_id, seed_offset=0):
     """Launch n_procs LOW-PRIORITY (nice) self_play_async procs splitting
@@ -130,12 +211,28 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
     seed collision."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    is_rust = getattr(cfg, "engine", "python") == "rust"
+    # THROUGHPUT (Phase 3, GPU-forward-bound finding): the Rust engine batches
+    # ALL its games into one GPU forward, so the optimal model is ONE process
+    # with high n_concurrent (one fat batch ~93% full), NOT N small processes
+    # each fragmenting the GPU into a tiny batch (that was right only for the old
+    # 1-core asyncio engine). So force n_procs=1 for rust; the in-process chunked
+    # batcher (self_play_rust) handles concurrency + pausability + resume.
+    if is_rust:
+        n_procs = 1
     per = max(1, n_games // max(1, n_procs))
     procs = []
     for i in range(n_procs):
-        sb = _worker_seed_base(gen_iter=gen_iter, i=i) + seed_offset
+        # Resume dedup (C2 fix, code review 2026-06-19): the rust path is ONE
+        # process with a DETERMINISTIC run dir + --resume-dir, so resume reuses
+        # the dir and its done.txt skip-list does the dedup. No seed_offset for
+        # rust (offset + done-skip stacked could lose/dup games). The async path
+        # keeps its per-worker-dir + offset scheme unchanged.
+        sb = _worker_seed_base(gen_iter=gen_iter, i=i) + (0 if is_rust else seed_offset)
+        sp_module = ("catan_mcts.experiments.self_play_rust" if is_rust
+                     else "catan_mcts.experiments.self_play_async")
         cmd = ["nice", "-n", str(cfg.worker_nice),
-               "python", "-m", "catan_mcts.experiments.self_play_async",
+               "python", "-m", sp_module,
                "--out-root", str(out_dir), "--checkpoint", str(checkpoint),
                "--num-games", str(per), "--n-sims", str(cfg.sims),
                "--n-concurrent", str(cfg.n_concurrent),
@@ -150,11 +247,28 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
                str(cfg.selfplay_game_deadline_seconds)]
         if not cfg.bonuses:
             cmd.append("--no-bonuses")
+        if is_rust:
+            # Deterministic run dir + resume-dir so a kill/pause resumes INTO the
+            # same dir and skips done seeds (C2). PAUSE sentinel checked in the
+            # iter dir / loop root between chunks.
+            # Name includes "self_play_rust" so the *self_play_* globs (tagging +
+            # _all_selfplay_dirs) find it. Fixed (not timestamped) so resume reuses.
+            rust_dir = out_dir / "self_play_rust"
+            rust_dir.mkdir(parents=True, exist_ok=True)
+            cmd += ["--resume-dir", str(rust_dir),
+                    "--pause-dir", str(out_dir.parent)]
+        # Rust engine: the tch-linked extension only uses the GPU with the
+        # pip-wheel CUDA env (LD_PRELOAD libtorch_cuda, nvidia/*/lib on
+        # LD_LIBRARY_PATH for nvrtc, deterministic kernels). Without it the Rust
+        # self-play silently runs on CPU. No-op for the Python engine path.
+        env = None
+        if getattr(cfg, "engine", "python") == "rust":
+            env = _rust_cuda_env()
         # start_new_session so the workers form their own process group: lets a
         # cleanup handler kill the whole group and avoids a stray Ctrl-C
         # propagating from the parent's terminal (deep-inspect MED: orphan GPU
         # workers / parent-death leakage).
-        procs.append(subprocess.Popen(cmd, start_new_session=True))
+        procs.append(subprocess.Popen(cmd, start_new_session=True, env=env))
     # M4 (deep-inspect HIGH): a per-worker wait timeout so one hung worker can't
     # stall the iteration for hours; kill + log if it overruns its budget. Must
     # exceed the worker's own wall-clock cap (else we'd kill a healthy worker
@@ -175,7 +289,8 @@ def _launch_selfplay_procs(cfg, out_dir, checkpoint, n_games, n_procs,
     if nonzero:
         print(f"[selfplay] WARNING: {len(nonzero)}/{len(procs)} workers exited "
               f"non-zero: {nonzero}")
-    dirs = sorted(out_dir.glob("*self_play_async*"))
+    # match both engines' run-dir names (self_play_async / self_play_rust).
+    dirs = sorted(d for d in out_dir.glob("*self_play_*") if d.is_dir())
     for d in dirs:
         # atomic meta.json tag (M2-class: a torn write would orphan the dir).
         tmp = d / "meta.json.tmp"
@@ -193,6 +308,7 @@ def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
     gen_iter games and generates the remainder — so a kill resumes toward the
     quota, and other iterations' games never satisfy it (the stale-data bug)."""
     from .buffer import count_games, own_iter_games
+    from .data_quality import check_data_quality
     gen_name, gen_ckpt = generator
     have = own_iter_games(prior_dirs, gen_iter=gen_iter)
     deficit = max(0, cfg.games_per_iter - have)
@@ -210,13 +326,22 @@ def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
     # quota — instead of the binary produced==0 cliff that let a 30/1000
     # iteration pass silently after a partial worker death / OOM.
     have_after = own_iter_games(list(dirs) + list(prior_dirs), gen_iter=gen_iter)
-    floor = int(0.8 * cfg.games_per_iter)
+    floor = int(cfg.selfplay_floor_ratio * cfg.games_per_iter)
     if have_after < floor:
         raise RuntimeError(
             f"self-play for iter {gen_iter} produced only {have_after} own-iter "
             f"games (quota {cfg.games_per_iter}, floor {floor}; generator "
             f"{gen_name}, ckpt {gen_ckpt}) — likely partial worker death / OOM. "
             f"Refusing to train on a fraction of the data; fix and resume.")
+    # Data-quality gate (Task 7, final review finding): this is the production
+    # driver's actual self-play completion point — run_cycle always calls
+    # run_iteration with existing_selfplay_dirs=[...window], the exact branch
+    # loop.py's own gate EXEMPTS (correct there — that's the operator-salvage
+    # path). Gate ONLY this iteration's own NEW dirs (`dirs`, not prior_dirs +
+    # dirs) — prior_dirs already passed this gate in their own iteration, and
+    # re-including them would blur which iteration's self-play degraded.
+    check_data_quality(cfg, Path(iter_dir), dirs,
+                       context=f"iter {gen_iter} (generator {gen_name})")
     return dirs
 
 
@@ -246,16 +371,59 @@ def _all_selfplay_dirs(loop_root: Path) -> list:
     for it in iters:
         sp = it / "selfplay"
         if sp.exists():
-            dirs.extend(sorted(sp.glob("*self_play_async*"), reverse=True))
+            # Match BOTH engines' run-dir names (self_play_async / self_play_rust)
+            # — must mirror the tagging glob in _launch_selfplay_procs. Using the
+            # async-only glob silently hid all rust prior-iter dirs, collapsing
+            # the training window to one iteration (C1, code review 2026-06-19).
+            dirs.extend(sorted((d for d in sp.glob("*self_play_*") if d.is_dir()),
+                               reverse=True))
     return dirs
+
+
+def _start_sampler(iter_dir: Path):
+    """Spawn the background resource sampler writing iter_dir/resources.jsonl for
+    live observability. Returns the Popen (or None if it can't start). Best
+    effort — never blocks the cycle."""
+    try:
+        iter_dir.mkdir(parents=True, exist_ok=True)
+        return subprocess.Popen(
+            ["python", "-m", "catan_az.sampler", str(iter_dir), "2.0", "cycle"],
+            start_new_session=True)
+    except Exception:
+        return None
+
+
+def _stop_sampler(proc) -> None:
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def run_cycle(cfg, loop_root: Path, iter_n: int, capped_procs: int) -> str:
     """One full AZ cycle (redesign 2026-06-14): self-play with the LATEST
     candidate -> gen_iter window (reset on promotion) -> train/arena/publish ->
-    archive. Returns the verdict. Spec 2026-06-14 §4."""
+    archive. Returns the verdict. Spec 2026-06-14 §4.
+
+    A background resource sampler runs for the whole cycle, streaming GPU/CPU/RAM
+    to iter_dir/resources.jsonl for the live dashboard (observability phase 1)."""
     loop_root = Path(loop_root)
     iter_dir = loop_root / f"iter_{iter_n}"
+    _sampler = _start_sampler(iter_dir)
+    try:
+        return _run_cycle_inner(cfg, loop_root, iter_n, capped_procs, iter_dir)
+    finally:
+        _stop_sampler(_sampler)
+
+
+def _run_cycle_inner(cfg, loop_root: Path, iter_n: int, capped_procs: int,
+                     iter_dir: Path) -> str:
     ladder = Ladder(loop_root)
     champion = (ladder.champion()["name"], ladder.champion()["checkpoint"])
     boundary = ladder.last_promotion_iter()      # window reset boundary
@@ -367,8 +535,38 @@ def cli_main():
     p.add_argument("--loop-root", type=Path, required=True)
     p.add_argument("--max-iters", type=int, default=1000)
     p.add_argument("--config", type=Path, default=None)
+    p.add_argument("--next-iter", type=int, default=None,
+                   help="force the starting iteration number (skip the "
+                        "resume-the-incomplete-latest default). Use to start a "
+                        "CLEAN iter instead of resuming a partial one.")
     args = p.parse_args()
     cfg = AzConfig.from_json(args.config) if args.config else AzConfig()
+    # BUG B fix (shake-out journal 2026-06-19 §6): compute the SHA ONCE, here,
+    # driver-side, before any subprocess (self-play workers) or in-process
+    # stage (TRAIN) needs it. Must happen before the re-exec below so
+    # AZ_GIT_SHA survives into the re-exec'd process's env too.
+    _stamp_git_sha_env()
+    # Rust engine: the WHOLE driver needs the GPU env so the IN-PROCESS arena
+    # (_run_arena_rust runs tch in this process) uses the GPU. LD_PRELOAD can't
+    # be set after start, so re-exec once with the env if it's missing. Self-play
+    # workers are subprocesses and get the env separately (_rust_cuda_env), but
+    # the arena runs here -> the driver itself must carry it.
+    # M2 fix (code review 2026-06-19): gate the re-exec SOLELY on the explicit
+    # one-shot guard (not a fragile LD_PRELOAD substring check that could mask a
+    # broken-path preload). _rust_cuda_env validates libtorch_cuda.so exists and
+    # returns env without the preload if not, so we never re-exec into a bad
+    # LD_PRELOAD that aborts the interpreter.
+    if getattr(cfg, "engine", "python") == "rust" \
+            and os.environ.get("_AZ_GPU_REEXEC") != "1":
+        env = _rust_cuda_env()
+        if "libtorch_cuda.so" in env.get("LD_PRELOAD", ""):
+            env["_AZ_GPU_REEXEC"] = "1"
+            print("[az-day] re-exec with GPU env for the rust in-process arena", flush=True)
+            os.execvpe(sys.executable,
+                       [sys.executable, "-m", "catan_az.daily", *sys.argv[1:]], env)
+        else:
+            print("[az-day] WARNING: engine=rust but libtorch_cuda.so not found — "
+                  "in-process arena will run on CPU", flush=True)
     res = preflight(cfg, loop_root=args.loop_root,
                     archive_root=Path(cfg.archive_root))
     if not res.ok:
@@ -376,7 +574,7 @@ def cli_main():
         raise SystemExit(1)
     print(f"[az-day] preflight ok, {res.capped_procs} procs")
     run_day(cfg, loop_root=args.loop_root, capped_procs=res.capped_procs,
-            cycle_fn=run_cycle, max_iters=args.max_iters)
+            cycle_fn=run_cycle, max_iters=args.max_iters, next_iter=args.next_iter)
 
 
 if __name__ == "__main__":
