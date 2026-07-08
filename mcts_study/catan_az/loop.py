@@ -25,6 +25,7 @@ from pathlib import Path
 from .arena import ArenaResult, run_arena, should_promote
 from .buffer import select_window
 from .config import AzConfig
+from .data_quality import degeneracy_verdict, summarize_selfplay_dir
 from .ladder import Ladder
 from .status import StatusWriter
 
@@ -49,6 +50,54 @@ def _mark_done(iter_dir: Path, stage: str, payload: dict) -> None:
 def _load_done(iter_dir: Path, stage: str) -> dict | None:
     m = _done_marker(iter_dir, stage)
     return json.loads(m.read_text()) if m.exists() else None
+
+
+def _check_data_quality(cfg: AzConfig, iter_dir: Path, run_dirs: list[Path]) -> None:
+    """Summarize this iteration's freshly-generated self-play dirs, write
+    data_quality.json next to SELFPLAY.done, and refuse to mark the stage
+    healthy (raise) when the data is degenerate (Task 7, observability
+    minimum — shake-out journal 2026-06-19 §3: an all-timeout self-play run
+    was invisible until training wasted hours on it).
+
+    Aggregates ACROSS all of this iteration's run_dirs (a single verdict for
+    the iteration, not per-dir) — self-play launches multiple worker dirs for
+    one logical iteration, and a per-dir verdict would let one degenerate
+    worker hide behind healthy siblings' totals or vice versa.
+
+    Deliberately NOT applied to the existing_selfplay_dirs salvage path: that
+    branch consumes pre-existing, already-produced data by explicit operator
+    choice (e.g. iteration-1 salvage) — gating it here would make the loop
+    refuse data the operator already decided to use, which is a different
+    control point than this fresh-self-play stage.
+    """
+    games = 0
+    winners_by_seat = {"0": 0, "1": 0, "2": 0, "3": 0}
+    timeouts = 0
+    no_winner = 0
+    length_max = 0
+    for d in run_dirs:
+        s = summarize_selfplay_dir(d)
+        games += s["games"]
+        for k in winners_by_seat:
+            winners_by_seat[k] += s["winners_by_seat"].get(k, 0)
+        timeouts += s["timeouts"]
+        no_winner += s["no_winner"]
+        length_max = max(length_max, s["length_max"])
+    summary = {
+        "games": games,
+        "winners_by_seat": winners_by_seat,
+        "timeouts": timeouts,
+        "no_winner": no_winner,
+        "length_max": length_max,
+    }
+    verdict = degeneracy_verdict(summary, cfg)
+    summary["verdict"] = verdict
+    (iter_dir / "data_quality.json").write_text(json.dumps(summary, indent=2))
+    if verdict == "degenerate":
+        raise RuntimeError(
+            f"self-play for {iter_dir} produced degenerate data ({games} games, "
+            f"{timeouts} timeouts, {no_winner} no-winner) — refusing to mark the "
+            f"stage healthy / train on it. See {iter_dir / 'data_quality.json'}.")
 
 
 # -- default stage implementations ------------------------------------------
@@ -134,6 +183,11 @@ def run_iteration(cfg: AzConfig, loop_root: Path, iter_n: int, *,
     else:
         status.stage(iter_n, "selfplay", champion=champion["name"])
         run_dirs = selfplay_fn(cfg, iter_dir, champion["checkpoint"])
+        # Degeneracy gate BEFORE the done-marker: a degenerate run must not be
+        # remembered as "self-play complete" — a rerun should retry self-play,
+        # not resume past it (RuntimeError below prevents _mark_done from
+        # ever executing on the degenerate path).
+        _check_data_quality(cfg, iter_dir, run_dirs)
         _mark_done(iter_dir, "SELFPLAY", {"run_dirs": [str(p) for p in run_dirs]})
 
     # BUFFER: window over this + previous iterations' self-play dirs.

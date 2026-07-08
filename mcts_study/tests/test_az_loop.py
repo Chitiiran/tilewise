@@ -237,6 +237,74 @@ def test_resume_window_follows_accumulating_dirs_not_selfplay_marker(loop_env, t
         "resume must window over the accumulating dirs, not the SELFPLAY.done list")
 
 
+def test_selfplay_writes_data_quality_json(loop_env):
+    """Task 7: after fresh self-play, the loop must write data_quality.json
+    next to SELFPLAY.done summarizing the run (shake-out journal §3 — data
+    problems were invisible until training wasted hours on them)."""
+    from catan_az.loop import run_iteration
+    root, _, sp, tr, win_arena, _ = loop_env
+    run_iteration(AzConfig(), root, 1, selfplay_fn=sp, train_fn=tr,
+                  arena_fn=win_arena)
+    dq_path = root / "iter_1" / "data_quality.json"
+    assert dq_path.exists()
+    dq = json.loads(dq_path.read_text())
+    assert dq["games"] == 5
+    assert dq["verdict"] == "ok"   # fake_selfplay's 5 decisive games, no timeouts
+
+
+def test_selfplay_refuses_to_mark_healthy_when_degenerate(loop_env, tmp_path):
+    """A self-play stage that produces an all-timeout run must NOT proceed to
+    train — the loop refuses (raises), mirroring the M4 own-iter-floor
+    RuntimeError pattern in daily.py's generate_iter_games."""
+    import pandas as pd
+    import pytest as _pytest
+    from catan_az.loop import run_iteration
+    root, calls, _, tr, win_arena, _ = loop_env
+
+    def degenerate_selfplay(cfg, iter_dir, champion_ckpt):
+        calls.append("selfplay")
+        d = iter_dir / "selfplay_run"
+        d.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({
+            "seed": range(10),
+            "winner": [-1] * 10,
+            "length_in_moves": [999_999] * 10,
+            "timed_out": [True] * 10,
+        }).to_parquet(d / "games.fake.parquet")
+        return [d]
+
+    with _pytest.raises(RuntimeError, match="degenerate"):
+        run_iteration(AzConfig(), root, 1, selfplay_fn=degenerate_selfplay,
+                      train_fn=tr, arena_fn=win_arena)
+    # train/arena must never have run
+    assert calls == ["selfplay"]
+    # data_quality.json is still written (diagnostic even on refusal) but
+    # SELFPLAY.done must NOT exist -> a rerun retries self-play, not skips it
+    dq_path = root / "iter_1" / "data_quality.json"
+    assert dq_path.exists()
+    assert json.loads(dq_path.read_text())["verdict"] == "degenerate"
+    assert not (root / "iter_1" / "SELFPLAY.done").exists()
+
+
+def test_existing_selfplay_dirs_skip_degeneracy_gate(loop_env, tmp_path):
+    """The existing_selfplay_dirs salvage path (explicit human-authorized
+    reuse of pre-existing data, e.g. iteration-1 salvage) is NOT re-gated —
+    the gate is for the loop's OWN fresh self-play stage."""
+    import pandas as pd
+    from catan_az.loop import run_iteration
+    root, _, _, tr, win_arena, _ = loop_env
+    d = tmp_path / "salvage"
+    d.mkdir()
+    pd.DataFrame({
+        "seed": range(5), "winner": [-1] * 5,
+        "length_in_moves": [999_999] * 5, "timed_out": [True] * 5,
+    }).to_parquet(d / "games.fake.parquet")
+    # Must NOT raise even though this data is degenerate by the gate's rules.
+    verdict = run_iteration(AzConfig(), root, 1, selfplay_fn=None, train_fn=tr,
+                            arena_fn=win_arena, existing_selfplay_dirs=[d])
+    assert verdict == "promote"
+
+
 def test_invalid_arena_neither_promotes_nor_marks_done(loop_env):
     from catan_az.ladder import Ladder
     from catan_az.loop import run_iteration

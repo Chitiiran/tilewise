@@ -56,6 +56,11 @@ class AzConfig:
     # winrate — not on how many stalled past the wall-clock cap.
     arena_max_draw_rate: float = 0.40      # too many VP ties -> untrustworthy
     arena_min_decisive: int = 40           # need >=N decided games for a verdict
+    # Self-play data-quality gate (Task 7, observability minimum — shake-out
+    # journal 2026-06-19 §3): >20% timeouts or >40% draws (no decisive winner)
+    # in a fresh self-play run marks it degenerate and refuses to train on it.
+    data_quality_max_timeout_rate: float = 0.20
+    data_quality_max_draw_rate: float = 0.40
     arena_sims: int = 200
     arena_chunk_games: int = 64        # games per batched arena chunk (pause granularity)
     # Per-game wall-clock cap: bounds the rare pathological game that crawls

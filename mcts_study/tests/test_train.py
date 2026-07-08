@@ -38,8 +38,17 @@ def test_train_produces_artifacts(tmp_path: Path):
     assert len(log["epochs"]) == 2
     for ep in log["epochs"]:
         for k in ("epoch", "train_loss_total", "val_loss_total",
-                 "val_value_mae", "val_policy_top1_acc"):
+                 "val_value_mae", "val_policy_top1_acc",
+                 "val_value_mse", "val_value_sign_acc"):
             assert k in ep, f"missing key {k} in epoch row"
+        # Value head had NO metric before this task (shake-out journal §3) —
+        # these must be real floats, not None/NaN placeholders.
+        assert isinstance(ep["val_value_mse"], float)
+        assert isinstance(ep["val_value_sign_acc"], float)
+        assert ep["val_value_mse"] >= 0.0
+        assert 0.0 <= ep["val_value_sign_acc"] <= 1.0
+        assert ep["val_value_mse"] == ep["val_value_mse"]          # not NaN
+        assert ep["val_value_sign_acc"] == ep["val_value_sign_acc"]  # not NaN
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])

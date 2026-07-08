@@ -42,6 +42,8 @@ class EpochStats:
     val_loss_value: float
     val_loss_policy: float
     val_value_mae: float
+    val_value_mse: float
+    val_value_sign_acc: float
     val_policy_top1_acc: float
     # Per-game val_top1 distribution (wishlist §4b.5). Aggregate val_top1 is
     # noisy because effective n is the # of distinct val games, not positions.
@@ -793,6 +795,20 @@ def train_main(
         # Val.
         model.eval()
         vt, vv, vp_, vmae, top1, n_pos = 0.0, 0.0, 0.0, 0.0, 0, 0
+        # Value-head metrics (Task 7, observability minimum — the value head,
+        # the project's documented root-cause villain for miscalibration, had
+        # NO validation metric before this; only the policy head (val_top1)
+        # was measured). val_value_mse mirrors val_value_mae's per-batch-mean
+        # accumulation (consistent with the existing MAE convention here,
+        # even though it under-weights the last partial batch slightly).
+        # val_value_sign_acc is computed over NONZERO targets only: value_t is
+        # all-zero for winner==-1 (no-decisive-winner) games (dataset.py:159),
+        # and sign(0) vs sign(pred) is not a meaningful calibration question —
+        # counting those positions would dilute the metric with undefined-target
+        # noise instead of measuring "does the value head pick the right side".
+        vmse = 0.0
+        sign_hits = 0
+        sign_total = 0
         # Per-game tracking (wishlist §4b.5): hit/total counts per game seed.
         per_game_hits: dict[int, int] = defaultdict(int)
         per_game_total: dict[int, int] = defaultdict(int)
@@ -825,6 +841,12 @@ def train_main(
                 lp = _masked_policy_loss(p_logits, policy_t_for_loss, legal)
                 vt += float(w_value * lv + w_policy * lp); vv += float(lv); vp_ += float(lp)
                 vmae += float((v_pred - value_t).abs().mean())
+                vmse += float(((v_pred - value_t) ** 2).mean())
+                nonzero_mask = value_t != 0.0
+                if nonzero_mask.any():
+                    sign_hits += int((torch.sign(v_pred[nonzero_mask])
+                                      == torch.sign(value_t[nonzero_mask])).sum())
+                    sign_total += int(nonzero_mask.sum())
                 # Top-1: did argmax(masked logits) hit argmax(target)?
                 masked = p_logits.masked_fill(~legal, float("-inf"))
                 pred = masked.argmax(dim=1)
@@ -866,6 +888,8 @@ def train_main(
             val_loss_value=vv / max(1, len(val_loader)),
             val_loss_policy=vp_ / max(1, len(val_loader)),
             val_value_mae=vmae / max(1, len(val_loader)),
+            val_value_mse=vmse / max(1, len(val_loader)),
+            val_value_sign_acc=sign_hits / max(1, sign_total),
             val_policy_top1_acc=top1 / max(1, n_pos),
             val_top1_per_game_min=pg_min,
             val_top1_per_game_p25=pg_p25,
@@ -881,6 +905,8 @@ def train_main(
             vp_swap_str = f" vp_swap={vp_swap_total}/{vp_swap_samples} ({100*vp_swap_rate:.2f}%)"
         print(f"[epoch {epoch}/{epochs}] train_loss={stats.train_loss_total:.3f} "
               f"val_loss={stats.val_loss_total:.3f} val_top1={stats.val_policy_top1_acc:.3f} "
+              f"val_value_mse={stats.val_value_mse:.4f} "
+              f"val_value_sign_acc={stats.val_value_sign_acc:.3f} "
               f"per_game[{pg_min:.2f}|{pg_p25:.2f}|{pg_p50:.2f}|{pg_p75:.2f}|{pg_max:.2f}]"
               f"{vp_swap_str} "
               f"[timing] train={train_secs:.1f}s ({n} batches, "
