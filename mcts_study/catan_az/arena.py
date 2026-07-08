@@ -260,7 +260,7 @@ def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
     we only append/keep records for seeds not yet done)."""
     import time as _t
     import catan_mcts_rs
-    from catan_gnn.export_torchscript import export
+    from catan_gnn.export_torchscript import export, export_batched
 
     # The .ts MUST be traced on the SAME device the rust engine runs on (trace
     # bakes the device of internally-constructed tensors; a CPU-traced .ts fails
@@ -277,6 +277,19 @@ def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
                    num_layers=cfg.num_layers, device=_dev)
         return str(ts)
 
+    def _ts_batched(ckpt: Path) -> str:
+        # Cross-game leaf batching (Task 1-3): the GPU-feeding fast path.
+        # Encode max_batch in the filename so a different B_MAX produces a
+        # DIFFERENT file (re-export) instead of silently loading a wrong-width
+        # batched .ts — mirrors self_play_rust.py:_ensure_batched_ts.
+        ckpt = Path(ckpt)
+        bts = ckpt.with_suffix(f".{_dev}.b{cfg.max_batch}.batch.ts")
+        if not bts.exists():
+            export_batched(checkpoint=ckpt, out_ts=bts, hidden_dim=cfg.hidden_dim,
+                           num_layers=cfg.num_layers, b_max=cfg.max_batch,
+                           device=_dev)
+        return str(bts)
+
     plan = seed_plan(seed_base=seed_base, games=cfg.arena_games)
     remaining = [(rot, s) for (rot, s) in plan if s not in done]
     if not remaining:
@@ -287,6 +300,8 @@ def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
     # is the per-game durable record). Chunk size ~ arena concurrency.
     chunk = max(1, int(getattr(cfg, "arena_chunk_games", 64)))
     cand_ts, champ_ts = _ts(candidate_ckpt), _ts(champion_ckpt)
+    batched_cand_ts = _ts_batched(candidate_ckpt)
+    batched_champ_ts = _ts_batched(champion_ckpt)
     for i in range(0, len(remaining), chunk):
         if _arena_paused(out_dir):
             # M4 fix (code review 2026-06-19): do NOT fall through to
@@ -298,7 +313,9 @@ def _run_arena_rust(*, candidate_ckpt: Path, champion_ckpt: Path, cfg,
                 f"remaining; resume completes (skips done seeds)")
         pairs = remaining[i:i + chunk]
         records = catan_mcts_rs.run_arena_games(
-            cand_ts, champ_ts, pairs, cfg.arena_sims, cfg.vp_target, cfg.bonuses)
+            cand_ts, champ_ts, pairs, cfg.arena_sims, cfg.vp_target, cfg.bonuses,
+            batched_cand_ts=batched_cand_ts, batched_champ_ts=batched_champ_ts,
+            b_max=cfg.max_batch)
         with open(results_path, "a") as f:
             for rec in records:
                 if rec["seed"] in done:

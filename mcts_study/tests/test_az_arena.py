@@ -348,3 +348,83 @@ def test_vp_margin_true_tie_is_draw():
         _engine = E()
 
     assert _vp_leader_margin(S()) == -1
+
+
+def test_run_arena_rust_exports_and_passes_batched_kwargs(tmp_path, monkeypatch):
+    """Task 4: _run_arena_rust must export BOTH nets' batched .ts (device-
+    suffixed, b{max_batch}) and pass batched_cand_ts/batched_champ_ts/b_max
+    to catan_mcts_rs.run_arena_games — not just the B=1 .ts (Task 1-3 added
+    the batched kwargs; the caller side never wired them up)."""
+    import sys
+    import types
+    from pathlib import Path
+
+    import torch as _torch
+
+    from catan_az import arena as arena_mod
+    from catan_az.config import AzConfig
+
+    dev = "cuda" if _torch.cuda.is_available() else "cpu"
+    cfg = AzConfig(engine="rust", arena_games=8, arena_sims=4, hidden_dim=32,
+                   num_layers=2, vp_target=10, bonuses=True, max_batch=16,
+                   arena_max_draw_rate=1.0, arena_min_decisive=0,
+                   promote_threshold=0.55)
+
+    calls = []
+
+    def _fake_run_arena_games(cand_ts, champ_ts, pairs, sims, vp_target,
+                              bonuses, **kw):
+        calls.append({"cand_ts": cand_ts, "champ_ts": champ_ts,
+                      "pairs": pairs, "sims": sims, **kw})
+        return [{"seed": int(seed), "rot": int(rot), "winner_seat": 0,
+                 "winner_role": "cand", "timed_out": False, "vp_margin": 3}
+                for rot, seed in pairs]
+
+    fake_engine = types.ModuleType("catan_mcts_rs")
+    fake_engine.run_arena_games = _fake_run_arena_games
+    monkeypatch.setitem(sys.modules, "catan_mcts_rs", fake_engine)
+
+    written_batched = []
+
+    def _fake_export(**k):
+        Path(k["out_ts"]).write_text("ts")
+        return Path(k["out_ts"])
+
+    def _fake_export_batched(**k):
+        out_ts = Path(k["out_ts"])
+        out_ts.write_text("batched-ts-marker")
+        written_batched.append(out_ts)
+        return out_ts
+
+    import catan_gnn.export_torchscript as ex_mod
+    monkeypatch.setattr(ex_mod, "export", _fake_export)
+    monkeypatch.setattr(ex_mod, "export_batched", _fake_export_batched)
+
+    out = tmp_path / "arena"
+    out.mkdir(parents=True)
+    cand_ckpt = tmp_path / "cand.pt"
+    champ_ckpt = tmp_path / "champ.pt"
+
+    result = arena_mod._run_arena_rust(
+        candidate_ckpt=cand_ckpt, champion_ckpt=champ_ckpt, cfg=cfg,
+        out_dir=out, seed_base=30_000_000, results_path=out / "results.jsonl",
+        done={})
+
+    assert len(calls) == 1
+    call = calls[0]
+    expected_suffix = f".{dev}.b{cfg.max_batch}.batch.ts"
+    assert call["batched_cand_ts"].endswith(expected_suffix)
+    assert call["batched_champ_ts"].endswith(expected_suffix)
+    assert call["b_max"] == cfg.max_batch
+    # both nets' batched .ts were actually exported (marker file present)
+    assert len(written_batched) == 2
+    assert all(str(p).endswith(expected_suffix) for p in written_batched)
+    assert all(p.read_text() == "batched-ts-marker" for p in written_batched)
+
+    lines = (out / "results.jsonl").read_text().splitlines()
+    assert len(lines) == 8   # one line per game
+    import json
+    for line in lines:
+        rec = json.loads(line)
+        assert "ts" in rec   # wall-clock finish stamp injected
+    assert result.games == 8

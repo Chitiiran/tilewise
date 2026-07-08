@@ -27,6 +27,9 @@ def _stub_engine(monkeypatch):
     monkeypatch.setattr(
         ex, "export",
         lambda **k: (Path(k["out_ts"]).write_text("ts"), Path(k["out_ts"]))[1])
+    monkeypatch.setattr(
+        ex, "export_batched",
+        lambda **k: (Path(k["out_ts"]).write_text("ts"), Path(k["out_ts"]))[1])
     yield
 
 
