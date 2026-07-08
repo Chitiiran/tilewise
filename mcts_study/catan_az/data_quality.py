@@ -20,6 +20,7 @@ Terminology (matches the rest of catan_az, e.g. arena.py/analytics.py):
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -102,6 +103,92 @@ def summarize_selfplay_dir(run_dir: Path) -> dict:
         "length_p90": _pct(0.90),
         "length_max": int(max(lengths_sorted)) if lengths_sorted else 0,
     }
+
+
+def summarize_selfplay_dirs(run_dirs) -> dict:
+    """Aggregate summarize_selfplay_dir() ACROSS multiple run dirs into one
+    summary — a single verdict for a logical batch (an iteration can launch
+    several worker dirs), not a per-dir verdict that would let one degenerate
+    worker hide behind healthy siblings' totals or vice versa.
+
+    Includes length_p50/p90/max (the iter_7 uniform-length-cut signature
+    detector — shake-out journal 2026-06-19 §3) alongside games/winners_by_seat/
+    timeouts/no_winner. Percentiles are recomputed over the POOLED lengths
+    across all dirs (not averaged per-dir), matching summarize_selfplay_dir's
+    own convention.
+    """
+    games = 0
+    winners_by_seat = {"0": 0, "1": 0, "2": 0, "3": 0}
+    timeouts = 0
+    no_winner = 0
+    length_max = 0
+    lengths_sorted: list[int] = []
+    for d in run_dirs:
+        s = summarize_selfplay_dir(d)
+        games += s["games"]
+        for k in winners_by_seat:
+            winners_by_seat[k] += s["winners_by_seat"].get(k, 0)
+        timeouts += s["timeouts"]
+        no_winner += s["no_winner"]
+        length_max = max(length_max, s["length_max"])
+        # Re-derive pooled lengths from this dir's own parquet shards so the
+        # merged percentiles are exact, not an average-of-percentiles
+        # approximation (percentiles don't compose that way).
+        for shard in Path(d).glob("games*.parquet"):
+            try:
+                df = pd.read_parquet(shard, columns=["length_in_moves"])
+            except Exception:
+                continue
+            lengths_sorted.extend(int(x) for x in df["length_in_moves"].tolist())
+    lengths_sorted.sort()
+
+    def _pct(p: float) -> float:
+        if not lengths_sorted:
+            return 0
+        idx = min(len(lengths_sorted) - 1, max(0, round(p * (len(lengths_sorted) - 1))))
+        return lengths_sorted[idx]
+
+    return {
+        "games": games,
+        "winners_by_seat": winners_by_seat,
+        "timeouts": timeouts,
+        "no_winner": no_winner,
+        "length_p50": _pct(0.50),
+        "length_p90": _pct(0.90),
+        "length_max": length_max,
+    }
+
+
+def check_data_quality(cfg, out_dir: Path, run_dirs, *, context: str = "") -> dict:
+    """Aggregate run_dirs' self-play summary, write data_quality.json into
+    out_dir, and raise RuntimeError when degenerate (Task 7, observability
+    minimum — shake-out journal 2026-06-19 §3: an all-timeout self-play run
+    was invisible until training wasted hours on it).
+
+    Shared by catan_az.loop._check_data_quality (fresh-self-play stage of
+    run_iteration) and catan_az.daily.generate_iter_games (the production
+    driver's own-iter self-play completion point) — ONE aggregation +
+    gate + writer so the two call sites can't drift (final review, Task 7
+    finding: the production driver path never ran this gate at all).
+
+    `context` is folded into the raise message so each caller's error still
+    identifies where it fired (iter dir path, generator, etc.).
+
+    Returns the written summary dict (verdict included) so a caller can log
+    it without re-reading the file.
+    """
+    summary = summarize_selfplay_dirs(run_dirs)
+    verdict = degeneracy_verdict(summary, cfg)
+    summary["verdict"] = verdict
+    out_path = Path(out_dir) / "data_quality.json"
+    out_path.write_text(json.dumps(summary, indent=2))
+    if verdict == "degenerate":
+        where = f" for {context}" if context else ""
+        raise RuntimeError(
+            f"self-play{where} produced degenerate data ({summary['games']} games, "
+            f"{summary['timeouts']} timeouts, {summary['no_winner']} no-winner) — "
+            f"refusing to mark the stage healthy / train on it. See {out_path}.")
+    return summary
 
 
 def degeneracy_verdict(summary: dict, cfg) -> str:

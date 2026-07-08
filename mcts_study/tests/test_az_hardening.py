@@ -32,11 +32,21 @@ def test_generate_iter_games_floor_uses_config(tmp_path, monkeypatch):
     """generate_iter_games must compute its reject-floor from selfplay_floor_ratio.
     With ratio=0.7 and quota=1000, 712 own-iter games must PASS (>=700), where the
     old 0.8 floor (800) raised RuntimeError."""
+    import pandas as pd
+
     import catan_az.daily as daily
     from catan_az.config import AzConfig
 
+    # d0 holds real (healthy, decisive) games so the post-floor data-quality
+    # gate (Task 7, final review) doesn't fire on a fixture with no parquet
+    # data — this test's own concern is the FLOOR threshold, not the gate.
+    d0 = tmp_path / "d0"
+    d0.mkdir(exist_ok=True)
+    pd.DataFrame({"seed": range(712), "winner": [i % 4 for i in range(712)]}
+                 ).to_parquet(d0 / "games.x.parquet")
+
     monkeypatch.setattr(daily, "_launch_selfplay_procs",
-                        lambda *a, **k: [tmp_path / "d0"])
+                        lambda *a, **k: [d0])
     # 712 own-iter games available after the (mocked) launch
     monkeypatch.setattr(daily, "own_iter_games", lambda dirs, gen_iter: 712,
                         raising=False)

@@ -44,7 +44,7 @@ for k in ("LD_LIBRARY_PATH", "LD_PRELOAD", "CUBLAS_WORKSPACE_CONFIG"):
         print(f"export {k}=\x27{v}\x27")
 ')"
 
-if [[ "$LD_PRELOAD" != *libtorch_cuda.so* ]]; then
+if [[ "${LD_PRELOAD:-}" != *libtorch_cuda.so* ]]; then
   echo "[arena-gate] WARNING: libtorch_cuda.so not found -- arena will run on CPU" >&2
 fi
 

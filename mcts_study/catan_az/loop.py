@@ -25,7 +25,7 @@ from pathlib import Path
 from .arena import ArenaResult, run_arena, should_promote
 from .buffer import select_window
 from .config import AzConfig
-from .data_quality import degeneracy_verdict, summarize_selfplay_dir
+from .data_quality import check_data_quality
 from .ladder import Ladder
 from .status import StatusWriter
 
@@ -62,7 +62,10 @@ def _check_data_quality(cfg: AzConfig, iter_dir: Path, run_dirs: list[Path]) -> 
     Aggregates ACROSS all of this iteration's run_dirs (a single verdict for
     the iteration, not per-dir) — self-play launches multiple worker dirs for
     one logical iteration, and a per-dir verdict would let one degenerate
-    worker hide behind healthy siblings' totals or vice versa.
+    worker hide behind healthy siblings' totals or vice versa. Thin wrapper
+    over catan_az.data_quality.check_data_quality — the shared aggregation +
+    gate + writer also used by catan_az.daily.generate_iter_games (the
+    production driver's own completion point, final review Task 7 finding).
 
     Deliberately NOT applied to the existing_selfplay_dirs salvage path: that
     branch consumes pre-existing, already-produced data by explicit operator
@@ -70,34 +73,7 @@ def _check_data_quality(cfg: AzConfig, iter_dir: Path, run_dirs: list[Path]) -> 
     refuse data the operator already decided to use, which is a different
     control point than this fresh-self-play stage.
     """
-    games = 0
-    winners_by_seat = {"0": 0, "1": 0, "2": 0, "3": 0}
-    timeouts = 0
-    no_winner = 0
-    length_max = 0
-    for d in run_dirs:
-        s = summarize_selfplay_dir(d)
-        games += s["games"]
-        for k in winners_by_seat:
-            winners_by_seat[k] += s["winners_by_seat"].get(k, 0)
-        timeouts += s["timeouts"]
-        no_winner += s["no_winner"]
-        length_max = max(length_max, s["length_max"])
-    summary = {
-        "games": games,
-        "winners_by_seat": winners_by_seat,
-        "timeouts": timeouts,
-        "no_winner": no_winner,
-        "length_max": length_max,
-    }
-    verdict = degeneracy_verdict(summary, cfg)
-    summary["verdict"] = verdict
-    (iter_dir / "data_quality.json").write_text(json.dumps(summary, indent=2))
-    if verdict == "degenerate":
-        raise RuntimeError(
-            f"self-play for {iter_dir} produced degenerate data ({games} games, "
-            f"{timeouts} timeouts, {no_winner} no-winner) — refusing to mark the "
-            f"stage healthy / train on it. See {iter_dir / 'data_quality.json'}.")
+    check_data_quality(cfg, iter_dir, run_dirs, context=str(iter_dir))
 
 
 # -- default stage implementations ------------------------------------------

@@ -308,6 +308,7 @@ def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
     gen_iter games and generates the remainder — so a kill resumes toward the
     quota, and other iterations' games never satisfy it (the stale-data bug)."""
     from .buffer import count_games, own_iter_games
+    from .data_quality import check_data_quality
     gen_name, gen_ckpt = generator
     have = own_iter_games(prior_dirs, gen_iter=gen_iter)
     deficit = max(0, cfg.games_per_iter - have)
@@ -332,6 +333,15 @@ def generate_iter_games(cfg, *, iter_dir: Path, generator, gen_iter: int,
             f"games (quota {cfg.games_per_iter}, floor {floor}; generator "
             f"{gen_name}, ckpt {gen_ckpt}) — likely partial worker death / OOM. "
             f"Refusing to train on a fraction of the data; fix and resume.")
+    # Data-quality gate (Task 7, final review finding): this is the production
+    # driver's actual self-play completion point — run_cycle always calls
+    # run_iteration with existing_selfplay_dirs=[...window], the exact branch
+    # loop.py's own gate EXEMPTS (correct there — that's the operator-salvage
+    # path). Gate ONLY this iteration's own NEW dirs (`dirs`, not prior_dirs +
+    # dirs) — prior_dirs already passed this gate in their own iteration, and
+    # re-including them would blur which iteration's self-play degraded.
+    check_data_quality(cfg, Path(iter_dir), dirs,
+                       context=f"iter {gen_iter} (generator {gen_name})")
     return dirs
 
 
