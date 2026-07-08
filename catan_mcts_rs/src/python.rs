@@ -322,7 +322,8 @@ fn run_arena<'py>(
 /// plan for pausability while keeping the same per-game records as run_arena.
 #[pyfunction]
 #[pyo3(signature = (cand_ts, champ_ts, pairs, sims, vp_target=10, bonuses=true,
-                    max_steps=200_000))]
+                    max_steps=200_000, batched_cand_ts=None, batched_champ_ts=None,
+                    b_max=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_arena_games<'py>(
     py: Python<'py>,
@@ -333,8 +334,48 @@ fn run_arena_games<'py>(
     vp_target: u8,
     bonuses: bool,
     max_steps: u32,
+    batched_cand_ts: Option<String>,
+    batched_champ_ts: Option<String>,
+    b_max: Option<usize>,
 ) -> PyResult<Bound<'py, pyo3::types::PyList>> {
     let device = infer_device();
+
+    // Batched path (Task 3): cross-game leaf batching over two nets — the
+    // GPU-feeding fast path. Used when both batched .ts paths and b_max are
+    // supplied. Mirrors run_selfplay's batched branch (:255-265).
+    if let (Some(bcand), Some(bchamp), Some(bmax)) =
+        (batched_cand_ts, batched_champ_ts, b_max)
+    {
+        let results = py.allow_threads(|| {
+            let ev_cand = TorchScriptEvaluator::load_batched(&bcand, device, bmax)
+                .expect("load batched_cand_ts");
+            let ev_champ = TorchScriptEvaluator::load_batched(&bchamp, device, bmax)
+                .expect("load batched_champ_ts");
+            crate::arena::play_arena_games_batched(
+                &ev_cand, &ev_champ, &pairs, sims, vp_target, bonuses, max_steps,
+            )
+        });
+        let out = pyo3::types::PyList::empty_bound(py);
+        for ((rot, seed), r) in pairs.iter().zip(results.iter()) {
+            let seating = seating_is_cand(*rot);
+            let role: Option<&str> = if r.winner_seat >= 0 {
+                Some(if seating[r.winner_seat as usize] { "cand" } else { "champ" })
+            } else {
+                None
+            };
+            let d = PyDict::new_bound(py);
+            d.set_item("seed", seed)?;
+            d.set_item("rot", rot)?;
+            d.set_item("winner_seat", r.winner_seat)?;
+            d.set_item("winner_role", role)?;
+            d.set_item("timed_out", r.timed_out)?;
+            d.set_item("vp_margin", r.vp_margin)?;
+            out.append(d)?;
+        }
+        return Ok(out);
+    }
+
+    // Fallback: per-game B=1 (bit-exact-to-Python path; oracle, unchanged).
     let ev_cand = TorchScriptEvaluator::load(&cand_ts, device).expect("load cand_ts");
     let ev_champ = TorchScriptEvaluator::load(&champ_ts, device).expect("load champ_ts");
     let out = pyo3::types::PyList::empty_bound(py);
